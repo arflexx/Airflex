@@ -3,56 +3,49 @@ import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
-import tradesRouter from "./routes/trades";
-import authRouter from "./routes/auth";
-import walletRouter from "./routes/wallet";
 
 // ---------------------------------------------------------------------------
 // Environment validation
 // ---------------------------------------------------------------------------
 
-const REQUIRED_ENV_VARS = [
-  "JWT_SECRET",
-  "DATABASE_URL",
-  "ESCROW_CONTRACT_ADDRESS",
-  "ENCRYPTION_KEY",
-] as const;
+const REQUIRED_ENV_VARS: string[] = [
+  // Add required variables here as the project grows, e.g.:
+  // "DATABASE_URL",
+  // "JWT_SECRET",
+];
 
 const missingVars = REQUIRED_ENV_VARS.filter((key) => !process.env[key]);
 
 if (missingVars.length > 0) {
   console.error(
-    `[startup] Missing required environment variables: ${missingVars.join(", ")}\n` +
-      `Copy server/.env.example to server/.env and fill in the values.`
+    `[startup] Missing required environment variables: ${missingVars.join(", ")}`
   );
   process.exit(1);
 }
+
+const PORT = parseInt(process.env.PORT ?? "3001", 10);
+const NODE_ENV = process.env.NODE_ENV ?? "development";
 
 // ---------------------------------------------------------------------------
 // App setup
 // ---------------------------------------------------------------------------
 
 const app = express();
-const PORT = parseInt(process.env["PORT"] ?? "3001", 10);
-
-// ---------------------------------------------------------------------------
-// Middleware
-// ---------------------------------------------------------------------------
 
 // Security headers
 app.use(helmet());
 
-// CORS — tighten origins in production via CORS_ORIGIN env var
+// CORS — restrict origins in production via CORS_ORIGIN env var
 app.use(
   cors({
-    origin: process.env["CORS_ORIGIN"] ?? "*",
+    origin: process.env.CORS_ORIGIN ?? "*",
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
 
-// Request logging
-app.use(morgan(process.env["NODE_ENV"] === "production" ? "combined" : "dev"));
+// Request logging (compact in production, colourised in development)
+app.use(morgan(NODE_ENV === "production" ? "combined" : "dev"));
 
 // JSON body parsing
 app.use(express.json());
@@ -61,19 +54,17 @@ app.use(express.json());
 // Routes
 // ---------------------------------------------------------------------------
 
-/** Health-check — used by load balancers and uptime monitors */
 app.get("/health", (_req: Request, res: Response) => {
   res.status(200).json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
-// Auth routes (OTP signup + verification)
-app.use("/api/auth", authRouter);
+// ---------------------------------------------------------------------------
+// 404 handler
+// ---------------------------------------------------------------------------
 
-// Trade marketplace routes
-app.use("/api/trades", tradesRouter);
-
-// Wallet routes (Stellar public key + balance)
-app.use("/api/wallet", walletRouter);
+app.use((_req: Request, res: Response) => {
+  res.status(404).json({ error: "Not found" });
+});
 
 // ---------------------------------------------------------------------------
 // Global error handler
@@ -91,7 +82,7 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 
 app.listen(PORT, () => {
   console.log(
-    `[server] AirFlex API running on port ${PORT} (${process.env["NODE_ENV"] ?? "development"})`
+    `[server] AirFlex API running on port ${PORT} (${NODE_ENV})`
   );
 });
 
