@@ -29,12 +29,28 @@ export function errorHandler(
     err.message
   );
 
-  if (process.env["NODE_ENV"] === "production") {
-    res.status(500).json({ error: "Internal server error" });
-  } else {
-    res.status(500).json({
-      error: err.message,
-      stack: err.stack,
-    });
+  // Honour explicit HTTP statuses carried by framework errors
+  // (e.g. express.json() body-parser failures arrive with status 400).
+  const carrier = err as Error & { status?: number; statusCode?: number };
+  const status =
+    typeof carrier.status === "number"
+      ? carrier.status
+      : typeof carrier.statusCode === "number"
+        ? carrier.statusCode
+        : 500;
+
+  if (status < 400 || status > 499) {
+    // Server-side failure — never leak internals in production.
+    if (process.env["NODE_ENV"] === "production") {
+      res.status(500).json({ error: "Internal server error" });
+    } else {
+      res.status(500).json({
+        error: err.message,
+        stack: err.stack,
+      });
+    }
+    return;
   }
+
+  res.status(status).json({ error: err.message });
 }

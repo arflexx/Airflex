@@ -4,7 +4,7 @@ import { authenticate, AuthenticatedRequest } from "../middleware/authenticate";
 import type { TradeOffer, TradeStatus } from "../types/trade";
 import { asyncHandler } from "../utils/asyncHandler";
 
-const router = Router();
+const router: Router = Router();
 
 /** Mask a phone number — show country code + last 4 digits only: +234 *** *** 7890 */
 function maskPhone(phone: string): string {

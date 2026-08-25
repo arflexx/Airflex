@@ -2,7 +2,7 @@ import { Router } from "express";
 import { authenticate, AuthenticatedRequest } from "../middleware/authenticate";
 import { SseEmitter } from "../services/sseEmitter";
 
-const router = Router();
+const router: Router = Router();
 
 // ---------------------------------------------------------------------------
 // GET /api/events  (authenticated)
