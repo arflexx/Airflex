@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 
-const router = Router();
+const router: Router = Router();
 
 // Stub admin endpoints - to be implemented
 router.get('/users', (req: Request, res: Response) => {

@@ -4,7 +4,7 @@ import { authenticate, AuthenticatedRequest } from "../middleware/authenticate";
 import { getWalletBalance } from "../services/stellar";
 import { asyncHandler } from "../utils/asyncHandler";
 
-const router = Router();
+const router: Router = Router();
 
 // ---------------------------------------------------------------------------
 // Paystack helper functions

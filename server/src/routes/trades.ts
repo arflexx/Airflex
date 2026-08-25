@@ -18,7 +18,7 @@ import {
 } from "../schemas";
 import { asyncHandler } from "../utils/asyncHandler";
 
-const router = Router();
+const router: Router = Router();
 
 // ---------------------------------------------------------------------------
 // GET /api/trades

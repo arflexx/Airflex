@@ -11,7 +11,7 @@ export const requestOtpSchema = z.object({
     .string({ required_error: "phone is required" })
     .trim()
     .regex(
-      /^\+?[1-9]\d{9,14}$/,
+      /^(?:\+?[1-9]\d{9,14}|0[7-9]\d{9})$/,
       "Enter a valid phone number (e.g. +2348012345678 or 08012345678)"
     ),
 });

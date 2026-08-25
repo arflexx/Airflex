@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 
-const router = Router();
+const router: Router = Router();
 
 // Stub webhook endpoints - to be implemented
 router.post('/stellar', (req: Request, res: Response) => {

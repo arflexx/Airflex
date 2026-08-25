@@ -21,37 +21,72 @@ concurrency:
 jobs:
 
   # -------------------------------------------------------------------------
-  # 1. Server — type-check + build
+  # 1. Server — type-check + build + integration tests (coverage gate)
   # -------------------------------------------------------------------------
   server:
     name: Server (TypeScript)
     runs-on: ubuntu-latest
 
-    defaults:
-      run:
-        working-directory: server
+    # Integration tests hit a real PostgreSQL database. It is provisioned and
+    # migrated by src/__tests__/globalSetup.ts and dropped in teardown.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # The repo is a pnpm workspace ("workspace:*" deps), so npm ci cannot be
+      # used here.
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
       - name: Set up Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: "npm"
-          cache-dependency-path: server/package-lock.json
+          cache: "pnpm"
 
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       # Type-check without emitting files — catches type errors fast
       - name: Type-check
+        working-directory: server
         run: npx tsc --noEmit
 
       # Full compile to dist/ — confirms the build artefact is valid
       - name: Build
+        working-directory: server
         run: npm run build
+
+      # Integration suite against a real database with all external HTTP
+      # services (Termii, Paystack, Stellar/Horizon) mocked via msw.
+      # The jest coverageThreshold config enforces >= 80% line coverage.
+      - name: Test with coverage (80% line gate)
+        working-directory: server
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/airflex_test
+        run: npm run test:coverage
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-coverage
+          path: server/coverage/
+          retention-days: 7
 
       # Upload the compiled artefact so other jobs / releases can use it
       - name: Upload server build

@@ -12,7 +12,7 @@ import {
   type VerifyOtpInput,
 } from "../schemas";
 
-const router = Router();
+const router: Router = Router();
 
 /** Send OTP via Termii SMS API */
 async function sendOtp(phone: string, otp: string): Promise<void> {
