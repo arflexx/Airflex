@@ -77,7 +77,7 @@ export default function SignupPage() {
           Create your account
         </h1>
         <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
-          Enter your phone number and we'll send a 6-digit OTP to verify it.
+          Enter your phone number and we&apos;ll send a 6-digit OTP to verify it.
         </p>
       </div>
 

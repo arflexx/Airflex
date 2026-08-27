@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { getToken } from "../lib/auth";
 
 // ---------------------------------------------------------------------------
@@ -57,14 +57,7 @@ export default function WithdrawModal({
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  // Fetch banks on mount
-  useEffect(() => {
-    if (isOpen) {
-      fetchBanks();
-    }
-  }, [isOpen]);
-
-  async function fetchBanks() {
+  const fetchBanks = useCallback(async () => {
     try {
       const token = getToken();
       const res = await fetch(`${apiUrl}/api/v1/wallet/banks`, {
@@ -77,19 +70,16 @@ export default function WithdrawModal({
     } catch (err) {
       console.error("Failed to fetch banks:", err);
     }
-  }
+  }, [apiUrl]);
 
-  // Resolve account name when bank and account number are entered
+  // Fetch banks on mount
   useEffect(() => {
-    if (selectedBank && accountNumber.length === 10) {
-      resolveAccount();
-    } else {
-      setAccountName("");
-      setAccountConfirmed(false);
+    if (isOpen) {
+      fetchBanks();
     }
-  }, [selectedBank, accountNumber]);
+  }, [isOpen, fetchBanks]);
 
-  async function resolveAccount() {
+  const resolveAccount = useCallback(async () => {
     if (!selectedBank || accountNumber.length !== 10) return;
 
     setIsResolving(true);
@@ -117,7 +107,17 @@ export default function WithdrawModal({
     } finally {
       setIsResolving(false);
     }
-  }
+  }, [apiUrl, selectedBank, accountNumber]);
+
+  // Resolve account name when bank and account number are entered
+  useEffect(() => {
+    if (selectedBank && accountNumber.length === 10) {
+      resolveAccount();
+    } else {
+      setAccountName("");
+      setAccountConfirmed(false);
+    }
+  }, [selectedBank, accountNumber, resolveAccount]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();

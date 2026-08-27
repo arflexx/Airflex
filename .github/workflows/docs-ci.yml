@@ -1,0 +1,145 @@
+name: Docs Site CI
+
+# ---------------------------------------------------------------------------
+# Triggers
+# ---------------------------------------------------------------------------
+# Scoped to apps/docs-site so unrelated changes (server, contracts, the
+# marketing frontend) don't trigger a docs build/deploy.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/docs-site/**"
+      - ".github/workflows/docs-ci.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "apps/docs-site/**"
+      - ".github/workflows/docs-ci.yml"
+
+concurrency:
+  group: docs-site-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# ---------------------------------------------------------------------------
+# Jobs
+# ---------------------------------------------------------------------------
+jobs:
+
+  # -------------------------------------------------------------------------
+  # 1. Build — generate the API/Contract reference pages, type-check, build
+  # -------------------------------------------------------------------------
+  build:
+    name: Docs site (Next.js / Nextra)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: apps/docs-site
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: apps/docs-site/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Regenerates pages/api-reference/** from openapi/openapi.json and
+      # pages/contract-reference/** from the Rust doc comments in
+      # contracts/*/src/lib.rs — keeps generated docs from going stale.
+      - name: Generate API & Contract reference pages
+        run: npm run generate
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Build (includes Flexsearch index generation)
+        run: npm run build
+
+      - name: Upload docs-site build
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-site-build
+          path: apps/docs-site/.next/
+          retention-days: 7
+
+  # -------------------------------------------------------------------------
+  # 2. Deploy to Vercel — production on main, preview on PRs
+  # -------------------------------------------------------------------------
+  # Requires repo secrets: VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID_DOCS_SITE.
+  # See docs.airflex.io setup instructions in apps/docs-site/pages/deployment.mdx.
+  deploy:
+    name: Deploy to Vercel
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+
+    defaults:
+      run:
+        working-directory: apps/docs-site
+
+    permissions:
+      contents: read
+      pull-requests: write   # to comment the preview URL on the PR
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Vercel CLI
+        run: npm install --global vercel@latest
+
+      - name: Pull Vercel environment
+        run: |
+          vercel pull --yes \
+            --environment=${{ github.event_name == 'push' && 'production' || 'preview' }} \
+            --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_DOCS_SITE }}
+
+      - name: Build via Vercel
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+          else
+            vercel build --token=${{ secrets.VERCEL_TOKEN }}
+          fi
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_DOCS_SITE }}
+
+      - name: Deploy via Vercel
+        id: deploy
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            URL=$(vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }})
+          else
+            URL=$(vercel deploy --prebuilt --token=${{ secrets.VERCEL_TOKEN }})
+          fi
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_DOCS_SITE }}
+
+      # Production deploys are aliased to docs.airflex.io in the Vercel
+      # project's domain settings (one-time setup — see deployment.mdx),
+      # so no explicit `vercel alias` step is needed here.
+      - name: Comment preview URL on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `📚 Docs preview: ${{ steps.deploy.outputs.url }}`,
+            });
