@@ -4,7 +4,6 @@ import jwt from "jsonwebtoken";
 import pool from "../db";
 import { generateAndFundWallet } from "../services/stellar";
 import { validate } from "../middleware/validate";
-import { asyncHandler } from "../utils/asyncHandler";
 import {
   requestOtpSchema,
   verifyOtpSchema,
@@ -95,7 +94,7 @@ async function verifyOtpWithTermii(
 router.post(
   "/request-otp",
   validate(requestOtpSchema),
-  asyncHandler(async (req, res) => {
+  async (req, res) => {
     const { phone } = req.body as RequestOtpInput;
 
     // Upsert user row — create if first time, leave existing data untouched
@@ -125,7 +124,7 @@ router.post(
 router.post(
   "/verify-otp",
   validate(verifyOtpSchema),
-  asyncHandler(async (req, res) => {
+  async (req, res) => {
     const { phone, otp } = req.body as VerifyOtpInput;
 
     // Look up the user and their pending OTP pin

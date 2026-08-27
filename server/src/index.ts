@@ -1,4 +1,5 @@
 import "dotenv/config";
+import "express-async-errors";
 import express, { Request, Response } from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -7,6 +8,8 @@ import { registerRoutes } from "./routes";
 import logger from "./utils/logger";
 import { errorHandler } from "./middleware/errorHandler";
 import { apiVersion } from "./middleware/apiVersion";
+import { requestId } from "./middleware/requestId";
+import { pool, query } from "./db/pool";
 
 // ---------------------------------------------------------------------------
 // Environment validation
@@ -32,6 +35,33 @@ if (missingVars.length > 0) {
   process.exit(1);
 }
 
+// Validate ENCRYPTION_KEY format: must be exactly 64 hex characters
+const encryptionKey = process.env["ENCRYPTION_KEY"];
+if (encryptionKey && !/^[0-9a-fA-F]{64}$/.test(encryptionKey)) {
+  console.error(
+    "[startup] ENCRYPTION_KEY must be a 64-character hex string"
+  );
+  process.exit(1);
+}
+
+// ---------------------------------------------------------------------------
+// Database connection test on startup
+// ---------------------------------------------------------------------------
+
+const testQueryText = "SELECT 1";
+pool.query(testQueryText)
+  .then(() => {
+    logger.info({ query: testQueryText }, "Database connection validated");
+  })
+  .catch((err) => {
+    console.error(
+      `[startup] Database connection failed: ${err.message}\n` +
+        "Verify DATABASE_URL is correct and PostgreSQL is reachable.\n" +
+        "Server exiting."
+    );
+    process.exit(1);
+  });
+
 // ---------------------------------------------------------------------------
 // App setup
 // ---------------------------------------------------------------------------
@@ -42,6 +72,9 @@ const PORT = parseInt(process.env["PORT"] ?? "3001", 10);
 // ---------------------------------------------------------------------------
 // Middleware
 // ---------------------------------------------------------------------------
+
+// Generate per-request UUID for correlation (must be first middleware)
+app.use(requestId);
 
 // Security headers
 app.use(helmet());
@@ -56,8 +89,19 @@ app.use(
   })
 );
 
-// Request logging
-app.use(morgan(process.env["NODE_ENV"] === "production" ? "combined" : "dev"));
+// Request logging with X-Request-Id token
+// Define custom token to include request ID in logs
+morgan.token("request-id", (_req: Request, res: Response) => {
+  return (res.locals as { requestId?: string }).requestId ?? "-";
+});
+
+app.use(
+  morgan(
+    process.env["NODE_ENV"] === "production"
+      ? 'combined :request-id'
+      : 'dev :request-id'
+  )
+);
 
 // JSON body parsing
 app.use(express.json());
@@ -81,7 +125,7 @@ app.get("/health", (_req: Request, res: Response) => {
 /** Readiness probe — confirms DB connectivity before accepting traffic */
 app.get("/ready", async (_req: Request, res: Response) => {
   try {
-    await pool.query("SELECT 1");
+    await query("SELECT 1");
     res.status(200).json({ status: "ready", db: "ok" });
   } catch {
     res.status(503).json({ status: "not ready", db: "error" });

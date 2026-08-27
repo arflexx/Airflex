@@ -2,7 +2,6 @@ import { Router } from "express";
 import pool from "../db";
 import { authenticate, AuthenticatedRequest } from "../middleware/authenticate";
 import { getWalletBalance } from "../services/stellar";
-import { asyncHandler } from "../utils/asyncHandler";
 
 const router = Router();
 
@@ -73,7 +72,7 @@ async function resolvePaystackAccount(accountNumber: string, bankCode: string): 
 router.get(
   "/",
   authenticate,
-  asyncHandler(async (req, res) => {
+  async (req, res) => {
     const { sub: userId } = (req as AuthenticatedRequest).user;
 
     const { rows } = await pool.query<{ stellar_public_key: string }>(
@@ -118,7 +117,7 @@ router.get(
 router.get(
   "/banks",
   authenticate,
-  asyncHandler(async (req, res) => {
+  async (req, res) => {
     try {
       const banks = await fetchPaystackBanks();
       res.status(200).json({ banks });
@@ -140,7 +139,7 @@ router.get(
 router.get(
   "/resolve-account",
   authenticate,
-  asyncHandler(async (req, res) => {
+  async (req, res) => {
     const { account_number, bank_code } = req.query;
 
     if (!account_number || !bank_code) {
@@ -174,7 +173,7 @@ router.get(
 router.post(
   "/withdraw",
   authenticate,
-  asyncHandler(async (req, res) => {
+  async (req, res) => {
     const { sub: userId } = (req as AuthenticatedRequest).user;
     const { amount, bank_code, account_number, account_name } = req.body;
 

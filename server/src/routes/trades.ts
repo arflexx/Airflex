@@ -16,7 +16,6 @@ import {
   type CreateTradeInput,
   type BuyTradeInput,
 } from "../schemas";
-import { asyncHandler } from "../utils/asyncHandler";
 
 const router = Router();
 
@@ -26,7 +25,7 @@ const router = Router();
 
 router.get(
   "/",
-  asyncHandler(async (req, res) => {
+  async (req, res) => {
     const parsed = paginationSchema.safeParse(req.query);
     if (!parsed.success) {
       res.status(400).json({
@@ -74,7 +73,7 @@ router.post(
   "/",
   authenticate,
   validate(createTradeSchema),
-  asyncHandler(async (req, res) => {
+  async (req, res) => {
     const { assetType, amount, expiresInHours } = req.body as CreateTradeInput;
     const { sub: sellerId, stellarPublicKey } = (req as AuthenticatedRequest).user;
 
@@ -124,7 +123,7 @@ router.post(
 
 router.get(
   "/:id",
-  asyncHandler(async (req, res) => {
+  async (req, res) => {
     const { id } = req.params;
 
     const { rows } = await pool.query<TradeOffer>(
@@ -150,7 +149,7 @@ router.post(
   "/:id/buy",
   authenticate,
   validate(buyTradeSchema),
-  asyncHandler(async (req, res) => {
+  async (req, res) => {
     const { id } = req.params;
     const { sub: buyerId, stellarPublicKey } = (req as AuthenticatedRequest).user;
     const { buyerSecretKey } = req.body as BuyTradeInput;
@@ -229,7 +228,7 @@ router.post(
 router.post(
   "/:id/confirm-delivery",
   authenticate,
-  asyncHandler(async (req, res) => {
+  async (req, res) => {
     const { id } = req.params;
     const { sub: sellerId } = (req as AuthenticatedRequest).user;
 

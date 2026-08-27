@@ -9,7 +9,6 @@
 
 import { Router, Request, Response, NextFunction } from "express";
 import { authenticate, AuthenticatedRequest } from "../middleware/authenticate";
-import { asyncHandler } from "../utils/asyncHandler";
 import { QueueService } from "../jobs";
 import pool from "../db";
 
@@ -66,8 +65,8 @@ async function requireAdmin(
 router.get(
   "/queues",
   authenticate,
-  asyncHandler(requireAdmin),
-  asyncHandler(async (_req, res) => {
+  requireAdmin,
+  async (_req, res) => {
     const queues = QueueService.getStats();
     res.status(200).json({ queues });
   })
@@ -77,15 +76,15 @@ router.get(
 // Stub endpoints — to be implemented in future issues
 // ---------------------------------------------------------------------------
 
-router.get("/users", authenticate, asyncHandler(requireAdmin), (_req: Request, res: Response) => {
+router.get("/users", authenticate, requireAdmin, (_req: Request, res: Response) => {
   res.status(501).json({ error: "Not Implemented" });
 });
 
-router.get("/trades", authenticate, asyncHandler(requireAdmin), (_req: Request, res: Response) => {
+router.get("/trades", authenticate, requireAdmin, (_req: Request, res: Response) => {
   res.status(501).json({ error: "Not Implemented" });
 });
 
-router.patch("/users/:id", authenticate, asyncHandler(requireAdmin), (_req: Request, res: Response) => {
+router.patch("/users/:id", authenticate, requireAdmin, (_req: Request, res: Response) => {
   res.status(501).json({ error: "Not Implemented" });
 });
 

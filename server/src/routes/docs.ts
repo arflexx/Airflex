@@ -114,4 +114,22 @@ function buildSwaggerHtml(specUrl: string): string {
 </html>`;
 }
 
+// ---------------------------------------------------------------------------
+// DEV/TEST only — verify async error handling
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/v1/test-async-error
+ *
+ * Dev/test route that throws an async error to verify express-async-errors
+ * properly forwards it to the global error handler.
+ *
+ * Gated behind NODE_ENV !== "production".
+ */
+if (process.env["NODE_ENV"] !== "production") {
+  router.get("/test-async-error", (_req: Request, res: Response) => {
+    throw new Error("async test");
+  });
+}
+
 export default router;

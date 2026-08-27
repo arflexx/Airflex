@@ -3,7 +3,6 @@ import { createHash } from "crypto";
 import pool from "../db";
 import { authenticate, AuthenticatedRequest } from "../middleware/authenticate";
 import type { TradeOffer, TradeStatus } from "../types/trade";
-import { asyncHandler } from "../utils/asyncHandler";
 import logger from "../utils/logger";
 
 const router = Router();
@@ -97,7 +96,7 @@ async function sendDeletionConfirmationSms(
 router.get(
   "/",
   authenticate,
-  asyncHandler(async (req, res) => {
+  async (req, res) => {
     const { sub: userId } = (req as AuthenticatedRequest).user;
 
     const { rows: userRows } = await pool.query<{
@@ -158,7 +157,7 @@ const ALLOWED_STATUSES: TradeStatus[] = ["Active", "Locked", "Completed", "Cance
 router.get(
   "/trades",
   authenticate,
-  asyncHandler(async (req, res) => {
+  async (req, res) => {
     const { sub: userId } = (req as AuthenticatedRequest).user;
 
     const rawPage   = parseInt(String(req.query["page"]  ?? "1"),  10);
@@ -239,7 +238,7 @@ router.get(
 router.get(
   "/deletion-status",
   authenticate,
-  asyncHandler(async (req, res) => {
+  async (req, res) => {
     const { sub: userId } = (req as AuthenticatedRequest).user;
 
     const { rows } = await pool.query<{
@@ -290,7 +289,7 @@ router.get(
 router.delete(
   "/",
   authenticate,
-  asyncHandler(async (req, res) => {
+  async (req, res) => {
     const { sub: userId } = (req as AuthenticatedRequest).user;
 
     // Load the user row to check current deletion state and get phone for SMS
@@ -422,7 +421,7 @@ router.delete(
 router.post(
   "/cancel-deletion",
   authenticate,
-  asyncHandler(async (req, res) => {
+  async (req, res) => {
     const { sub: userId } = (req as AuthenticatedRequest).user;
 
     const { rows } = await pool.query<{
