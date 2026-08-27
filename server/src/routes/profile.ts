@@ -1,7 +1,9 @@
 import { Router } from "express";
 import { createHash } from "crypto";
+import { z } from "zod";
 import pool from "../db";
 import { authenticate, AuthenticatedRequest } from "../middleware/authenticate";
+import { validate } from "../middleware/validate";
 import type { TradeOffer, TradeStatus } from "../types/trade";
 import logger from "../utils/logger";
 
@@ -104,8 +106,12 @@ router.get(
       phone: string;
       created_at: string;
       stellar_public_key: string | null;
+      role: string;
+      kyc_status: "unverified" | "pending" | "verified";
+      virtual_account_number: string | null;
     }>(
-      `SELECT id, phone, created_at, stellar_public_key
+      `SELECT id, phone, created_at, stellar_public_key, role, kyc_status,
+              virtual_account_number
        FROM users
        WHERE id = $1
        LIMIT 1`,
@@ -134,10 +140,57 @@ router.get(
         maskedPhone:          maskPhone(user.phone),
         createdAt:            user.created_at,
         totalTradesCompleted,
+        role:                 user.role,
+        kycStatus:            user.kyc_status,
+        virtualAccountNumber: user.virtual_account_number ?? "",
         stellarPublicKey:     user.stellar_public_key ?? "",
       },
     });
-  })
+  }
+);
+
+// ---------------------------------------------------------------------------
+// PATCH /api/v1/profile  (authenticated)
+// ---------------------------------------------------------------------------
+
+const profileUpdateSchema = z.object({
+  alias: z.string().max(30).regex(/^[a-zA-Z0-9]+$/).optional(),
+  notificationsEnabled: z.boolean().optional(),
+}).strict();
+
+router.patch(
+  "/",
+  authenticate,
+  validate(profileUpdateSchema),
+  async (req, res) => {
+    const { sub: userId } = (req as AuthenticatedRequest).user;
+    const updates = req.body as z.infer<typeof profileUpdateSchema>;
+    const fields: string[] = [];
+    const values: unknown[] = [];
+
+    if (updates.alias !== undefined) {
+      fields.push(`alias = $${values.length + 1}`);
+      values.push(updates.alias);
+    }
+    if (updates.notificationsEnabled !== undefined) {
+      fields.push(`notifications_enabled = $${values.length + 1}`);
+      values.push(updates.notificationsEnabled);
+    }
+
+    if (!fields.length) {
+      res.status(400).json({ error: "At least one profile field is required" });
+      return;
+    }
+
+    values.push(userId);
+    const { rows } = await pool.query(
+      `UPDATE users SET ${fields.join(", ")}, updated_at = NOW()
+       WHERE id = $${values.length}
+       RETURNING id, alias, notifications_enabled`,
+      values
+    );
+    res.status(200).json({ data: rows[0] });
+  }
 );
 
 // ---------------------------------------------------------------------------
@@ -160,19 +213,21 @@ router.get(
   async (req, res) => {
     const { sub: userId } = (req as AuthenticatedRequest).user;
 
-    const rawPage   = parseInt(String(req.query["page"]  ?? "1"),  10);
-    const rawLimit  = parseInt(String(req.query["limit"] ?? "10"), 10);
-    const rawStatus = String(req.query["status"] ?? "All");
+    const parsedPagination = z.object({
+      page: z.coerce.number().int().min(1).default(1),
+      limit: z.coerce.number().int().min(1).max(50).default(10),
+      status: z.enum(["All", ...ALLOWED_STATUSES] as [string, ...string[]]).default("All"),
+    }).safeParse(req.query);
 
-    const page  = isNaN(rawPage)  || rawPage  < 1 ? 1  : rawPage;
-    const limit = isNaN(rawLimit) || rawLimit < 1 ? 10
-                : rawLimit > 50                   ? 50
-                :                                   rawLimit;
+    if (!parsedPagination.success) {
+      res.status(400).json({ error: "Invalid query parameters", details: parsedPagination.error.flatten() });
+      return;
+    }
+
+    const { page, limit, status: rawStatus } = parsedPagination.data;
     const offset = (page - 1) * limit;
 
-    const filterByStatus =
-      rawStatus !== "All" &&
-      (ALLOWED_STATUSES as string[]).includes(rawStatus);
+    const filterByStatus = rawStatus !== "All";
 
     const baseParams: (string | number)[] = [userId, userId];
     const baseWhere = `(seller_id = $1 OR buyer_id = $2)`;
@@ -218,7 +273,7 @@ router.get(
         totalPages: Math.ceil(total / limit),
       },
     });
-  })
+  }
 );
 
 // ---------------------------------------------------------------------------
@@ -263,7 +318,7 @@ router.get(
       pendingDeletion:     user.pending_deletion ?? false,
       scheduledDeletionAt: user.scheduled_deletion_at ?? null,
     });
-  })
+  }
 );
 
 // ---------------------------------------------------------------------------
@@ -407,7 +462,7 @@ router.delete(
         "You can cancel this request within the grace period.",
       scheduledDeletionAt: scheduledDeletionAt.toISOString(),
     });
-  })
+  }
 );
 
 // ---------------------------------------------------------------------------
@@ -477,7 +532,7 @@ router.post(
     res.status(200).json({
       message: "Account deletion cancelled. Your account is fully restored.",
     });
-  })
+  }
 );
 
 export default router;

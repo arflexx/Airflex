@@ -1,3 +1,4 @@
+process.env["DATABASE_URL"] = "postgresql://test:test@localhost/test";
 import { calculatePlatformFee } from "./tradeVerification";
 
 describe("calculatePlatformFee", () => {

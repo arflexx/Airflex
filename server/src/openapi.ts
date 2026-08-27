@@ -302,6 +302,9 @@ export const openApiDocument = {
               "maskedPhone",
               "createdAt",
               "totalTradesCompleted",
+              "role",
+              "kycStatus",
+              "virtualAccountNumber",
               "stellarPublicKey",
             ],
             properties: {
@@ -312,6 +315,9 @@ export const openApiDocument = {
               },
               createdAt: { type: "string", format: "date-time" },
               totalTradesCompleted: { type: "integer", example: 5 },
+              role: { type: "string", example: "user" },
+              kycStatus: { type: "string", enum: ["unverified", "pending", "verified"] },
+              virtualAccountNumber: { type: "string", example: "0123456789" },
               stellarPublicKey: { type: "string", example: "GABC1234..." },
             },
           },
@@ -988,6 +994,23 @@ export const openApiDocument = {
 
     // ------------------------------------------------------------------ Profile
     "/api/v1/profile": {
+      patch: {
+        tags: ["Profile"],
+        summary: "Update own profile",
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: { "application/json": { schema: {
+            type: "object",
+            properties: {
+              alias: { type: "string", maxLength: 30, pattern: "^[A-Za-z0-9]+$" },
+              notificationsEnabled: { type: "boolean" },
+            },
+            additionalProperties: false,
+          } } },
+        },
+        responses: { "200": { description: "Profile updated." }, "400": { $ref: "#/components/responses/ErrorResponse" }, "401": { $ref: "#/components/responses/Unauthorized" }, "422": { $ref: "#/components/responses/UnprocessableEntity" } },
+      },
       get: {
         tags: ["Profile"],
         summary: "Get own profile",
@@ -1166,6 +1189,16 @@ export const openApiDocument = {
     },
 
     // ------------------------------------------------------------------ Admin
+    "/api/v1/admin/users/{id}/kyc": {
+      patch: {
+        tags: ["Admin"],
+        summary: "Update user KYC status",
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
+        requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["status"], properties: { status: { type: "string", enum: ["unverified", "pending", "verified"] } } } } } },
+        responses: { "200": { description: "KYC status updated." }, "401": { $ref: "#/components/responses/Unauthorized" }, "403": { $ref: "#/components/responses/Forbidden" }, "404": { $ref: "#/components/responses/NotFound" } },
+      },
+    },
     "/api/v1/admin/queues": {
       get: {
         tags: ["Admin"],

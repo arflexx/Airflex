@@ -29,7 +29,7 @@ export function errorHandler(
     err.message
   );
 
-  if (process.env["NODE_ENV"] === "production") {
+  if (process.env["NODE_ENV"] === "production" || process.env["NODE_ENV"] === "test") {
     res.status(500).json({ error: "Internal server error" });
   } else {
     res.status(500).json({

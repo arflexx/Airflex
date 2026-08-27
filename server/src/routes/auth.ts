@@ -114,7 +114,7 @@ router.post(
     }
 
     res.status(200).json({ message: "OTP sent successfully" });
-  })
+  }
 );
 
 // ---------------------------------------------------------------------------
@@ -230,7 +230,7 @@ router.post(
       token,
       user: { id: user.id, phone, stellarPublicKey },
     });
-  })
+  }
 );
 
 export default router;

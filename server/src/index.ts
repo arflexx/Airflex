@@ -10,6 +10,7 @@ import { errorHandler } from "./middleware/errorHandler";
 import { apiVersion } from "./middleware/apiVersion";
 import { requestId } from "./middleware/requestId";
 import { pool, query } from "./db/pool";
+import { initJobQueue } from "./jobs";
 
 // ---------------------------------------------------------------------------
 // Environment validation
@@ -32,7 +33,7 @@ if (missingVars.length > 0) {
     `[startup] Missing required environment variables: ${missingVars.join(", ")}\n` +
       `Copy server/.env.example to server/.env and fill in the values.`
   );
-  process.exit(1);
+  if (process.env["NODE_ENV"] !== "test" && process.env["JEST_WORKER_ID"] === undefined) process.exit(1);
 }
 
 // Validate ENCRYPTION_KEY format: must be exactly 64 hex characters
@@ -41,7 +42,7 @@ if (encryptionKey && !/^[0-9a-fA-F]{64}$/.test(encryptionKey)) {
   console.error(
     "[startup] ENCRYPTION_KEY must be a 64-character hex string"
   );
-  process.exit(1);
+  if (process.env["NODE_ENV"] !== "test" && process.env["JEST_WORKER_ID"] === undefined) process.exit(1);
 }
 
 // ---------------------------------------------------------------------------
@@ -49,7 +50,7 @@ if (encryptionKey && !/^[0-9a-fA-F]{64}$/.test(encryptionKey)) {
 // ---------------------------------------------------------------------------
 
 const testQueryText = "SELECT 1";
-pool.query(testQueryText)
+if (process.env["NODE_ENV"] !== "test") pool.query(testQueryText)
   .then(() => {
     logger.info({ query: testQueryText }, "Database connection validated");
   })
@@ -59,7 +60,7 @@ pool.query(testQueryText)
         "Verify DATABASE_URL is correct and PostgreSQL is reachable.\n" +
         "Server exiting."
     );
-    process.exit(1);
+    if (process.env["NODE_ENV"] !== "test" && process.env["JEST_WORKER_ID"] === undefined) process.exit(1);
   });
 
 // ---------------------------------------------------------------------------
@@ -145,7 +146,7 @@ app.use(errorHandler);
 // Start
 // ---------------------------------------------------------------------------
 
-app.listen(PORT, () => {
+if (process.env["NODE_ENV"] !== "test") app.listen(PORT, () => {
   logger.info(
     { port: PORT, env: process.env["NODE_ENV"] ?? "development" },
     "AirFlex API started"

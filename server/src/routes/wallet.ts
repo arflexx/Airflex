@@ -104,7 +104,7 @@ router.get(
       asset: "XLM",
       network: process.env["STELLAR_NETWORK"] ?? "testnet",
     });
-  })
+  }
 );
 
 // ---------------------------------------------------------------------------
@@ -125,7 +125,7 @@ router.get(
       console.error("[wallet] Failed to fetch banks:", (err as Error).message);
       res.status(502).json({ error: "Unable to fetch bank list. Try again." });
     }
-  })
+  }
 );
 
 // ---------------------------------------------------------------------------
@@ -159,7 +159,7 @@ router.get(
       console.error("[wallet] Failed to resolve account:", (err as Error).message);
       res.status(502).json({ error: "Unable to resolve account. Check the account number and bank." });
     }
-  })
+  }
 );
 
 // ---------------------------------------------------------------------------
@@ -234,7 +234,7 @@ router.post(
     // 4. Handle transfer failures and retries
 
     res.status(200).json({ success: true });
-  })
+  }
 );
 
 export default router;

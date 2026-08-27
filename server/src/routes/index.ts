@@ -1,4 +1,4 @@
-import { Express } from 'express';
+import express, { Express } from "express";
 import authRouter from './auth';
 import tradesRouter from './trades';
 import walletRouter from './wallet';
@@ -9,7 +9,6 @@ import eventsRouter from './events';
 import docsRouter from './docs';
 
 export function registerRoutes(app: Express): void {
-  // API v1 routes
   app.use('/api/v1/auth', authRouter);
   app.use('/api/v1/trades', tradesRouter);
   app.use('/api/v1/wallet', walletRouter);
@@ -17,12 +16,13 @@ export function registerRoutes(app: Express): void {
   app.use('/api/v1/webhooks', webhooksRouter);
   app.use('/api/v1/admin', adminRouter);
   app.use('/api/v1/events', eventsRouter);
-
-  // Legacy SSE path — kept for backwards compatibility; prefer /api/v1/events
   app.use('/api/events', eventsRouter);
-
-  // OpenAPI 3.1 spec + Swagger UI
-  // GET /api/docs.json  — always available
-  // GET /api/docs       — Swagger UI (disabled in production unless ENABLE_API_DOCS=true)
   app.use('/api', docsRouter);
+  app.use('/api/v1', docsRouter);
 }
+
+const app = express();
+app.use(express.json());
+registerRoutes(app);
+
+export default app;

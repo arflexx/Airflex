@@ -7,40 +7,14 @@
  * the role.
  */
 
-import { Router, Request, Response, NextFunction } from "express";
+import { Router, Request, Response } from "express";
 import { authenticate, AuthenticatedRequest } from "../middleware/authenticate";
 import { QueueService } from "../jobs";
+import { authorize } from "../middleware/authorize";
+import { z } from "zod";
 import pool from "../db";
 
 const router = Router();
-
-// ---------------------------------------------------------------------------
-// requireAdmin middleware
-// ---------------------------------------------------------------------------
-
-/**
- * Ensures the authenticated user has role = 'admin' in the users table.
- * Returns 403 if the user is not an admin.
- */
-async function requireAdmin(
-  req: Request,
-  res: Response,
-  next: NextFunction
-): Promise<void> {
-  const { sub: userId } = (req as AuthenticatedRequest).user;
-
-  const { rows } = await pool.query<{ role: string }>(
-    `SELECT role FROM users WHERE id = $1 LIMIT 1`,
-    [userId]
-  );
-
-  if (!rows.length || rows[0]?.role !== "admin") {
-    res.status(403).json({ error: "Admin access required" });
-    return;
-  }
-
-  next();
-}
 
 // ---------------------------------------------------------------------------
 // GET /api/v1/admin/queues  (admin only)
@@ -65,27 +39,52 @@ async function requireAdmin(
 router.get(
   "/queues",
   authenticate,
-  requireAdmin,
+  authorize("admin"),
   async (_req, res) => {
     const queues = QueueService.getStats();
     res.status(200).json({ queues });
-  })
+  }
 );
 
 // ---------------------------------------------------------------------------
 // Stub endpoints — to be implemented in future issues
 // ---------------------------------------------------------------------------
 
-router.get("/users", authenticate, requireAdmin, (_req: Request, res: Response) => {
+router.get("/users", authenticate, authorize("admin"), (_req: Request, res: Response) => {
   res.status(501).json({ error: "Not Implemented" });
 });
 
-router.get("/trades", authenticate, requireAdmin, (_req: Request, res: Response) => {
+router.get("/trades", authenticate, authorize("admin"), (_req: Request, res: Response) => {
   res.status(501).json({ error: "Not Implemented" });
 });
 
-router.patch("/users/:id", authenticate, requireAdmin, (_req: Request, res: Response) => {
+router.patch("/users/:id", authenticate, authorize("admin"), (_req: Request, res: Response) => {
   res.status(501).json({ error: "Not Implemented" });
+});
+
+const kycSchema = z.object({
+  status: z.enum(["unverified", "pending", "verified"]),
+});
+
+router.patch("/users/:id/kyc", authenticate, authorize("admin"), async (req, res) => {
+  const parsed = kycSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(422).json({ error: "Invalid KYC status", details: parsed.error.flatten() });
+    return;
+  }
+
+  const { rows } = await pool.query(
+    `UPDATE users SET kyc_status = $1, updated_at = NOW()
+     WHERE id = $2
+     RETURNING id, kyc_status`,
+    [parsed.data.status, req.params.id]
+  );
+
+  if (!rows.length) {
+    res.status(404).json({ error: "User not found" });
+    return;
+  }
+  res.status(200).json({ data: rows[0] });
 });
 
 export default router;
