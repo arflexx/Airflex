@@ -17,7 +17,7 @@ const nextConfig = {
     ignoreDuringBuilds: true,
   },
   // The docs site is deployed standalone at docs.airflex.io (see
-  // .github/workflows/frontend-ci.yml), so it does not need to share a
+  // .github/workflows/docs-ci.yml), so it does not need to share a
   // basePath with the marketing/app frontend in ../../frontend.
 };
 
