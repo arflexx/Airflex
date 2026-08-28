@@ -55,7 +55,7 @@ jobs:
 
       # Upload the compiled artefact so other jobs / releases can use it
       - name: Upload server build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: server-dist
           path: server/dist/
@@ -100,7 +100,7 @@ jobs:
         run: npm run build
 
       - name: Upload frontend build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: frontend-build
           path: frontend/.next/
@@ -158,7 +158,7 @@ jobs:
         run: cargo build --release --target wasm32v1-none
 
       - name: Upload WASM artefact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: escrow-wasm
           path: contracts/target/wasm32v1-none/release/airflex_escrow.wasm
