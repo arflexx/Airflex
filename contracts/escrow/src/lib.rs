@@ -1,9 +1,18 @@
 #![no_std]
+#![allow(clippy::too_many_arguments)]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short,
+    contract, contractimpl, contracttype, symbol_short,
     token, Address, Env, Symbol, Vec,
 };
+
+// ---------------------------------------------------------------------------
+// TTL constants
+// ---------------------------------------------------------------------------
+
+pub const MIN_TTL_LEDGERS: u32 = 2_592_000; // 30 days at 1s/ledger
+pub const MAX_TTL_LEDGERS: u32 = 2_592_000; // 30 days
+pub const SHORT_TTL_LEDGERS: u32 = 604_800; // 7 days
 
 // ---------------------------------------------------------------------------
 // Storage keys
@@ -15,6 +24,9 @@ pub enum DataKey {
     TradeCounter,
     Trade(u64),
     Paused,
+    AllowedToken(Address),
+    TradeFillCounter(u64),
+    SubEscrow(u64, u64),
 }
 
 // ---------------------------------------------------------------------------
@@ -100,6 +112,10 @@ fn get_admin(env: &Env) -> Address {
         .expect("not initialised")
 }
 
+fn bump_instance_ttl(env: &Env) {
+    env.storage().instance().extend_ttl(MIN_TTL_LEDGERS, MAX_TTL_LEDGERS);
+}
+
 // ---------------------------------------------------------------------------
 // Contract
 // ---------------------------------------------------------------------------
@@ -113,7 +129,8 @@ impl EscrowContract {
     // Initialise
     // -----------------------------------------------------------------------
 
-    pub fn initialize(env: Env, admin: Address) {
+    pub fn initialize(env: Env, admin: Address, allowed_tokens: Vec<Address>) {
+        bump_instance_ttl(&env);
         if env.storage().instance().has(&DataKey::Admin) {
             panic!("already initialised");
         }
@@ -121,8 +138,13 @@ impl EscrowContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::TradeCounter, &0u64);
         env.storage().instance().set(&DataKey::Paused, &false);
+        for token in allowed_tokens.iter() {
+            env.storage()
+                .instance()
+                .set(&DataKey::AllowedToken(token.clone()), &true);
+        }
         // Bump instance TTL so it survives long-running trades
-        env.storage().instance().extend_ttl(17_280, 17_280 * 30);
+        env.storage().instance().extend_ttl(MIN_TTL_LEDGERS, MAX_TTL_LEDGERS);
     }
 
     // -----------------------------------------------------------------------
@@ -132,6 +154,7 @@ impl EscrowContract {
     /// Halts all state-mutating operations. Only callable by admin.
     /// Emits a `topics: ["contract", "paused"]` event.
     pub fn pause(env: Env) {
+        bump_instance_ttl(&env);
         let admin = get_admin(&env);
         admin.require_auth();
 
@@ -144,6 +167,7 @@ impl EscrowContract {
     /// Resumes normal operations. Only callable by admin.
     /// Emits a `topics: ["contract", "unpaused"]` event.
     pub fn unpause(env: Env) {
+        bump_instance_ttl(&env);
         let admin = get_admin(&env);
         admin.require_auth();
 
@@ -165,11 +189,12 @@ impl EscrowContract {
         asset_type: Symbol,
         expires_at: u64,
     ) -> u64 {
-        require_not_paused(&env);
+        bump_instance_ttl(&env);
         seller.require_auth();
+        require_not_paused(&env);
 
         if !env.storage().instance().has(&DataKey::AllowedToken(token.clone())) {
-            return Err(Error::UnsupportedToken);
+            panic!("unsupported token");
         }
 
         if amount <= 0 {
@@ -201,11 +226,11 @@ impl EscrowContract {
         };
 
         env.storage().persistent().set(&DataKey::Trade(id), &trade);
-        env.storage().persistent().extend_ttl(&DataKey::Trade(id), 17_280, 17_280 * 30);
+        env.storage().persistent().extend_ttl(&DataKey::Trade(id), MIN_TTL_LEDGERS, MAX_TTL_LEDGERS);
 
         env.events().publish((topic_created(), asset_type), (id, seller, amount));
 
-        Ok(id)
+        id
     }
 
     // -----------------------------------------------------------------------
@@ -213,15 +238,25 @@ impl EscrowContract {
     // -----------------------------------------------------------------------
 
     pub fn add_allowed_token(env: Env, token: Address) {
+        bump_instance_ttl(&env);
         let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("not initialised");
         admin.require_auth();
         env.storage().instance().set(&DataKey::AllowedToken(token), &true);
     }
 
     pub fn remove_allowed_token(env: Env, token: Address) {
+        bump_instance_ttl(&env);
         let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("not initialised");
         admin.require_auth();
         env.storage().instance().remove(&DataKey::AllowedToken(token));
+    }
+
+    /// Admin utility to manually extend a trade's TTL.
+    pub fn bump_trade(env: Env, trade_id: u64) {
+        bump_instance_ttl(&env);
+        let admin = get_admin(&env);
+        admin.require_auth();
+        env.storage().persistent().extend_ttl(&DataKey::Trade(trade_id), MIN_TTL_LEDGERS, MAX_TTL_LEDGERS);
     }
 
     // -----------------------------------------------------------------------
@@ -232,15 +267,17 @@ impl EscrowContract {
     ///
     /// Transfers `trade.amount` tokens from `buyer` → contract.
     /// Sets trade status to `Locked`.
-    pub fn deposit_to_escrow(env: Env, buyer: Address, trade_id: u64) {
-        require_not_paused(&env);
+    pub fn deposit_to_escrow(env: Env, buyer: Address, trade_id: u64, fill_amount: i128) {
+        bump_instance_ttl(&env);
         buyer.require_auth();
+        require_not_paused(&env);
 
         let mut trade: TradeOffer = env
             .storage()
             .persistent()
             .get(&DataKey::Trade(trade_id))
             .expect("trade not found");
+        env.storage().persistent().extend_ttl(&DataKey::Trade(trade_id), MIN_TTL_LEDGERS, MAX_TTL_LEDGERS);
 
         if trade.status != TradeStatus::Open && trade.status != TradeStatus::PartiallyFilled {
             panic!("trade is not open");
@@ -296,15 +333,28 @@ impl EscrowContract {
 
     /// Releases escrowed funds to the seller once delivery is confirmed.
     ///
-    /// Only the admin account can call this to prevent premature release.
-    pub fn release_payment(env: Env, trade_id: u64) {
+    /// The admin address (set at `initialize`) must authorise this call via
+    /// `require_auth()`. In production the admin is the platform server signing
+    /// key that verifies off-chain delivery before releasing escrow. In a more
+    /// decentralised future this role could move to a multi-sig or oracle contract.
+    pub fn release_payment(env: Env, trade_id: u64, fill_id: u64) {
+        bump_instance_ttl(&env);
         require_not_paused(&env);
 
         let admin = get_admin(&env);
         admin.require_auth();
 
-        let mut trade: TradeOffer = env.storage().persistent().get(&DataKey::Trade(trade_id)).expect("trade not found");
-        
+        let mut trade: TradeOffer = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Trade(trade_id))
+            .expect("trade not found");
+        env.storage().persistent().extend_ttl(&DataKey::Trade(trade_id), MIN_TTL_LEDGERS, MAX_TTL_LEDGERS);
+
+        if trade.status != TradeStatus::Locked && trade.status != TradeStatus::PartiallyFilled {
+            panic!("trade is not locked");
+        }
+
         let mut sub_escrow: SubEscrow = env
             .storage()
             .persistent()
@@ -337,6 +387,9 @@ impl EscrowContract {
                 }
             }
             if all_released {
+                env.storage().persistent().extend_ttl(&DataKey::Trade(trade_id), SHORT_TTL_LEDGERS, SHORT_TTL_LEDGERS);
+            }
+            if all_released {
                 trade.status = TradeStatus::Completed;
                 env.storage().persistent().set(&DataKey::Trade(trade_id), &trade);
             }
@@ -354,6 +407,7 @@ impl EscrowContract {
         caller.require_auth();
 
         let admin = get_admin(&env);
+        let is_admin = caller == admin;
 
         let mut trade: TradeOffer = env.storage().persistent().get(&DataKey::Trade(trade_id)).expect("trade not found");
 
@@ -541,6 +595,73 @@ mod test {
     }
 
     #[test]
+    #[should_panic(expected = "HostError: Error(Auth, InvalidAction)")]
+    fn test_create_listing_unauthorised_seller_rejected() {
+        let (env, client, _admin, seller, _buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let impersonator = Address::generate(&env);
+        let expires_at = 1_000_000u64 + 86_400;
+
+        env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &impersonator,
+            invoke: &client.mock_invoke(
+                &client.create_listing,
+                (
+                    &seller,
+                    &token,
+                    &500_0000000i128,
+                    &symbol_short!("AIRTIME"),
+                    &expires_at,
+                ),
+            ),
+        }]);
+
+        client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &symbol_short!("AIRTIME"),
+            &expires_at,
+        );
+    }
+
+    #[test]
+    fn test_create_listing_authorised_seller_succeeds() {
+        let (env, client, _admin, seller, _buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let expires_at = 1_000_000u64 + 86_400;
+
+        env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &seller,
+            invoke: &client.mock_invoke(
+                &client.create_listing,
+                (
+                    &seller,
+                    &token,
+                    &500_0000000i128,
+                    &symbol_short!("AIRTIME"),
+                    &expires_at,
+                ),
+            ),
+        }]);
+
+        let trade_id = client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &symbol_short!("AIRTIME"),
+            &expires_at,
+        );
+
+        assert_eq!(trade_id, 1);
+        let trade = client.get_trade(&trade_id);
+        assert_eq!(trade.status, TradeStatus::Open);
+        assert_eq!(trade.seller, seller);
+    }
+
+    #[test]
     fn test_deposit_to_escrow_full_fill() {
         let (env, client, _admin, seller, buyer, token) = setup();
         env.ledger().with_mut(|l| l.timestamp = 1_000_000);
@@ -552,6 +673,61 @@ mod test {
             &symbol_short!("AIRTIME"),
             &(1_000_000 + 86_400),
         );
+
+        client.deposit_to_escrow(&buyer, &trade_id, &500_0000000i128);
+
+        let trade = client.get_trade(&trade_id);
+        assert_eq!(trade.status, TradeStatus::Locked);
+        assert_eq!(trade.filled_amount, 500_0000000i128);
+    }
+
+    #[test]
+    #[should_panic(expected = "HostError: Error(Auth, InvalidAction)")]
+    fn test_deposit_to_escrow_unauthorised_buyer_rejected() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let trade_id = client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &symbol_short!("AIRTIME"),
+            &(1_000_000 + 86_400),
+        );
+
+        let impersonator = Address::generate(&env);
+
+        env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &impersonator,
+            invoke: &client.mock_invoke(
+                &client.deposit_to_escrow,
+                (&buyer, &trade_id, &500_0000000i128),
+            ),
+        }]);
+
+        client.deposit_to_escrow(&buyer, &trade_id, &500_0000000i128);
+    }
+
+    #[test]
+    fn test_deposit_to_escrow_authorised_buyer_succeeds() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let trade_id = client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &symbol_short!("AIRTIME"),
+            &(1_000_000 + 86_400),
+        );
+
+        env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &buyer,
+            invoke: &client.mock_invoke(
+                &client.deposit_to_escrow,
+                (&buyer, &trade_id, &500_0000000i128),
+            ),
+        }]);
 
         client.deposit_to_escrow(&buyer, &trade_id, &500_0000000i128);
 
@@ -742,7 +918,7 @@ mod test {
 
         client.pause();
 
-        client.deposit_to_escrow(&buyer, &trade_id);
+        client.deposit_to_escrow(&buyer, &trade_id, &500_0000000i128);
     }
 
     #[test]
@@ -758,11 +934,11 @@ mod test {
             &symbol_short!("DATA"),
             &(1_000_000 + 86_400),
         );
-        client.deposit_to_escrow(&buyer, &trade_id);
+        client.deposit_to_escrow(&buyer, &trade_id, &500_0000000i128);
 
         client.pause();
 
-        client.release_payment(&trade_id);
+        client.release_payment(&trade_id, &1);
     }
 
     #[test]
@@ -778,7 +954,7 @@ mod test {
             &symbol_short!("AIRTIME"),
             &(1_000_000 + 86_400),
         );
-        client.deposit_to_escrow(&buyer, &trade_id);
+        client.deposit_to_escrow(&buyer, &trade_id, &500_0000000i128);
 
         // Advance past expiry
         env.ledger().with_mut(|l| l.timestamp = 1_000_000 + 86_401);
@@ -801,7 +977,7 @@ mod test {
             &symbol_short!("AIRTIME"),
             &(1_000_000 + 86_400),
         );
-        client.deposit_to_escrow(&buyer, &trade_id);
+        client.deposit_to_escrow(&buyer, &trade_id, &500_0000000i128);
 
         client.pause();
 
@@ -855,10 +1031,66 @@ mod test {
         );
 
         // And deposit
-        client.deposit_to_escrow(&buyer, &trade_id);
+        client.deposit_to_escrow(&buyer, &trade_id, &500_0000000i128);
 
         let trade = client.get_trade(&trade_id);
         assert_eq!(trade.status, TradeStatus::Locked);
+    }
+
+    #[test]
+    fn test_release_payment_admin_on_locked_trade() {
+        let (env, client, admin, seller, buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let trade_id = client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &symbol_short!("DATA"),
+            &(1_000_000 + 86_400),
+        );
+        client.deposit_to_escrow(&buyer, &trade_id, &500_0000000i128);
+
+        let trade_before = client.get_trade(&trade_id);
+        assert_eq!(trade_before.status, TradeStatus::Locked);
+
+        env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &admin,
+            invoke: &client.mock_invoke(&client.release_payment, (&trade_id, &1u64)),
+        }]);
+
+        client.release_payment(&trade_id, &1);
+
+        let trade = client.get_trade(&trade_id);
+        assert_eq!(trade.status, TradeStatus::Completed);
+
+        let token_client = TokenClient::new(&env, &token);
+        assert_eq!(token_client.balance(&seller), 500_0000000i128);
+    }
+
+    #[test]
+    #[should_panic(expected = "HostError: Error(Auth, InvalidAction)")]
+    fn test_release_payment_non_admin_rejected() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let non_admin = Address::generate(&env);
+
+        let trade_id = client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &symbol_short!("DATA"),
+            &(1_000_000 + 86_400),
+        );
+        client.deposit_to_escrow(&buyer, &trade_id, &500_0000000i128);
+
+        env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &non_admin,
+            invoke: &client.mock_invoke(&client.release_payment, (&trade_id, &1u64)),
+        }]);
+
+        client.release_payment(&trade_id, &1);
     }
 
     #[test]
