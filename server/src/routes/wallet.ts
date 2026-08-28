@@ -2,6 +2,7 @@ import { Router } from "express";
 import pool from "../db";
 import { authenticate, AuthenticatedRequest } from "../middleware/authenticate";
 import { getWalletBalance } from "../services/stellar";
+import { NotificationService } from "../services/notifications";
 
 // ---------------------------------------------------------------------------
 // OpenTelemetry tracer (no-op fallback when packages not installed)
@@ -298,6 +299,11 @@ router.post(
     // 2. Initiate a Paystack transfer
     // 3. Update the wallet balance after successful transfer
     // 4. Handle transfer failures and retries
+
+    // Notify the user that their withdrawal was processed (best-effort)
+    void NotificationService.send(userId, "WITHDRAWAL_PROCESSED", {
+      amount: amountNum,
+    });
 
     res.status(200).json({ success: true });
   }

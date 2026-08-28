@@ -2,16 +2,16 @@
   "name": "@airflex/docs-site",
   "version": "0.1.0",
   "private": true,
-  "description": "Public documentation site for AirFlex — API reference, contract reference, SDK reference, and integration guides.",
+  "description": "Public documentation site for AirFlex \u2014 API reference, contract reference, SDK reference, and integration guides.",
   "scripts": {
     "generate": "npm run generate:api && npm run generate:contracts",
     "generate:api": "node scripts/generate-api-reference.mjs",
     "generate:contracts": "node scripts/generate-contract-reference.mjs",
     "predev": "npm run generate",
     "prebuild": "npm run generate",
-    "dev": "next dev -p 3002",
-    "build": "next build",
-    "start": "next start -p 3002",
+    "dev": "node init && next dev -p 3002",
+    "build": "node init && next build",
+    "start": "node init && next start -p 3002",
     "lint": "next lint"
   },
   "dependencies": {
