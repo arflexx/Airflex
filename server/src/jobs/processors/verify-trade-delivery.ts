@@ -21,6 +21,7 @@ import type { Job } from "../queue";
 import pool from "../../db";
 import { releasePayment } from "../../services/stellar";
 import { SseEmitter } from "../../services/sseEmitter";
+import { NotificationService } from "../../services/notifications";
 import type { TradeOffer } from "../../types/trade";
 import logger from "../../utils/logger";
 
@@ -136,6 +137,11 @@ export async function verifyTradeDeliveryProcessor(
     txHash,
     message: "Payment has been released to the seller.",
   });
+
+  // Out-of-band SMS to both parties (best-effort)
+  void NotificationService.sendToMany(participants, "TRADE_COMPLETED", {
+    tradeId,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -184,4 +190,10 @@ async function escalateToDisputed(trade: TradeOffer, reason: string): Promise<vo
     reason,
     message:  `Trade ${tradeId} escalated to Disputed after all retry attempts failed.`,
   });
+
+  // Out-of-band SMS to both parties and all admins (best-effort)
+  void NotificationService.sendToMany(participants, "DISPUTE_FILED", {
+    tradeId,
+  });
+  void NotificationService.sendToAdmins("DISPUTE_FILED", { tradeId });
 }

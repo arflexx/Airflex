@@ -8,6 +8,7 @@ import {
   triggerVerification,
   VerificationError,
 } from "../services/tradeVerification";
+import { NotificationService } from "../services/notifications";
 import type { TradeOffer } from "../types/trade";
 import {
   createTradeSchema,
@@ -200,6 +201,11 @@ router.post(
        RETURNING *`,
       [buyerId, txHash, id]
     );
+
+    // Notify the seller that their trade has been locked (best-effort)
+    void NotificationService.send(trade.seller_id, "TRADE_LOCKED", {
+      tradeId: id,
+    });
 
     res.status(200).json({ data: updated[0] });
   }

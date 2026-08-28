@@ -213,6 +213,11 @@ async function runVerificationWithRetry(
       message: "Payment has been released to the seller.",
     });
 
+    // Out-of-band SMS to both parties (best-effort)
+    void NotificationService.sendToMany(participants, "TRADE_COMPLETED", {
+      tradeId,
+    });
+
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log("error", tradeId, `Attempt ${attempt} failed: ${message}`);
@@ -283,6 +288,12 @@ async function escalateToDisputed(
     reason,
     message: `Trade ${tradeId} escalated to Disputed after ${MAX_RETRIES} failed release attempts.`,
   });
+
+  // Out-of-band SMS to both parties and all admins (best-effort)
+  void NotificationService.sendToMany(participants, "DISPUTE_FILED", {
+    tradeId,
+  });
+  void NotificationService.sendToAdmins("DISPUTE_FILED", { tradeId });
 }
 
 // ---------------------------------------------------------------------------

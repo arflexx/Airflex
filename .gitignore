@@ -149,3 +149,6 @@ vite.config.ts.timestamp-*
 # Pull request description docs (local only, not for version control)
 pr-*.md
 PULL_REQUEST.md
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat
