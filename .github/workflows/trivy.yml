@@ -56,7 +56,7 @@ jobs:
       # Scan the built image for OS and library CVEs.
       # The build is failed immediately on any CRITICAL severity finding.
       - name: Scan server image with Trivy
-        uses: aquasecurity/trivy-action@0.30.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: airflex-server:${{ github.sha }}
           format: sarif
@@ -92,7 +92,7 @@ jobs:
       #   - Infrastructure-as-code misconfigurations
       #   - Vulnerable library versions declared in manifests
       - name: Scan filesystem with Trivy
-        uses: aquasecurity/trivy-action@0.30.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
