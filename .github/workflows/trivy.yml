@@ -42,7 +42,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Build the server Docker image locally so Trivy can scan it.
       # The image is never pushed to a registry in this job.
@@ -85,7 +85,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Scan the repository for:
       #   - Hardcoded secrets / credentials

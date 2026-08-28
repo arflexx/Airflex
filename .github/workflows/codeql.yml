@@ -43,7 +43,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Initialise the CodeQL tools and create the database.
       # The "javascript" language covers TypeScript as well.
