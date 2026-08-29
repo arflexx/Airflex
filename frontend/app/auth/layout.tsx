@@ -1,6 +1,21 @@
 import type { ReactNode } from "react";
 import ThemeToggle from "../../components/ThemeToggle";
 
+import type { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "Sign in",
+  description:
+    "Create an AirFlex account or sign in with your phone number to start trading airtime.",
+  openGraph: {
+    title: "Sign in",
+    description:
+      "Create an AirFlex account or sign in with your phone number to start trading airtime.",
+  },
+  // Private to the signed-in user: useful to them, useless in an index.
+  robots: { index: false, follow: false },
+};
+
 /**
  * Auth layout — centred card on a violet-tinted background.
  * The shared Navbar is already rendered by the root layout above this.

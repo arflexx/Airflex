@@ -35,6 +35,8 @@ import pool from "../db";
 import { releasePayment } from "./stellar";
 import { SseEmitter } from "./sseEmitter";
 import { WalletService } from "./wallet";
+import { creditReferralReward } from "./referrals";
+import { NotificationService } from "./notifications";
 import type { TradeOffer } from "../types/trade";
 
 // ---------------------------------------------------------------------------
@@ -185,6 +187,8 @@ async function runVerificationWithRetry(
         [tradeId, feeAmount, sellerNetAmount]
       );
       updated = result.rows;
+      await creditReferralReward(client, settledTrade.buyer_id, tradeId);
+      await creditReferralReward(client, settledTrade.seller_id, tradeId);
       await client.query("COMMIT");
     } catch (settlementError) {
       await client.query("ROLLBACK");
@@ -208,6 +212,11 @@ async function runVerificationWithRetry(
       status:  "Completed",
       txHash,
       message: "Payment has been released to the seller.",
+    });
+
+    // Out-of-band SMS to both parties (best-effort)
+    void NotificationService.sendToMany(participants, "TRADE_COMPLETED", {
+      tradeId,
     });
 
   } catch (err) {
@@ -280,6 +289,12 @@ async function escalateToDisputed(
     reason,
     message: `Trade ${tradeId} escalated to Disputed after ${MAX_RETRIES} failed release attempts.`,
   });
+
+  // Out-of-band SMS to both parties and all admins (best-effort)
+  void NotificationService.sendToMany(participants, "DISPUTE_FILED", {
+    tradeId,
+  });
+  void NotificationService.sendToAdmins("DISPUTE_FILED", { tradeId });
 }
 
 // ---------------------------------------------------------------------------

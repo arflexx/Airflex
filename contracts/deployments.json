@@ -1,0 +1,12 @@
+{
+  "testnet": {
+    "escrow": "CCBJ235OCBFZXBFSUUUT4PMG7RRCAXZXMUEB2L7CTTQ5NRSNO4P2SLNP",
+    "marketplace": "",
+    "token": ""
+  },
+  "mainnet": {
+    "escrow": "",
+    "marketplace": "",
+    "token": ""
+  }
+}

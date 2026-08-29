@@ -1,0 +1,142 @@
+version: 2
+
+updates:
+  # -------------------------------------------------------------------------
+  # Server — Node/npm dependencies
+  # -------------------------------------------------------------------------
+  - package-ecosystem: "npm"
+    directory: "/server"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    target-branch: "main"
+    assignees:
+      - "airflex/maintainers"
+    reviewers:
+      - "airflex/maintainers"
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(dev-deps)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "server"
+    ignore:
+      # pg@8 is pinned until our connection-pool config is validated on pg@9
+      - dependency-name: "pg"
+        update-types: ["version-update:semver-major"]
+      # stellar-sdk major versions may contain breaking Soroban API changes
+      - dependency-name: "@stellar/stellar-sdk"
+        update-types: ["version-update:semver-major"]
+
+  # -------------------------------------------------------------------------
+  # Frontend — Node/npm dependencies
+  # -------------------------------------------------------------------------
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    target-branch: "main"
+    assignees:
+      - "airflex/maintainers"
+    reviewers:
+      - "airflex/maintainers"
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(dev-deps)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "frontend"
+    ignore:
+      # Next.js major versions require manual upgrade testing
+      - dependency-name: "next"
+        update-types: ["version-update:semver-major"]
+
+  # -------------------------------------------------------------------------
+  # Root workspace — Node/npm dependencies
+  # -------------------------------------------------------------------------
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    target-branch: "main"
+    assignees:
+      - "airflex/maintainers"
+    reviewers:
+      - "airflex/maintainers"
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(dev-deps)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "root"
+
+  # -------------------------------------------------------------------------
+  # Contracts — Cargo (Rust) dependencies
+  # Security-only, daily — Soroban SDK breaking changes are manual upgrades.
+  # -------------------------------------------------------------------------
+  - package-ecosystem: "cargo"
+    directory: "/contracts"
+    schedule:
+      interval: "daily"
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    target-branch: "main"
+    assignees:
+      - "airflex/maintainers"
+    reviewers:
+      - "airflex/maintainers"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "contracts"
+      - "security"
+    # Only open PRs for security advisories on Cargo packages.
+    # Minor/patch bumps of soroban-sdk are intentionally manual because even
+    # patch versions may include breaking ledger-entry changes requiring
+    # re-deployment of the contracts.
+    ignore:
+      - dependency-name: "soroban-sdk"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
+
+  # -------------------------------------------------------------------------
+  # GitHub Actions — workflow dependencies
+  # -------------------------------------------------------------------------
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+      time: "08:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    target-branch: "main"
+    assignees:
+      - "airflex/maintainers"
+    reviewers:
+      - "airflex/maintainers"
+    commit-message:
+      prefix: "chore(actions)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "github-actions"

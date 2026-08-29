@@ -1,0 +1,4 @@
+/target/
+
+# Keep the workspace lockfile versioned for reproducible contract builds.
+!Cargo.lock

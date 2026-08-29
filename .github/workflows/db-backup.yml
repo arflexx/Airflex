@@ -1,0 +1,225 @@
+name: Database Backup
+
+# ---------------------------------------------------------------------------
+# Triggers
+# ---------------------------------------------------------------------------
+# Automatic: daily at 02:00 UTC.
+# Manual:    workflow_dispatch with optional `reason` field for the audit log.
+# ---------------------------------------------------------------------------
+on:
+  schedule:
+    - cron: "0 2 * * *"   # 02:00 UTC daily
+
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Reason for manual backup (recorded in job summary)"
+        required: false
+        default: "Manual backup triggered"
+
+# Only one backup job at a time — prevents duplicate uploads if a manual
+# dispatch overlaps with the scheduled run.
+concurrency:
+  group: db-backup
+  cancel-in-progress: false
+
+# ---------------------------------------------------------------------------
+# Required GitHub secrets:
+#   DATABASE_URL              PostgreSQL connection string (production)
+#   BACKUP_S3_BUCKET          Target S3-compatible bucket name
+#   BACKUP_S3_ENDPOINT        S3 endpoint URL (e.g. https://s3.amazonaws.com)
+#   BACKUP_S3_REGION          AWS / S3 region (e.g. us-east-1)
+#   AWS_ACCESS_KEY_ID         IAM key with s3:PutObject on the bucket
+#   AWS_SECRET_ACCESS_KEY     IAM secret for the key above
+#   BACKUP_ENCRYPTION_KEY     AES-256 passphrase for openssl enc (min 32 chars)
+#   SLACK_BACKUP_WEBHOOK_URL  Incoming webhook URL for #ops notifications
+# ---------------------------------------------------------------------------
+
+jobs:
+  backup:
+    name: pg_dump → encrypt → S3
+    runs-on: ubuntu-latest
+
+    steps:
+      # -----------------------------------------------------------------
+      # 1. Install tooling
+      # -----------------------------------------------------------------
+      - name: Install PostgreSQL client tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client
+
+      - name: Install AWS CLI v2
+        run: |
+          curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o awscliv2.zip
+          unzip -q awscliv2.zip
+          sudo ./aws/install --update
+          aws --version
+
+      # -----------------------------------------------------------------
+      # 2. Dump the database
+      # -----------------------------------------------------------------
+      - name: Create database dump
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          TIMESTAMP=$(date -u +"%Y%m%dT%H%M%SZ")
+          DUMP_FILE="airflex-backup-${TIMESTAMP}.sql"
+          echo "DUMP_FILE=${DUMP_FILE}" >> "$GITHUB_ENV"
+          echo "TIMESTAMP=${TIMESTAMP}"  >> "$GITHUB_ENV"
+
+          echo "Starting pg_dump at $(date -u)..."
+          pg_dump \
+            --no-password \
+            --format=plain \
+            --no-owner \
+            --no-acl \
+            "$DATABASE_URL" \
+            > "${DUMP_FILE}"
+
+          DUMP_SIZE=$(du -sh "${DUMP_FILE}" | cut -f1)
+          echo "DUMP_SIZE=${DUMP_SIZE}" >> "$GITHUB_ENV"
+          echo "Dump complete: ${DUMP_FILE} (${DUMP_SIZE})"
+
+      # -----------------------------------------------------------------
+      # 3. Compress the dump
+      # -----------------------------------------------------------------
+      - name: Compress dump
+        run: |
+          gzip "${DUMP_FILE}"
+          COMPRESSED_FILE="${DUMP_FILE}.gz"
+          echo "COMPRESSED_FILE=${COMPRESSED_FILE}" >> "$GITHUB_ENV"
+          COMPRESSED_SIZE=$(du -sh "${COMPRESSED_FILE}" | cut -f1)
+          echo "COMPRESSED_SIZE=${COMPRESSED_SIZE}" >> "$GITHUB_ENV"
+          echo "Compressed: ${COMPRESSED_FILE} (${COMPRESSED_SIZE})"
+
+      # -----------------------------------------------------------------
+      # 4. Encrypt with AES-256 (openssl)
+      #    Produces: airflex-backup-<timestamp>.sql.gz.enc
+      # -----------------------------------------------------------------
+      - name: Encrypt dump (AES-256-CBC)
+        env:
+          BACKUP_ENCRYPTION_KEY: ${{ secrets.BACKUP_ENCRYPTION_KEY }}
+        run: |
+          ENCRYPTED_FILE="${COMPRESSED_FILE}.enc"
+          echo "ENCRYPTED_FILE=${ENCRYPTED_FILE}" >> "$GITHUB_ENV"
+
+          openssl enc -aes-256-cbc \
+            -pbkdf2 \
+            -iter 600000 \
+            -in  "${COMPRESSED_FILE}" \
+            -out "${ENCRYPTED_FILE}" \
+            -pass "pass:${BACKUP_ENCRYPTION_KEY}"
+
+          # Remove the unencrypted compressed file immediately
+          rm -f "${COMPRESSED_FILE}"
+
+          ENCRYPTED_SIZE=$(du -sh "${ENCRYPTED_FILE}" | cut -f1)
+          echo "ENCRYPTED_SIZE=${ENCRYPTED_SIZE}" >> "$GITHUB_ENV"
+          echo "Encrypted: ${ENCRYPTED_FILE} (${ENCRYPTED_SIZE})"
+
+      # -----------------------------------------------------------------
+      # 5. Upload to S3-compatible bucket
+      #    Object key: backups/YYYY/MM/DD/<filename>
+      # -----------------------------------------------------------------
+      - name: Upload to S3
+        env:
+          AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION:    ${{ secrets.BACKUP_S3_REGION }}
+          BACKUP_S3_BUCKET:      ${{ secrets.BACKUP_S3_BUCKET }}
+          BACKUP_S3_ENDPOINT:    ${{ secrets.BACKUP_S3_ENDPOINT }}
+        run: |
+          YEAR=$(date  -u +"%Y")
+          MONTH=$(date -u +"%m")
+          DAY=$(date   -u +"%d")
+          S3_KEY="backups/${YEAR}/${MONTH}/${DAY}/${ENCRYPTED_FILE}"
+          echo "S3_KEY=${S3_KEY}" >> "$GITHUB_ENV"
+
+          aws s3 cp "${ENCRYPTED_FILE}" \
+            "s3://${BACKUP_S3_BUCKET}/${S3_KEY}" \
+            --endpoint-url "${BACKUP_S3_ENDPOINT}" \
+            --storage-class STANDARD_IA \
+            --metadata "timestamp=${TIMESTAMP},service=airflex,encrypted=aes-256-cbc"
+
+          echo "Uploaded to s3://${BACKUP_S3_BUCKET}/${S3_KEY}"
+
+      # -----------------------------------------------------------------
+      # 6. Clean up local files
+      # -----------------------------------------------------------------
+      - name: Clean up local files
+        if: always()
+        run: |
+          rm -f "${DUMP_FILE}" "${COMPRESSED_FILE}" "${ENCRYPTED_FILE}" || true
+
+      # -----------------------------------------------------------------
+      # 7. Notify Slack — success
+      # -----------------------------------------------------------------
+      - name: Notify Slack (success)
+        if: success()
+        env:
+          SLACK_BACKUP_WEBHOOK_URL: ${{ secrets.SLACK_BACKUP_WEBHOOK_URL }}
+        run: |
+          TRIGGER="${{ github.event_name }}"
+          REASON="${{ github.event.inputs.reason || 'Scheduled daily backup' }}"
+
+          curl -fsSL -X POST "${SLACK_BACKUP_WEBHOOK_URL}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"text\": \":white_check_mark: *AirFlex DB Backup — Success*\",
+              \"attachments\": [{
+                \"color\": \"good\",
+                \"fields\": [
+                  {\"title\": \"Timestamp\",  \"value\": \"${TIMESTAMP}\",        \"short\": true},
+                  {\"title\": \"Size\",        \"value\": \"${ENCRYPTED_SIZE}\",   \"short\": true},
+                  {\"title\": \"S3 Key\",      \"value\": \"\`${S3_KEY}\`\",       \"short\": false},
+                  {\"title\": \"Trigger\",     \"value\": \"${TRIGGER}\",          \"short\": true},
+                  {\"title\": \"Reason\",      \"value\": \"${REASON}\",           \"short\": true}
+                ]
+              }]
+            }"
+
+      # -----------------------------------------------------------------
+      # 8. Notify Slack — failure
+      # -----------------------------------------------------------------
+      - name: Notify Slack (failure)
+        if: failure()
+        env:
+          SLACK_BACKUP_WEBHOOK_URL: ${{ secrets.SLACK_BACKUP_WEBHOOK_URL }}
+        run: |
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          curl -fsSL -X POST "${SLACK_BACKUP_WEBHOOK_URL}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"text\": \":x: *AirFlex DB Backup — FAILED*\",
+              \"attachments\": [{
+                \"color\": \"danger\",
+                \"fields\": [
+                  {\"title\": \"Timestamp\", \"value\": \"${TIMESTAMP}\",   \"short\": true},
+                  {\"title\": \"Run URL\",   \"value\": \"${RUN_URL}\",      \"short\": false}
+                ]
+              }]
+            }"
+
+      # -----------------------------------------------------------------
+      # 9. Job summary
+      # -----------------------------------------------------------------
+      - name: Write job summary
+        if: always()
+        run: |
+          STATUS="${{ job.status }}"
+          TRIGGER="${{ github.event_name }}"
+          REASON="${{ github.event.inputs.reason || 'Scheduled daily backup' }}"
+
+          echo "## Database Backup — ${STATUS}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Status    | ${STATUS}           |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Timestamp | \`${TIMESTAMP}\`    |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Dump size | ${DUMP_SIZE:-n/a}   |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Enc size  | ${ENCRYPTED_SIZE:-n/a} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| S3 key    | \`${S3_KEY:-n/a}\`  |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Trigger   | ${TRIGGER}          |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Reason    | ${REASON}           |" >> "$GITHUB_STEP_SUMMARY"

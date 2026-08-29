@@ -127,7 +127,7 @@ function buildSwaggerHtml(specUrl: string): string {
  * Gated behind NODE_ENV !== "production".
  */
 if (process.env["NODE_ENV"] !== "production") {
-  router.get("/test-async-error", (_req: Request, res: Response) => {
+  router.get(["/test-async-error", "/v1/test-async-error"], (_req: Request, res: Response) => {
     throw new Error("async test");
   });
 }

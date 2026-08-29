@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
 
-export type WalletTransactionType = "trade_settlement" | "platform_fee";
+export type WalletTransactionType = "trade_settlement" | "platform_fee" | "referral_reward";
 
 export interface WalletTransactionInput {
   userId: string;

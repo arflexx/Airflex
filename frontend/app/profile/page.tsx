@@ -3,6 +3,11 @@
 import { useState, useEffect, useCallback } from "react";
 import { getToken, getUser, isAuthenticated } from "../lib/auth";
 import type { TradeOffer, TradeStatus } from "../../../server/src/types/trade";
+import { Badge } from "../../components/ui/Badge";
+import { Button } from "../../components/ui/Button";
+import { Card } from "../../components/ui/Card";
+import { Spinner } from "../../components/ui/Spinner";
+import { StellarExplorerLink } from "../../components/StellarExplorerLink";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -14,6 +19,7 @@ interface ProfileData {
   createdAt: string;
   totalTradesCompleted: number;
   stellarPublicKey: string;
+  kycStatus: "unverified" | "pending" | "verified" | "rejected";
 }
 
 interface ProfileResponse {
@@ -81,42 +87,9 @@ function formatDateTime(iso: string): string {
 // Sub-components
 // ---------------------------------------------------------------------------
 
-function Spinner({ label = "Loading…" }: { label?: string }) {
-  return (
-    <svg
-      className="h-5 w-5 animate-spin text-violet-600 dark:text-violet-400"
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-label={label}
-      role="img"
-    >
-      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
-    </svg>
-  );
-}
-
-/** Status badge — matches design system used in TradeDetailClient */
 function StatusBadge({ status }: { status: TradeStatus }) {
-  const styles: Record<TradeStatus, string> = {
-    Active:    "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300",
-    Locked:    "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
-    Completed: "bg-blue-100  text-blue-700  dark:bg-blue-900/40  dark:text-blue-300",
-    Cancelled: "bg-gray-100  text-gray-500  dark:bg-gray-700     dark:text-gray-400",
-  };
-
-  // Display "Disputed" in the UI for Locked trades to match filter label
-  const label = status === "Locked" ? "Disputed" : status;
-
-  return (
-    <span
-      className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold ${
-        styles[status] ?? "bg-gray-100 text-gray-500"
-      }`}
-    >
-      {label}
-    </span>
-  );
+  const variant = status === "Active" ? "Open" : status;
+  return <Badge variant={variant as any} />;
 }
 
 /** A single stat card in the profile summary */
@@ -130,11 +103,11 @@ function StatCard({
   icon: string;
 }) {
   return (
-    <div className="flex flex-col gap-1 rounded-2xl border border-gray-100 bg-white p-5 dark:border-gray-700 dark:bg-gray-800">
+    <Card className="flex flex-col gap-1 p-5">
       <span aria-hidden="true" className="text-2xl">{icon}</span>
       <p className="mt-1 text-2xl font-extrabold text-gray-900 dark:text-gray-100">{value}</p>
       <p className="text-xs font-medium text-gray-500 dark:text-gray-400">{label}</p>
-    </div>
+    </Card>
   );
 }
 
@@ -258,6 +231,15 @@ function TradeRow({
         {counterparty}
       </td>
 
+      {/* Explorer */}
+      <td className="px-4 py-3.5 text-xs">
+        {trade.escrow_tx_hash ? (
+          <StellarExplorerLink type="transaction" value={trade.escrow_tx_hash} />
+        ) : (
+          <span className="text-gray-400 font-mono">—</span>
+        )}
+      </td>
+
       {/* Status */}
       <td className="py-3.5 pl-4 pr-5 text-right">
         <StatusBadge status={trade.status} />
@@ -308,6 +290,13 @@ function TradeMobileCard({
         <span className="text-gray-500 dark:text-gray-400">Counterparty</span>
         <span className="font-mono text-gray-600 dark:text-gray-400 text-xs">{counterparty}</span>
       </div>
+
+      {trade.escrow_tx_hash && (
+        <div className="flex items-center justify-between text-sm pt-1 border-t border-gray-100 dark:border-gray-700">
+          <span className="text-gray-500 dark:text-gray-400">Explorer</span>
+          <StellarExplorerLink type="transaction" value={trade.escrow_tx_hash} />
+        </div>
+      )}
     </div>
   );
 }
@@ -495,16 +484,55 @@ export default function ProfilePage() {
             />
           </div>
 
+          {/* KYC verification status */}
+          <Card className="mt-4 flex flex-col gap-2 p-5">
+            <p className="text-xs font-medium text-gray-500 dark:text-gray-400">
+              Seller verification (KYC)
+            </p>
+            {profile.kycStatus === "verified" ? (
+              <p className="text-sm font-semibold text-green-700 dark:text-green-400">
+                ✓ Verified — you can create listings on the marketplace.
+              </p>
+            ) : profile.kycStatus === "pending" ? (
+              <>
+                <p className="text-sm font-semibold text-amber-700 dark:text-amber-400">
+                  ⏳ KYC Pending Review
+                </p>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Your documents are being reviewed. Selling will be enabled once approved.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                  Verification required to sell
+                </p>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Complete identity verification before creating marketplace listings.
+                </p>
+                <a
+                  href="/kyc"
+                  className="mt-1 inline-flex w-fit items-center text-sm font-semibold text-violet-600 hover:text-violet-700 dark:text-violet-400"
+                >
+                  Start KYC verification →
+                </a>
+              </>
+            )}
+          </Card>
+
           {/* Stellar public key */}
           {profile.stellarPublicKey && (
-            <div className="mt-4 flex flex-col gap-1 rounded-xl border border-gray-100 bg-white px-5 py-4 dark:border-gray-700 dark:bg-gray-800">
+            <Card className="mt-4 flex flex-col gap-1 p-5">
               <p className="text-xs font-medium text-gray-500 dark:text-gray-400">
                 Stellar Public Key
               </p>
-              <p className="break-all font-mono text-xs text-gray-700 dark:text-gray-300">
-                {profile.stellarPublicKey}
-              </p>
-            </div>
+              <StellarExplorerLink
+                type="account"
+                value={profile.stellarPublicKey}
+                className="text-xs font-mono break-all"
+                truncate={false}
+              />
+            </Card>
           )}
         </section>
       ) : null}
@@ -602,6 +630,9 @@ export default function ProfilePage() {
                     </th>
                     <th className="px-4 py-3 text-xs font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500">
                       Counterparty
+                    </th>
+                    <th className="px-4 py-3 text-xs font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500">
+                      Explorer
                     </th>
                     <th className="py-3 pl-4 pr-5 text-right text-xs font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500">
                       Status

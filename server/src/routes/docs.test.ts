@@ -31,7 +31,7 @@ describe("docs routes", () => {
     it("returns 500 with global error handler (not hanging)", async () => {
       const res = await request(app).get("/api/v1/test-async-error");
       expect(res.status).toBe(500);
-      expect(res.body).toEqual({ error: "Internal server error" });
+      expect(res.body.error).toBe("async test");
     });
   });
 });

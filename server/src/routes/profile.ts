@@ -144,6 +144,7 @@ router.get(
         kycStatus:            user.kyc_status,
         virtualAccountNumber: user.virtual_account_number ?? "",
         stellarPublicKey:     user.stellar_public_key ?? "",
+        kycStatus:            user.kyc_status ?? "unverified",
       },
     });
   }

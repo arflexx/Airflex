@@ -1,13 +1,45 @@
 import type { ReactNode } from "react";
 import type { Metadata } from "next";
 import Navbar from "../components/Navbar";
+import ServiceWorkerRegister from "../components/ServiceWorkerRegister";
 import { AuthProvider } from "./context/AuthContext";
 import "./globals.css";
+import { SITE_DESCRIPTION, SITE_NAME, siteUrl } from "./lib/seo";
 
 export const metadata: Metadata = {
-  title: "AirFlex — Buy & Sell Airtime Peer-to-Peer",
-  description:
-    "AirFlex is an open marketplace for Nigerian airtime and mobile data secured by Soroban escrow contracts on Stellar.",
+  // metadataBase makes every relative OG/Twitter image resolve to an absolute
+  // URL. Without it Next.js emits a relative path, which social crawlers cannot
+  // fetch — the preview silently falls back to no image at all.
+  metadataBase: new URL(siteUrl()),
+  title: {
+    default: `${SITE_NAME} — Buy & Sell Airtime Peer-to-Peer`,
+    // Per-route titles fill the slot, so a page sets only its own name.
+    template: `%s | ${SITE_NAME}`,
+  },
+  description: SITE_DESCRIPTION,
+  applicationName: SITE_NAME,
+  openGraph: {
+    type: "website",
+    siteName: SITE_NAME,
+    title: `${SITE_NAME} — Buy & Sell Airtime Peer-to-Peer`,
+    description: SITE_DESCRIPTION,
+    url: "/",
+    images: [
+      {
+        url: "/og-default.png",
+        width: 1200,
+        height: 630,
+        alt: `${SITE_NAME} — peer-to-peer airtime marketplace`,
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: `${SITE_NAME} — Buy & Sell Airtime Peer-to-Peer`,
+    description: SITE_DESCRIPTION,
+    images: ["/og-default.png"],
+  },
+  robots: { index: true, follow: true },
 };
 
 /**
@@ -29,6 +61,8 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           <Navbar />
           {children}
         </AuthProvider>
+        {/* Registers the PWA service worker in production (issue #107) */}
+        <ServiceWorkerRegister />
       </body>
     </html>
   );

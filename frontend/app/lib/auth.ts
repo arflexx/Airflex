@@ -18,6 +18,16 @@ export interface StoredUser {
   id: string;
   phone: string;
   stellarPublicKey: string;
+  /**
+   * Account role, used to decide whether to render the admin dashboard
+   * (Issue #23).
+   *
+   * Optional because tokens issued before this field existed do not carry it,
+   * and absent is correctly treated as non-admin. This is a rendering hint
+   * only - it lives in the browser and is editable by the holder, so the
+   * server re-checks the role on every admin endpoint.
+   */
+  role?: "user" | "admin";
 }
 
 const USER_KEY = "airflex:user";

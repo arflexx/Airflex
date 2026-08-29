@@ -1,0 +1,52 @@
+name: E2E
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  playwright:
+    name: Playwright
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: .
+
+      # Only Chromium: the suite asserts application behaviour rather than
+      # rendering differences, so the other engines would add minutes per run
+      # without adding signal.
+      - name: Install Playwright browser
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run E2E suite
+        run: pnpm test:e2e
+        env:
+          # Every API call is intercepted in-test; this only has to be a
+          # well-formed origin for the intercepts to match against.
+          NEXT_PUBLIC_API_URL: http://localhost:3001
+
+      - name: Upload report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/playwright-report
+          retention-days: 7

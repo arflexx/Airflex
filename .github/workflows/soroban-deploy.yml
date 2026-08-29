@@ -1,19 +1,28 @@
-name: Deploy Soroban Contract
+name: Deploy Soroban Contracts
 
 # ---------------------------------------------------------------------------
 # Triggers
 # ---------------------------------------------------------------------------
-# Manual dispatch only — deploying a contract costs real XLM and produces an
-# immutable on-chain address. Never run this automatically on every push.
+# • Testnet: runs automatically after CI passes on main (push event).
+# • Mainnet: MANUAL workflow_dispatch only — requires explicit human action.
+#   Deploying to mainnet costs real XLM and produces immutable addresses.
 #
 # Required GitHub secrets (Settings → Secrets → Actions):
-#   SOROBAN_DEPLOYER_SECRET   — Stellar secret key (S...) of the deployer account
-#   SOROBAN_ADMIN_ADDRESS     — Stellar public key (G...) to set as contract admin
+#   SOROBAN_DEPLOYER_SECRET   Stellar secret key (S...) of the deployer account
+#   SOROBAN_ADMIN_ADDRESS     Stellar public key (G...) to set as contract admin
 #
-# Optional — defaults to testnet if not set:
-#   STELLAR_NETWORK           — "testnet" | "mainnet"
-#   SOROBAN_RPC_URL           — override the default RPC endpoint
+# Optional (falls back to defaults if not set):
+#   SOROBAN_RPC_URL           Override the RPC endpoint for the selected network
 on:
+  # Automatic testnet deploy after CI succeeds on main
+  workflow_run:
+    workflows: ["CI"]
+    branches: [main]
+    types: [completed]
+
+  # Manual dispatch — used for BOTH testnet re-deploys and mainnet deploys.
+  # Mainnet is gated behind the `mainnet` GitHub Environment which requires
+  # a manual approval from a maintainer before the job runs.
   workflow_dispatch:
     inputs:
       network:
@@ -24,6 +33,15 @@ on:
         options:
           - testnet
           - mainnet
+      contract:
+        description: "Which contract to deploy"
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - escrow
+          - marketplace
       initialize:
         description: "Call initialize() after deployment?"
         required: true
@@ -33,23 +51,50 @@ on:
           - "true"
           - "false"
 
-# One deploy at a time per network.
+# One deploy at a time per network to prevent race conditions on deployments.json
 concurrency:
-  group: soroban-deploy-${{ inputs.network }}
+  group: soroban-deploy-${{ github.event.inputs.network || 'testnet' }}
   cancel-in-progress: false
 
 # ---------------------------------------------------------------------------
 # Jobs
 # ---------------------------------------------------------------------------
 jobs:
-  deploy:
-    name: Build & Deploy (${{ inputs.network }})
+
+  # ── Guard: only proceed if CI passed (for the workflow_run trigger) ───────
+  check-ci:
+    name: Guard — CI must have passed
     runs-on: ubuntu-latest
-    environment: ${{ inputs.network }}   # maps to a GitHub Environment for secret scoping
+    # For manual dispatch, always proceed. For workflow_run, only proceed on success.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: CI status OK
+        run: echo "CI passed — proceeding with deploy."
+
+  # ── Testnet deploy ─────────────────────────────────────────────────────────
+  deploy-testnet:
+    name: Deploy to Testnet
+    needs: check-ci
+    runs-on: ubuntu-latest
+    # Run on: automatic testnet trigger, or manual dispatch targeting testnet
+    if: >-
+      github.event_name == 'workflow_run' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.network == 'testnet')
+    environment: testnet
+    permissions:
+      contents: write   # needed to commit deployments.json
+
+    outputs:
+      escrow_id:      ${{ steps.deploy-escrow.outputs.contract_id }}
+      marketplace_id: ${{ steps.deploy-marketplace.outputs.contract_id }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       # ── Rust + WASM target ────────────────────────────────────────────────
       - name: Set up Rust toolchain
@@ -66,11 +111,10 @@ jobs:
             contracts/target
           key: cargo-deploy-${{ hashFiles('contracts/Cargo.lock') }}
 
-      # ── stellar-cli ───────────────────────────────────────────────────────
       - name: Install stellar-cli
         run: cargo install --locked stellar-cli
 
-      # ── Build WASM ────────────────────────────────────────────────────────
+      # ── Build ─────────────────────────────────────────────────────────────
       - name: Build WASM (release)
         working-directory: contracts
         run: cargo build --release --target wasm32v1-none
@@ -83,54 +127,290 @@ jobs:
           echo "$SOROBAN_DEPLOYER_SECRET" | \
             stellar keys add deployer --secret-key --stdin
 
-      - name: Set network config
-        run: |
-          if [ "${{ inputs.network }}" = "mainnet" ]; then
-            stellar network add mainnet \
-              --rpc-url "${SOROBAN_RPC_URL:-https://mainnet.stellar.validationcloud.io/v1/}" \
-              --network-passphrase "Public Global Stellar Network ; September 2015"
-          else
-            stellar network add testnet \
-              --rpc-url "${SOROBAN_RPC_URL:-https://soroban-testnet.stellar.org}" \
-              --network-passphrase "Test SDF Network ; September 2015"
-          fi
+      - name: Configure testnet
         env:
           SOROBAN_RPC_URL: ${{ vars.SOROBAN_RPC_URL }}
+        run: |
+          stellar network add testnet \
+            --rpc-url "${SOROBAN_RPC_URL:-https://soroban-testnet.stellar.org}" \
+            --network-passphrase "Test SDF Network ; September 2015"
 
-      # ── Deploy ────────────────────────────────────────────────────────────
-      - name: Deploy contract
-        id: deploy
+      # ── Deploy escrow ─────────────────────────────────────────────────────
+      - name: Deploy escrow contract
+        id: deploy-escrow
+        # Deploy escrow when: all contracts requested, or escrow specifically
+        if: >-
+          github.event_name == 'workflow_run' ||
+          github.event.inputs.contract == 'all' ||
+          github.event.inputs.contract == 'escrow'
         run: |
           CONTRACT_ID=$(stellar contract deploy \
             --wasm contracts/target/wasm32v1-none/release/airflex_escrow.wasm \
             --source deployer \
-            --network ${{ inputs.network }})
+            --network testnet)
           echo "contract_id=$CONTRACT_ID" >> "$GITHUB_OUTPUT"
-          echo "Deployed contract: $CONTRACT_ID"
+          echo "Deployed escrow: $CONTRACT_ID"
 
-      # ── Initialize (optional) ─────────────────────────────────────────────
-      - name: Initialize contract
-        if: inputs.initialize == 'true'
+      - name: Initialize escrow contract
+        if: >-
+          steps.deploy-escrow.conclusion == 'success' &&
+          (github.event_name == 'workflow_run' || github.event.inputs.initialize == 'true')
         env:
           SOROBAN_ADMIN_ADDRESS: ${{ secrets.SOROBAN_ADMIN_ADDRESS }}
         run: |
           stellar contract invoke \
-            --id ${{ steps.deploy.outputs.contract_id }} \
+            --id ${{ steps.deploy-escrow.outputs.contract_id }} \
             --source deployer \
-            --network ${{ inputs.network }} \
+            --network testnet \
             -- initialize \
             --admin "$SOROBAN_ADMIN_ADDRESS"
+
+      # ── Deploy marketplace ────────────────────────────────────────────────
+      - name: Deploy marketplace contract
+        id: deploy-marketplace
+        if: >-
+          github.event_name == 'workflow_run' ||
+          github.event.inputs.contract == 'all' ||
+          github.event.inputs.contract == 'marketplace'
+        run: |
+          CONTRACT_ID=$(stellar contract deploy \
+            --wasm contracts/target/wasm32v1-none/release/airflex_marketplace.wasm \
+            --source deployer \
+            --network testnet)
+          echo "contract_id=$CONTRACT_ID" >> "$GITHUB_OUTPUT"
+          echo "Deployed marketplace: $CONTRACT_ID"
+
+      - name: Initialize marketplace contract
+        if: >-
+          steps.deploy-marketplace.conclusion == 'success' &&
+          (github.event_name == 'workflow_run' || github.event.inputs.initialize == 'true')
+        env:
+          SOROBAN_ADMIN_ADDRESS: ${{ secrets.SOROBAN_ADMIN_ADDRESS }}
+        run: |
+          stellar contract invoke \
+            --id ${{ steps.deploy-marketplace.outputs.contract_id }} \
+            --source deployer \
+            --network testnet \
+            -- initialize \
+            --admin "$SOROBAN_ADMIN_ADDRESS"
+
+      # ── Update deployments.json ───────────────────────────────────────────
+      - name: Update deployments.json
+        run: |
+          node -e "
+            const fs = require('fs');
+            const path = 'contracts/deployments.json';
+            const data = JSON.parse(fs.readFileSync(path, 'utf8'));
+
+            const escrowId    = '${{ steps.deploy-escrow.outputs.contract_id }}';
+            const marketId    = '${{ steps.deploy-marketplace.outputs.contract_id }}';
+
+            if (escrowId)  data.testnet.escrow      = escrowId;
+            if (marketId)  data.testnet.marketplace  = marketId;
+
+            fs.writeFileSync(path, JSON.stringify(data, null, 2) + '\n');
+            console.log('deployments.json updated');
+            console.log(JSON.stringify(data.testnet, null, 2));
+          "
+
+      - name: Commit deployments.json
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add contracts/deployments.json
+          if git diff --cached --quiet; then
+            echo "No changes to deployments.json — addresses unchanged."
+          else
+            git commit -m "chore(contracts): update testnet deployment addresses [skip ci]"
+            git push
+          fi
 
       # ── Summary ───────────────────────────────────────────────────────────
       - name: Print deployment summary
         run: |
-          echo "### ✅ Soroban Contract Deployed" >> "$GITHUB_STEP_SUMMARY"
+          ESCROW_ID="${{ steps.deploy-escrow.outputs.contract_id }}"
+          MARKET_ID="${{ steps.deploy-marketplace.outputs.contract_id }}"
+
+          echo "### ✅ Testnet Contracts Deployed" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Contract | Contract ID | Explorer |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|----------|-------------|----------|" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -n "$ESCROW_ID" ]; then
+            echo "| Escrow | \`$ESCROW_ID\` | [Stellar Expert](https://stellar.expert/explorer/testnet/contract/$ESCROW_ID) |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -n "$MARKET_ID" ]; then
+            echo "| Marketplace | \`$MARKET_ID\` | [Stellar Expert](https://stellar.expert/explorer/testnet/contract/$MARKET_ID) |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Network | ${{ inputs.network }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Contract ID | \`${{ steps.deploy.outputs.contract_id }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Initialized | ${{ inputs.initialize }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Commit | \`${{ github.sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Network | testnet |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit  | \`${{ github.sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Next step:** Update \`ESCROW_CONTRACT_ADDRESS\` in \`server/.env\` and \`server/.env.example\`." >> "$GITHUB_STEP_SUMMARY"
+          echo "**Next step:** Update \`ESCROW_CONTRACT_ID\` and \`MARKETPLACE_CONTRACT_ID\` in Railway." >> "$GITHUB_STEP_SUMMARY"
+
+  # ── Mainnet deploy (MANUAL ONLY) ──────────────────────────────────────────
+  deploy-mainnet:
+    name: Deploy to Mainnet
+    needs: check-ci
+    runs-on: ubuntu-latest
+    # ONLY runs on manual dispatch targeting mainnet.
+    # The `mainnet` GitHub Environment MUST have a required reviewer configured
+    # (Settings → Environments → mainnet → Required reviewers).
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.network == 'mainnet'
+    environment: mainnet   # enforces manual approval gate
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts/target
+          key: cargo-deploy-${{ hashFiles('contracts/Cargo.lock') }}
+
+      - name: Install stellar-cli
+        run: cargo install --locked stellar-cli
+
+      - name: Build WASM (release)
+        working-directory: contracts
+        run: cargo build --release --target wasm32v1-none
+
+      - name: Add deployer identity
+        env:
+          SOROBAN_DEPLOYER_SECRET: ${{ secrets.SOROBAN_DEPLOYER_SECRET }}
+        run: |
+          echo "$SOROBAN_DEPLOYER_SECRET" | \
+            stellar keys add deployer --secret-key --stdin
+
+      - name: Configure mainnet
+        env:
+          SOROBAN_RPC_URL: ${{ vars.SOROBAN_RPC_URL }}
+        run: |
+          stellar network add mainnet \
+            --rpc-url "${SOROBAN_RPC_URL:-https://mainnet.stellar.validationcloud.io/v1/}" \
+            --network-passphrase "Public Global Stellar Network ; September 2015"
+
+      - name: Deploy escrow contract (mainnet)
+        id: deploy-escrow-mainnet
+        if: >-
+          github.event.inputs.contract == 'all' ||
+          github.event.inputs.contract == 'escrow'
+        run: |
+          CONTRACT_ID=$(stellar contract deploy \
+            --wasm contracts/target/wasm32v1-none/release/airflex_escrow.wasm \
+            --source deployer \
+            --network mainnet)
+          echo "contract_id=$CONTRACT_ID" >> "$GITHUB_OUTPUT"
+          echo "Deployed escrow (mainnet): $CONTRACT_ID"
+
+      - name: Initialize escrow (mainnet)
+        if: >-
+          steps.deploy-escrow-mainnet.conclusion == 'success' &&
+          github.event.inputs.initialize == 'true'
+        env:
+          SOROBAN_ADMIN_ADDRESS: ${{ secrets.SOROBAN_ADMIN_ADDRESS }}
+        run: |
+          stellar contract invoke \
+            --id ${{ steps.deploy-escrow-mainnet.outputs.contract_id }} \
+            --source deployer \
+            --network mainnet \
+            -- initialize \
+            --admin "$SOROBAN_ADMIN_ADDRESS"
+
+      - name: Deploy marketplace contract (mainnet)
+        id: deploy-marketplace-mainnet
+        if: >-
+          github.event.inputs.contract == 'all' ||
+          github.event.inputs.contract == 'marketplace'
+        run: |
+          CONTRACT_ID=$(stellar contract deploy \
+            --wasm contracts/target/wasm32v1-none/release/airflex_marketplace.wasm \
+            --source deployer \
+            --network mainnet)
+          echo "contract_id=$CONTRACT_ID" >> "$GITHUB_OUTPUT"
+          echo "Deployed marketplace (mainnet): $CONTRACT_ID"
+
+      - name: Initialize marketplace (mainnet)
+        if: >-
+          steps.deploy-marketplace-mainnet.conclusion == 'success' &&
+          github.event.inputs.initialize == 'true'
+        env:
+          SOROBAN_ADMIN_ADDRESS: ${{ secrets.SOROBAN_ADMIN_ADDRESS }}
+        run: |
+          stellar contract invoke \
+            --id ${{ steps.deploy-marketplace-mainnet.outputs.contract_id }} \
+            --source deployer \
+            --network mainnet \
+            -- initialize \
+            --admin "$SOROBAN_ADMIN_ADDRESS"
+
+      - name: Update deployments.json (mainnet)
+        run: |
+          node -e "
+            const fs = require('fs');
+            const path = 'contracts/deployments.json';
+            const data = JSON.parse(fs.readFileSync(path, 'utf8'));
+
+            const escrowId = '${{ steps.deploy-escrow-mainnet.outputs.contract_id }}';
+            const marketId = '${{ steps.deploy-marketplace-mainnet.outputs.contract_id }}';
+
+            if (escrowId)  data.mainnet.escrow      = escrowId;
+            if (marketId)  data.mainnet.marketplace  = marketId;
+
+            fs.writeFileSync(path, JSON.stringify(data, null, 2) + '\n');
+            console.log('deployments.json updated (mainnet)');
+          "
+
+      - name: Commit deployments.json (mainnet)
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add contracts/deployments.json
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore(contracts): update mainnet deployment addresses [skip ci]"
+            git push
+          fi
+
+      - name: Print mainnet deployment summary
+        run: |
+          ESCROW_ID="${{ steps.deploy-escrow-mainnet.outputs.contract_id }}"
+          MARKET_ID="${{ steps.deploy-marketplace-mainnet.outputs.contract_id }}"
+
+          echo "### ✅ Mainnet Contracts Deployed" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Contract | Contract ID | Explorer |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|----------|-------------|----------|" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -n "$ESCROW_ID" ]; then
+            echo "| Escrow | \`$ESCROW_ID\` | [Stellar Expert](https://stellar.expert/explorer/public/contract/$ESCROW_ID) |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -n "$MARKET_ID" ]; then
+            echo "| Marketplace | \`$MARKET_ID\` | [Stellar Expert](https://stellar.expert/explorer/public/contract/$MARKET_ID) |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Network | **mainnet** |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Triggered by | @${{ github.actor }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit | \`${{ github.sha }}\` |" >> "$GITHUB_STEP_SUMMARY"

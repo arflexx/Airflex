@@ -1,6 +1,19 @@
 import type { ReactNode } from "react";
 import ThemeToggle from "../../components/ThemeToggle";
 
+import type { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "Sell Airtime",
+  description:
+    "List airtime or mobile data for sale on AirFlex and get paid in naira once the escrow releases.",
+  openGraph: {
+    title: "Sell Airtime",
+    description:
+      "List airtime or mobile data for sale on AirFlex and get paid in naira once the escrow releases.",
+  },
+};
+
 export default function SellLayout({ children }: { children: ReactNode }) {
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col dark:bg-gray-900">

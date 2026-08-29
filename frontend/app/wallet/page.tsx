@@ -2,7 +2,13 @@
 
 import { useState, useEffect } from "react";
 import { getToken, isAuthenticated } from "../lib/auth";
+import DepositModal from "./DepositModal";
 import WithdrawModal from "./WithdrawModal";
+import { Button } from "../../components/ui/Button";
+import { Badge } from "../../components/ui/Badge";
+import { Card, CardHeader, CardTitle, CardContent } from "../../components/ui/Card";
+import { Spinner } from "../../components/ui/Spinner";
+import { StellarExplorerLink } from "../../components/StellarExplorerLink";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -23,6 +29,15 @@ interface WalletResponse {
   error?: string;
 }
 
+interface WalletTransaction {
+  id: string;
+  asset_type: string;
+  amount: number;
+  status: "Active" | "Locked" | "Completed" | "Cancelled" | "Disputed";
+  escrow_tx_hash: string | null;
+  created_at: string;
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -32,9 +47,11 @@ export default function WalletPage() {
 
   const [authChecked, setAuthChecked] = useState(false);
   const [wallet, setWallet] = useState<WalletData | null>(null);
+  const [transactions, setTransactions] = useState<WalletTransaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isDepositOpen, setIsDepositOpen] = useState(false);
 
   // Auth guard
   useEffect(() => {
@@ -45,7 +62,7 @@ export default function WalletPage() {
     setAuthChecked(true);
   }, []);
 
-  // Fetch wallet data
+  // Fetch wallet data & transactions
   useEffect(() => {
     if (!authChecked) return;
 
@@ -55,11 +72,17 @@ export default function WalletPage() {
     setLoading(true);
     setError(null);
 
-    fetch(`${apiUrl}/api/v1/wallet`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then((r) => r.json() as Promise<WalletResponse>)
-      .then((data) => {
+    Promise.all([
+      fetch(`${apiUrl}/api/v1/wallet`, {
+        headers: { Authorization: `Bearer ${token}` },
+      }).then((r) => r.json() as Promise<WalletResponse>),
+      fetch(`${apiUrl}/api/v1/profile/trades?limit=10`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+        .then((r) => (r.ok ? r.json() : { data: [] }))
+        .catch(() => ({ data: [] })),
+    ])
+      .then(([data, tradesData]) => {
         if (data.error || !data.publicKey) {
           setError(data.error ?? "Failed to load wallet.");
         } else {
@@ -69,6 +92,9 @@ export default function WalletPage() {
             asset: data.asset ?? "XLM",
             network: data.network ?? "testnet",
           });
+          if (tradesData && Array.isArray(tradesData.data)) {
+            setTransactions(tradesData.data);
+          }
         }
       })
       .catch(() => setError("Network error. Check your connection."))
@@ -102,15 +128,7 @@ export default function WalletPage() {
   if (!authChecked || loading) {
     return (
       <div className="flex items-center justify-center py-32">
-        <svg
-          className="h-8 w-8 animate-spin text-violet-600 dark:text-violet-400"
-          viewBox="0 0 24 24"
-          fill="none"
-          aria-label="Loading"
-        >
-          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
-        </svg>
+        <Spinner size="lg" label="Loading wallet details…" />
       </div>
     );
   }
@@ -139,7 +157,7 @@ export default function WalletPage() {
 
       {/* Wallet card */}
       {wallet && (
-        <div className="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm dark:border-gray-700 dark:bg-gray-800">
+        <Card className="flex flex-col">
           <div className="mb-6 flex flex-col gap-1">
             <p className="text-sm font-medium text-gray-500 dark:text-gray-400">
               Available Balance
@@ -151,12 +169,17 @@ export default function WalletPage() {
 
           <div className="mb-6 flex flex-col gap-2 rounded-xl bg-gray-50 p-4 dark:bg-gray-700">
             <p className="text-xs font-medium text-gray-500 dark:text-gray-400">
-              Stellar Public Key
-            </p>
-            <p className="break-all font-mono text-xs text-gray-700 dark:text-gray-300">
-              {wallet.publicKey}
+              Stellar Public Key (On-chain Account)
             </p>
             <div className="flex items-center gap-2">
+              <StellarExplorerLink
+                type="account"
+                value={wallet.publicKey}
+                className="text-xs font-mono break-all"
+                truncate={false}
+              />
+            </div>
+            <div className="flex items-center gap-2 mt-1">
               <span className="inline-flex items-center rounded-full bg-violet-100 px-2 py-0.5 text-xs font-semibold text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
                 {wallet.network}
               </span>
@@ -166,15 +189,91 @@ export default function WalletPage() {
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={() => setIsModalOpen(true)}
-            className="inline-flex w-full items-center justify-center rounded-xl bg-violet-600 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-800"
-          >
-            Withdraw Funds
-          </button>
-        </div>
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <Button
+              variant="primary"
+              onClick={() => setIsDepositOpen(true)}
+              className="w-full"
+            >
+              Deposit
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => setIsModalOpen(true)}
+              className="w-full"
+            >
+              Withdraw Funds
+            </Button>
+          </div>
+        </Card>
       )}
+
+      {/* Transaction Rows with Stellar Explorer Deep-Links (Issue #66) */}
+      <Card noPadding>
+        <CardHeader className="p-6">
+          <CardTitle>Recent Transactions</CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          {transactions.length === 0 ? (
+            <div className="px-6 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
+              No transactions found on this account yet.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm" aria-label="Wallet transactions">
+                <thead className="border-b border-gray-100 bg-gray-50/50 text-xs font-semibold text-gray-500 uppercase tracking-wider dark:border-gray-700/60 dark:bg-gray-900/30 dark:text-gray-400">
+                  <tr>
+                    <th className="px-6 py-3">Date</th>
+                    <th className="px-6 py-3">Asset</th>
+                    <th className="px-6 py-3">Amount</th>
+                    <th className="px-6 py-3">Status</th>
+                    <th className="px-6 py-3">Stellar Transaction</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-50 dark:divide-gray-700/60">
+                  {transactions.map((tx) => (
+                    <tr key={tx.id} className="hover:bg-gray-50/50 dark:hover:bg-gray-750/30 transition-colors">
+                      <td className="px-6 py-3.5 whitespace-nowrap text-xs text-gray-500 dark:text-gray-400">
+                        {new Date(tx.created_at).toLocaleDateString("en-NG", {
+                          day: "numeric",
+                          month: "short",
+                          year: "numeric",
+                        })}
+                      </td>
+                      <td className="px-6 py-3.5 font-medium text-gray-900 dark:text-gray-100">
+                        {tx.asset_type}
+                      </td>
+                      <td className="px-6 py-3.5 font-semibold text-gray-900 dark:text-gray-100">
+                        ₦{tx.amount.toLocaleString()}
+                      </td>
+                      <td className="px-6 py-3.5">
+                        <Badge variant={tx.status === "Active" ? "Open" : (tx.status as any)} />
+                      </td>
+                      <td className="px-6 py-3.5">
+                        {tx.escrow_tx_hash ? (
+                          <StellarExplorerLink
+                            type="transaction"
+                            value={tx.escrow_tx_hash}
+                          />
+                        ) : (
+                          <span className="text-xs text-gray-400 dark:text-gray-500 font-mono">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Deposit Modal (Issue #25) */}
+      <DepositModal
+        isOpen={isDepositOpen}
+        onClose={() => setIsDepositOpen(false)}
+        onDepositSuccess={handleWithdrawSuccess}
+      />
 
       {/* Withdraw Modal */}
       <WithdrawModal

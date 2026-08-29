@@ -1,5 +1,20 @@
 import type { ReactNode } from "react";
 
+import type { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "Profile",
+  description:
+    "Manage your AirFlex account details, verification status and trading history.",
+  openGraph: {
+    title: "Profile",
+    description:
+      "Manage your AirFlex account details, verification status and trading history.",
+  },
+  // Private to the signed-in user: useful to them, useless in an index.
+  robots: { index: false, follow: false },
+};
+
 export default function ProfileLayout({ children }: { children: ReactNode }) {
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col dark:bg-gray-900">

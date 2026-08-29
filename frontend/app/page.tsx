@@ -1,5 +1,6 @@
 import type { TradeOffer } from "../../server/src/types/trade";
 import ThemeToggle from "../components/ThemeToggle";
+import { Card } from "../components/ui/Card";
 
 interface TradesResponse {
   data: TradeOffer[];
@@ -47,7 +48,7 @@ function AssetBadge({ assetType }: { assetType: string }) {
 function TradeCard({ trade }: { trade: TradeOffer }) {
   const sellerAlias = `@seller_${trade.seller_id.slice(-8)}`;
   return (
-    <article className="flex flex-col gap-4 rounded-2xl border border-gray-100 bg-white p-5 shadow-sm transition-shadow hover:shadow-md dark:border-gray-700 dark:bg-gray-800">
+    <Card className="flex flex-col gap-4 transition-shadow hover:shadow-md">
       <div className="flex items-start justify-between gap-2">
         <div className="flex flex-col gap-1">
           <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Seller</p>
@@ -85,7 +86,7 @@ function TradeCard({ trade }: { trade: TradeOffer }) {
       >
         View &amp; Buy
       </a>
-    </article>
+    </Card>
   );
 }
 

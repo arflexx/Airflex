@@ -14,6 +14,25 @@
 import type { Job } from "../queue";
 import pool from "../../db";
 import logger from "../../utils/logger";
+import type { Tracer, Span } from "@opentelemetry/api";
+
+function getTracer(): Tracer {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { trace } = require("@opentelemetry/api") as typeof import("@opentelemetry/api");
+    return trace.getTracer("airflex-paystack", "1.0.0");
+  } catch {
+    return {
+      startActiveSpan: <F extends (span: Span) => unknown>(_n: string, fn: F) =>
+        fn({
+          setAttribute: () => {},
+          setStatus: () => {},
+          recordException: () => {},
+          end: () => {},
+        } as unknown as Span) as ReturnType<F>,
+    } as unknown as Tracer;
+  }
+}
 
 export interface CreateVirtualAccountData {
   /** AirFlex user UUID */
@@ -63,61 +82,115 @@ export async function createVirtualAccountProcessor(
 
     const phone = userRows[0]!.phone;
 
-    const customerRes = await fetch("https://api.paystack.co/customer", {
-      method:  "POST",
-      headers: {
-        Authorization:  `Bearer ${paystackKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        email:      `${userId}@airflex.local`,   // placeholder — Paystack requires email
-        first_name: displayName.split(" ")[0] ?? displayName,
-        last_name:  displayName.split(" ").slice(1).join(" ") || "User",
-        phone,
-      }),
-    });
+    const tracer = getTracer();
+    customerCode = await tracer.startActiveSpan(
+      "paystack.create_customer",
+      async (span: Span) => {
+        span.setAttribute("paystack.endpoint", "POST /customer");
+        span.setAttribute("trade.user_id", userId);
+        try {
+          const customerRes = await fetch("https://api.paystack.co/customer", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${paystackKey}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              email: `${userId}@airflex.local`,
+              first_name: displayName.split(" ")[0] ?? displayName,
+              last_name: displayName.split(" ").slice(1).join(" ") || "User",
+              phone,
+            }),
+          });
 
-    if (!customerRes.ok) {
-      const txt = await customerRes.text();
-      throw new Error(`Paystack create customer failed: ${customerRes.status} ${txt}`);
-    }
+          if (!customerRes.ok) {
+            const txt = await customerRes.text();
+            throw new Error(
+              `Paystack create customer failed: ${customerRes.status} ${txt}`
+            );
+          }
 
-    const customerData = (await customerRes.json()) as {
-      data: { customer_code: string };
-    };
+          const customerData = (await customerRes.json()) as {
+            data: { customer_code: string };
+          };
 
-    customerCode = customerData.data.customer_code;
-    logger.info({ jobId: job.id, userId, customerCode }, "[create-virtual-account] Customer created");
+          const code = customerData.data.customer_code;
+          span.setAttribute("paystack.customer_code", code);
+          return code;
+        } catch (err) {
+          span.recordException(err as Error);
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { SpanStatusCode } = require("@opentelemetry/api");
+          span.setStatus({
+            code: SpanStatusCode.ERROR,
+            message: (err as Error).message,
+          });
+          throw err;
+        } finally {
+          span.end();
+        }
+      }
+    );
+
+    logger.info(
+      { jobId: job.id, userId, customerCode },
+      "[create-virtual-account] Customer created"
+    );
   }
 
   // -------------------------------------------------------------------
   // Step 2: Create a dedicated virtual account
   // -------------------------------------------------------------------
 
-  const dvaRes = await fetch("https://api.paystack.co/dedicated_account", {
-    method:  "POST",
-    headers: {
-      Authorization:  `Bearer ${paystackKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      customer:           customerCode,
-      preferred_bank:     "wema-bank",   // Wema Bank is the default DVA provider
-    }),
-  });
+  const tracer = getTracer();
+  const dvaData = await tracer.startActiveSpan(
+    "paystack.create_dedicated_account",
+    async (span: Span) => {
+      span.setAttribute("paystack.endpoint", "POST /dedicated_account");
+      span.setAttribute("trade.user_id", userId);
+      span.setAttribute("paystack.customer_code", customerCode ?? "");
+      try {
+        const dvaRes = await fetch("https://api.paystack.co/dedicated_account", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${paystackKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            customer: customerCode,
+            preferred_bank: "wema-bank",
+          }),
+        });
 
-  if (!dvaRes.ok) {
-    const txt = await dvaRes.text();
-    throw new Error(`Paystack create DVA failed: ${dvaRes.status} ${txt}`);
-  }
+        if (!dvaRes.ok) {
+          const txt = await dvaRes.text();
+          throw new Error(`Paystack create DVA failed: ${dvaRes.status} ${txt}`);
+        }
 
-  const dvaData = (await dvaRes.json()) as {
-    data: {
-      account_number: string;
-      account_name:   string;
-      bank: { name: string; id: number };
-    };
-  };
+        const data = (await dvaRes.json()) as {
+          data: {
+            account_number: string;
+            account_name: string;
+            bank: { name: string; id: number };
+          };
+        };
+
+        span.setAttribute("paystack.bank_name", data.data.bank.name);
+        return data;
+      } catch (err) {
+        span.recordException(err as Error);
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { SpanStatusCode } = require("@opentelemetry/api");
+        span.setStatus({
+          code: SpanStatusCode.ERROR,
+          message: (err as Error).message,
+        });
+        throw err;
+      } finally {
+        span.end();
+      }
+    }
+  );
 
   const { account_number, account_name, bank } = dvaData.data;
 

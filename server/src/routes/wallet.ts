@@ -2,6 +2,31 @@ import { Router } from "express";
 import pool from "../db";
 import { authenticate, AuthenticatedRequest } from "../middleware/authenticate";
 import { getWalletBalance } from "../services/stellar";
+import { NotificationService } from "../services/notifications";
+
+// ---------------------------------------------------------------------------
+// OpenTelemetry tracer (no-op fallback when packages not installed)
+// ---------------------------------------------------------------------------
+
+import type { Tracer, Span } from "@opentelemetry/api";
+
+function getTracer(): Tracer {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { trace } = require("@opentelemetry/api") as typeof import("@opentelemetry/api");
+    return trace.getTracer("airflex-paystack", "1.0.0");
+  } catch {
+    return {
+      startActiveSpan: <F extends (span: Span) => unknown>(_n: string, fn: F) =>
+        fn({
+          setAttribute: () => {},
+          setStatus: () => {},
+          recordException: () => {},
+          end: () => {},
+        } as unknown as Span) as ReturnType<F>,
+    } as unknown as Tracer;
+  }
+}
 
 const router = Router();
 
@@ -20,45 +45,87 @@ async function fetchPaystackBanks(): Promise<Bank[]> {
     throw new Error("PAYSTACK_SECRET_KEY not configured");
   }
 
-  const response = await fetch("https://api.paystack.co/bank?country=nigeria&currency=NGN", {
-    headers: {
-      Authorization: `Bearer ${paystackSecretKey}`,
-    },
+  const tracer = getTracer();
+  return tracer.startActiveSpan("paystack.list_banks", async (span: Span) => {
+    span.setAttribute("paystack.endpoint", "GET /bank");
+    span.setAttribute("paystack.country", "nigeria");
+    try {
+      const response = await fetch(
+        "https://api.paystack.co/bank?country=nigeria&currency=NGN",
+        {
+          headers: { Authorization: `Bearer ${paystackSecretKey}` },
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error("Failed to fetch banks from Paystack");
+      }
+
+      const data = (await response.json()) as { data: Bank[] };
+      span.setAttribute("paystack.bank_count", data.data.length);
+      return data.data;
+    } catch (err) {
+      span.recordException(err as Error);
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { SpanStatusCode } = require("@opentelemetry/api");
+      span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+      throw err;
+    } finally {
+      span.end();
+    }
   });
-
-  if (!response.ok) {
-    throw new Error("Failed to fetch banks from Paystack");
-  }
-
-  const data = await response.json() as { data: Bank[] };
-  return data.data;
 }
 
-async function resolvePaystackAccount(accountNumber: string, bankCode: string): Promise<string> {
+async function resolvePaystackAccount(
+  accountNumber: string,
+  bankCode: string
+): Promise<string> {
   const paystackSecretKey = process.env["PAYSTACK_SECRET_KEY"];
   if (!paystackSecretKey) {
     throw new Error("PAYSTACK_SECRET_KEY not configured");
   }
 
-  const response = await fetch(
-    `https://api.paystack.co/bank/resolve?account_number=${accountNumber}&bank_code=${bankCode}`,
-    {
-      headers: {
-        Authorization: `Bearer ${paystackSecretKey}`,
-      },
+  const tracer = getTracer();
+  return tracer.startActiveSpan(
+    "paystack.resolve_account",
+    async (span: Span) => {
+      span.setAttribute("paystack.endpoint", "GET /bank/resolve");
+      span.setAttribute("paystack.bank_code", bankCode);
+      // Do NOT record the account_number — it is PII
+      try {
+        const response = await fetch(
+          `https://api.paystack.co/bank/resolve?account_number=${accountNumber}&bank_code=${bankCode}`,
+          {
+            headers: { Authorization: `Bearer ${paystackSecretKey}` },
+          }
+        );
+
+        if (!response.ok) {
+          throw new Error("Failed to resolve account from Paystack");
+        }
+
+        const data = (await response.json()) as {
+          data: { account_name: string } | null;
+        };
+        if (!data.data || !data.data.account_name) {
+          throw new Error("Unable to resolve account name");
+        }
+
+        return data.data.account_name;
+      } catch (err) {
+        span.recordException(err as Error);
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { SpanStatusCode } = require("@opentelemetry/api");
+        span.setStatus({
+          code: SpanStatusCode.ERROR,
+          message: (err as Error).message,
+        });
+        throw err;
+      } finally {
+        span.end();
+      }
     }
   );
-
-  if (!response.ok) {
-    throw new Error("Failed to resolve account from Paystack");
-  }
-
-  const data = await response.json() as { data: { account_name: string } | null };
-  if (!data.data || !data.data.account_name) {
-    throw new Error("Unable to resolve account name");
-  }
-
-  return data.data.account_name;
 }
 
 // ---------------------------------------------------------------------------
@@ -232,6 +299,11 @@ router.post(
     // 2. Initiate a Paystack transfer
     // 3. Update the wallet balance after successful transfer
     // 4. Handle transfer failures and retries
+
+    // Notify the user that their withdrawal was processed (best-effort)
+    void NotificationService.send(userId, "WITHDRAWAL_PROCESSED", {
+      amount: amountNum,
+    });
 
     res.status(200).json({ success: true });
   }

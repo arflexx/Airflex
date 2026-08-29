@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import type { TradeOffer } from "../../../../server/src/types/trade";
 import TradeDetailClient from "./TradeDetailClient";
@@ -37,13 +38,60 @@ async function getTrade(id: string): Promise<TradeOffer | null> {
   return body.data ?? null;
 }
 
-// ---------------------------------------------------------------------------
-// Page (Server Component)
-// ---------------------------------------------------------------------------
-
 interface PageProps {
   params: Promise<{ id: string }>;
 }
+
+// ---------------------------------------------------------------------------
+// Metadata (Issue #28)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the page title from the trade itself, so a shared link previews as
+ * "5,000 NGN of MTN airtime" rather than an opaque id.
+ *
+ * Reuses `getTrade`, which Next.js dedupes against the page's own call within a
+ * single render — so this costs no extra request.
+ */
+export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
+  const { id } = await params;
+  const trade = await getTrade(id);
+
+  if (!trade) {
+    // A missing trade renders not-found; give crawlers a title rather than a
+    // template placeholder, and keep the 404 out of the index.
+    return {
+      title: "Trade not found",
+      robots: { index: false, follow: false },
+    };
+  }
+
+  const amount = trade.amount.toLocaleString("en-NG");
+  const title = `₦${amount} ${trade.asset_type} trade`;
+  const description = `A peer-to-peer ${trade.asset_type} trade for ₦${amount} on AirFlex, secured by a Soroban escrow contract.`;
+
+  return {
+    title,
+    description,
+    openGraph: {
+      title,
+      description,
+      type: "article",
+      url: `/trades/${id}`,
+    },
+    twitter: { card: "summary_large_image", title, description },
+    // An active listing is worth indexing; a locked, settled or cancelled one
+    // is a dead link to anyone arriving from search.
+    robots:
+      trade.status === "Active"
+        ? { index: true, follow: true }
+        : { index: false, follow: true },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Page (Server Component)
+// ---------------------------------------------------------------------------
 
 export default async function TradeDetailPage({ params }: PageProps) {
   const { id } = await params;

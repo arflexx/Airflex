@@ -14,6 +14,8 @@ process.env["DATABASE_URL"] = "postgresql://test:test@localhost/test";
 process.env["ESCROW_CONTRACT_ADDRESS"] = "CCBJ235OCBFZXBFSUUUT4PMG7RRCAXZXMUEB2L7CTTQ5NRSNO4P2SLNP";
 process.env["ENCRYPTION_KEY"] = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
 process.env["STELLAR_SERVER_SECRET"] = "SBXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX";
+process.env["PAYSTACK_SECRET_KEY"] = "sk_test_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+process.env["TERMII_API_KEY"] = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
 
 import request from "supertest";
 import app from "./index";
@@ -39,5 +41,13 @@ describe("GET /health", () => {
   it("includes the X-Api-Version: 1 response header", async () => {
     const res = await request(app).get("/health");
     expect(res.headers["x-api-version"]).toBe("1");
+  });
+});
+
+describe("body size limit", () => {
+  it("returns 413 when JSON body exceeds 10kb", async () => {
+    const largeBody = { data: "x".repeat(10241) };
+    const res = await request(app).post("/api/v1/auth/request-otp").send(largeBody);
+    expect(res.status).toBe(413);
   });
 });

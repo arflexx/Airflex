@@ -8,6 +8,8 @@ import {
   triggerVerification,
   VerificationError,
 } from "../services/tradeVerification";
+import { NotificationService } from "../services/notifications";
+import { asyncHandler } from "../utils/asyncHandler";
 import type { TradeOffer } from "../types/trade";
 import {
   createTradeSchema,
@@ -75,7 +77,7 @@ router.post(
   validate(createTradeSchema),
   async (req, res) => {
     const { assetType, amount, expiresInHours } = req.body as CreateTradeInput;
-    const { sub: sellerId, stellarPublicKey } = (req as AuthenticatedRequest).user;
+    const { sub: sellerId, stellarPublicKey } = (req as unknown as AuthenticatedRequest).user;
 
     // Fetch seller's encrypted secret key from their wallet record
     const { rows: walletRows } = await pool.query<{
@@ -151,7 +153,7 @@ router.post(
   validate(buyTradeSchema),
   async (req, res) => {
     const { id } = req.params;
-    const { sub: buyerId, stellarPublicKey } = (req as AuthenticatedRequest).user;
+    const { sub: buyerId, stellarPublicKey } = (req as unknown as AuthenticatedRequest).user;
     const { buyerSecretKey } = req.body as BuyTradeInput;
 
     // Load the trade offer
@@ -201,6 +203,11 @@ router.post(
       [buyerId, txHash, id]
     );
 
+    // Notify the seller that their trade has been locked (best-effort)
+    void NotificationService.send(trade.seller_id, "TRADE_LOCKED", {
+      tradeId: id,
+    });
+
     res.status(200).json({ data: updated[0] });
   }
 );
@@ -230,7 +237,7 @@ router.post(
   authenticate,
   async (req, res) => {
     const { id } = req.params;
-    const { sub: sellerId } = (req as AuthenticatedRequest).user;
+    const { sub: sellerId } = (req as unknown as AuthenticatedRequest).user;
 
     try {
       // triggerVerification validates synchronously then fires async work

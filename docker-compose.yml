@@ -1,0 +1,93 @@
+# docker-compose.yml
+#
+# Local development stack for AirFlex.
+# Provides PostgreSQL, Redis, and Jaeger All-in-One for distributed tracing.
+#
+# Usage:
+#   docker compose up -d            # Start all services
+#   docker compose up -d jaeger     # Start only Jaeger
+#   docker compose logs -f server   # Follow server logs
+#   docker compose down             # Stop and remove containers
+#   docker compose down -v          # Stop and remove containers + volumes
+#
+# Jaeger UI:    http://localhost:16686
+# OTLP HTTP:    http://localhost:4318   (used by server telemetry.ts)
+# OTLP gRPC:    http://localhost:4317
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — primary database
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: airflex-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: airflex
+      POSTGRES_PASSWORD: airflex
+      POSTGRES_DB: airflex
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflex"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Redis — background job queue
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: airflex-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Jaeger All-in-One — distributed tracing backend
+  #
+  # Receives OpenTelemetry traces from the server via OTLP HTTP on port 4318.
+  # Browse traces at http://localhost:16686.
+  #
+  # Ports:
+  #   4317  — OTLP gRPC receiver
+  #   4318  — OTLP HTTP receiver  ← server/src/telemetry.ts sends here
+  #   16686 — Jaeger UI
+  #   14268 — Jaeger HTTP thrift collector (legacy, optional)
+  # ---------------------------------------------------------------------------
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    container_name: airflex-jaeger
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+      # Use in-memory storage for local dev — no persistence across restarts
+      SPAN_STORAGE_TYPE: memory
+    ports:
+      - "4317:4317"    # OTLP gRPC
+      - "4318:4318"    # OTLP HTTP
+      - "16686:16686"  # Jaeger UI
+      - "14268:14268"  # Jaeger HTTP thrift (legacy)
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:14269/metrics || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+# ---------------------------------------------------------------------------
+# Named volumes
+# ---------------------------------------------------------------------------
+volumes:
+  postgres-data:
+  redis-data:

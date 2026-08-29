@@ -18,7 +18,8 @@ const router = Router();
  *   - connected        — sent immediately on connect as a handshake
  *
  * The connection stays open indefinitely. Browsers automatically reconnect
- * using the built-in EventSource retry mechanism.
+ * using the built-in EventSource retry mechanism. A `: heartbeat` comment
+ * line is sent every 30 seconds to keep the stream alive through proxies.
  *
  * Example (browser):
  *   const es = new EventSource("/api/v1/events", { headers: { Authorization: "Bearer ..." } });

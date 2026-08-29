@@ -1,5 +1,20 @@
 import type { ReactNode } from "react";
 
+import type { Metadata } from "next";
+
+export const metadata: Metadata = {
+  title: "Wallet",
+  description:
+    "Fund your AirFlex wallet, track your balance, and withdraw to any Nigerian bank account.",
+  openGraph: {
+    title: "Wallet",
+    description:
+      "Fund your AirFlex wallet, track your balance, and withdraw to any Nigerian bank account.",
+  },
+  // Private to the signed-in user: useful to them, useless in an index.
+  robots: { index: false, follow: false },
+};
+
 export default function WalletLayout({ children }: { children: ReactNode }) {
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col dark:bg-gray-900">

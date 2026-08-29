@@ -11,6 +11,44 @@ import {
   Contract,
 } from "@stellar/stellar-sdk";
 import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
+import {
+  ESCROW_CONTRACT_ID,
+  MARKETPLACE_CONTRACT_ID,
+} from "../config/contracts";
+
+// ---------------------------------------------------------------------------
+// OpenTelemetry tracing helpers
+// ---------------------------------------------------------------------------
+// We use a lazy accessor so that this module can be loaded even when the
+// OTel packages aren't installed (test env, pre-install). If the packages
+// aren't present the tracer falls back to a no-op implementation.
+
+import type { Tracer, Span } from "@opentelemetry/api";
+
+function getTracer(): Tracer {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { trace } = require("@opentelemetry/api") as typeof import("@opentelemetry/api");
+    return trace.getTracer("airflex-stellar", "1.0.0");
+  } catch {
+    // Return a no-op tracer if @opentelemetry/api isn't available
+    return {
+      startSpan: () => ({
+        setAttribute: () => {},
+        setStatus: () => {},
+        recordException: () => {},
+        end: () => {},
+      } as unknown as Span),
+      startActiveSpan: <F extends (span: Span) => unknown>(_n: string, fn: F) =>
+        fn({
+          setAttribute: () => {},
+          setStatus: () => {},
+          recordException: () => {},
+          end: () => {},
+        } as unknown as Span) as ReturnType<F>,
+    } as unknown as Tracer;
+  }
+}
 
 const NETWORK_PASSPHRASE =
   process.env["STELLAR_NETWORK"] === "mainnet"
@@ -174,49 +212,70 @@ export async function createListing(params: {
   amount: number;
   expiresAt: Date;
 }): Promise<string> {
-  const contractAddress = process.env["ESCROW_CONTRACT_ADDRESS"];
+  const contractAddress = ESCROW_CONTRACT_ID;
   if (!contractAddress) {
-    throw new Error("ESCROW_CONTRACT_ADDRESS environment variable is not set");
-  }
-
-  const keypair = Keypair.fromSecret(params.sellerSecretKey);
-  const account = await horizonServer.loadAccount(params.sellerPublicKey);
-
-  const contract = new Contract(contractAddress);
-
-  const tx = new TransactionBuilder(account, {
-    fee: BASE_FEE,
-    networkPassphrase: NETWORK_PASSPHRASE,
-  })
-    .addOperation(
-      contract.call(
-        "create_listing",
-        new Address(params.sellerPublicKey).toScVal(),
-        nativeToScVal(params.assetType, { type: "symbol" }),
-        nativeToScVal(BigInt(params.amount * 1_000_000), { type: "i128" }),
-        nativeToScVal(
-          BigInt(Math.floor(params.expiresAt.getTime() / 1000)),
-          { type: "u64" }
-        )
-      )
-    )
-    .setTimeout(30)
-    .build();
-
-  const preparedTx = await sorobanServer.prepareTransaction(tx);
-  preparedTx.sign(keypair);
-
-  const response = await sorobanServer.sendTransaction(preparedTx);
-
-  if (response.status === "ERROR") {
     throw new Error(
-      `Contract create_listing failed: ${JSON.stringify(response.errorResult)}`
+      "ESCROW_CONTRACT_ID is not set. Deploy the escrow contract or set the env variable."
     );
   }
 
-  // Poll until the transaction is confirmed
-  const listingId = await pollForResult(response.hash);
-  return listingId;
+  const tracer = getTracer();
+  return tracer.startActiveSpan("soroban.create_listing", async (span: Span) => {
+    span.setAttribute("soroban.contract_id", contractAddress);
+    span.setAttribute("soroban.function", "create_listing");
+    span.setAttribute("soroban.network", process.env["STELLAR_NETWORK"] ?? "testnet");
+    span.setAttribute("trade.asset_type", params.assetType);
+    span.setAttribute("trade.amount", params.amount);
+
+    try {
+      const keypair = Keypair.fromSecret(params.sellerSecretKey);
+      const account = await horizonServer.loadAccount(params.sellerPublicKey);
+      const contract = new Contract(contractAddress);
+
+      const tx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(
+          contract.call(
+            "create_listing",
+            new Address(params.sellerPublicKey).toScVal(),
+            nativeToScVal(params.assetType, { type: "symbol" }),
+            nativeToScVal(BigInt(params.amount * 1_000_000), { type: "i128" }),
+            nativeToScVal(
+              BigInt(Math.floor(params.expiresAt.getTime() / 1000)),
+              { type: "u64" }
+            )
+          )
+        )
+        .setTimeout(30)
+        .build();
+
+      const preparedTx = await sorobanServer.prepareTransaction(tx);
+      preparedTx.sign(keypair);
+
+      const response = await sorobanServer.sendTransaction(preparedTx);
+
+      if (response.status === "ERROR") {
+        throw new Error(
+          `Contract create_listing failed: ${JSON.stringify(response.errorResult)}`
+        );
+      }
+
+      span.setAttribute("soroban.tx_hash", response.hash);
+      const listingId = await pollForResult(response.hash);
+      span.setAttribute("trade.listing_id", listingId);
+      return listingId;
+    } catch (err) {
+      span.recordException(err as Error);
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { SpanStatusCode } = require("@opentelemetry/api");
+      span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+      throw err;
+    } finally {
+      span.end();
+    }
+  });
 }
 
 /**
@@ -231,44 +290,65 @@ export async function depositToEscrow(params: {
   listingId: string;
   amount: number;
 }): Promise<string> {
-  const contractAddress = process.env["ESCROW_CONTRACT_ADDRESS"];
+  const contractAddress = ESCROW_CONTRACT_ID;
   if (!contractAddress) {
-    throw new Error("ESCROW_CONTRACT_ADDRESS environment variable is not set");
-  }
-
-  const keypair = Keypair.fromSecret(params.buyerSecretKey);
-  const account = await horizonServer.loadAccount(params.buyerPublicKey);
-
-  const contract = new Contract(contractAddress);
-
-  const tx = new TransactionBuilder(account, {
-    fee: BASE_FEE,
-    networkPassphrase: NETWORK_PASSPHRASE,
-  })
-    .addOperation(
-      contract.call(
-        "deposit_to_escrow",
-        nativeToScVal(params.listingId, { type: "symbol" }),
-        new Address(params.buyerPublicKey).toScVal(),
-        nativeToScVal(BigInt(params.amount * 1_000_000), { type: "i128" })
-      )
-    )
-    .setTimeout(30)
-    .build();
-
-  const preparedTx = await sorobanServer.prepareTransaction(tx);
-  preparedTx.sign(keypair);
-
-  const response = await sorobanServer.sendTransaction(preparedTx);
-
-  if (response.status === "ERROR") {
     throw new Error(
-      `Contract deposit_to_escrow failed: ${JSON.stringify(response.errorResult)}`
+      "ESCROW_CONTRACT_ID is not set. Deploy the escrow contract or set the env variable."
     );
   }
 
-  await pollForResult(response.hash);
-  return response.hash;
+  const tracer = getTracer();
+  return tracer.startActiveSpan("soroban.deposit_to_escrow", async (span: Span) => {
+    span.setAttribute("soroban.contract_id", contractAddress);
+    span.setAttribute("soroban.function", "deposit_to_escrow");
+    span.setAttribute("soroban.network", process.env["STELLAR_NETWORK"] ?? "testnet");
+    span.setAttribute("trade.listing_id", params.listingId);
+    span.setAttribute("trade.amount", params.amount);
+
+    try {
+      const keypair = Keypair.fromSecret(params.buyerSecretKey);
+      const account = await horizonServer.loadAccount(params.buyerPublicKey);
+      const contract = new Contract(contractAddress);
+
+      const tx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(
+          contract.call(
+            "deposit_to_escrow",
+            nativeToScVal(params.listingId, { type: "symbol" }),
+            new Address(params.buyerPublicKey).toScVal(),
+            nativeToScVal(BigInt(params.amount * 1_000_000), { type: "i128" })
+          )
+        )
+        .setTimeout(30)
+        .build();
+
+      const preparedTx = await sorobanServer.prepareTransaction(tx);
+      preparedTx.sign(keypair);
+
+      const response = await sorobanServer.sendTransaction(preparedTx);
+
+      if (response.status === "ERROR") {
+        throw new Error(
+          `Contract deposit_to_escrow failed: ${JSON.stringify(response.errorResult)}`
+        );
+      }
+
+      span.setAttribute("soroban.tx_hash", response.hash);
+      await pollForResult(response.hash);
+      return response.hash;
+    } catch (err) {
+      span.recordException(err as Error);
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { SpanStatusCode } = require("@opentelemetry/api");
+      span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+      throw err;
+    } finally {
+      span.end();
+    }
+  });
 }
 
 /**
@@ -285,6 +365,94 @@ export async function depositToEscrow(params: {
  * @returns Transaction hash of the confirmed release
  */
 export async function releasePayment(contractTradeId: string): Promise<string> {
+  const contractAddress = ESCROW_CONTRACT_ID;
+  if (!contractAddress) {
+    throw new Error(
+      "ESCROW_CONTRACT_ID is not set. Deploy the escrow contract or set the env variable."
+    );
+  }
+
+  const serverSecret = process.env["STELLAR_SERVER_SECRET"];
+  if (!serverSecret) {
+    throw new Error("STELLAR_SERVER_SECRET environment variable is not set");
+  }
+
+  const tracer = getTracer();
+  return tracer.startActiveSpan("soroban.release_payment", async (span: Span) => {
+    span.setAttribute("soroban.contract_id", contractAddress);
+    span.setAttribute("soroban.function", "release_payment");
+    span.setAttribute("soroban.network", process.env["STELLAR_NETWORK"] ?? "testnet");
+    span.setAttribute("trade.contract_trade_id", contractTradeId);
+
+    try {
+      // Derive keypair from server secret — never log this object
+      const keypair = Keypair.fromSecret(serverSecret);
+      const serverPublicKey = keypair.publicKey();
+
+      const account = await horizonServer.loadAccount(serverPublicKey);
+      const contract = new Contract(contractAddress);
+
+      // The contract expects a u64 trade ID
+      const tradeIdU64 = BigInt(contractTradeId);
+
+      const tx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(
+          contract.call(
+            "release_payment",
+            nativeToScVal(tradeIdU64, { type: "u64" })
+          )
+        )
+        .setTimeout(30)
+        .build();
+
+      const preparedTx = await sorobanServer.prepareTransaction(tx);
+      preparedTx.sign(keypair);
+
+      const response = await sorobanServer.sendTransaction(preparedTx);
+
+      if (response.status === "ERROR") {
+        throw new Error(
+          `Contract release_payment failed: ${JSON.stringify(response.errorResult)}`
+        );
+      }
+
+      span.setAttribute("soroban.tx_hash", response.hash);
+      await pollForResult(response.hash);
+      return response.hash;
+    } catch (err) {
+      span.recordException(err as Error);
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { SpanStatusCode } = require("@opentelemetry/api");
+      span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+      throw err;
+    } finally {
+      span.end();
+    }
+  });
+}
+
+
+
+/**
+ * Calls the smart contract's `resolve_dispute` function to settle a disputed
+ * trade. Only the admin (STELLAR_SERVER_SECRET) can invoke this — the same
+ * signing key used by `release_payment`.
+ *
+ * The `resolution` maps to a `refund` flag on-chain:
+ *   - "RELEASE" → funds are released to the seller (refund = false).
+ *   - "REFUND"  → funds are returned to the buyer (refund = true).
+ *
+ * @param contractTradeId  The on-chain trade ID (u64) stored in contract_listing_id
+ * @param resolution       "RELEASE" | "REFUND"
+ * @returns Transaction hash of the confirmed resolution
+ */
+export async function resolveDispute(params: {
+  contractTradeId: string;
+  resolution: "RELEASE" | "REFUND";
+}): Promise<string> {
   const contractAddress = process.env["ESCROW_CONTRACT_ADDRESS"];
   if (!contractAddress) {
     throw new Error("ESCROW_CONTRACT_ADDRESS environment variable is not set");
@@ -302,8 +470,8 @@ export async function releasePayment(contractTradeId: string): Promise<string> {
   const account = await horizonServer.loadAccount(serverPublicKey);
   const contract = new Contract(contractAddress);
 
-  // The contract expects a u64 trade ID
-  const tradeIdU64 = BigInt(contractTradeId);
+  const tradeIdU64 = BigInt(params.contractTradeId);
+  const refund = params.resolution === "REFUND";
 
   const tx = new TransactionBuilder(account, {
     fee: BASE_FEE,
@@ -311,8 +479,9 @@ export async function releasePayment(contractTradeId: string): Promise<string> {
   })
     .addOperation(
       contract.call(
-        "release_payment",
-        nativeToScVal(tradeIdU64, { type: "u64" })
+        "resolve_dispute",
+        nativeToScVal(tradeIdU64, { type: "u64" }),
+        nativeToScVal(refund, { type: "bool" })
       )
     )
     .setTimeout(30)
@@ -325,14 +494,13 @@ export async function releasePayment(contractTradeId: string): Promise<string> {
 
   if (response.status === "ERROR") {
     throw new Error(
-      `Contract release_payment failed: ${JSON.stringify(response.errorResult)}`
+      `Contract resolve_dispute failed: ${JSON.stringify(response.errorResult)}`
     );
   }
 
   await pollForResult(response.hash);
   return response.hash;
 }
-
 
 
 /**
@@ -343,27 +511,42 @@ async function pollForResult(hash: string): Promise<string> {
   const MAX_ATTEMPTS = 20;
   const INTERVAL_MS = 1_500;
 
-  for (let i = 0; i < MAX_ATTEMPTS; i++) {
-    await sleep(INTERVAL_MS);
-    const result = await sorobanServer.getTransaction(hash);
+  const tracer = getTracer();
+  return tracer.startActiveSpan("soroban.poll_transaction", async (span: Span) => {
+    span.setAttribute("soroban.tx_hash", hash);
 
-    if (result.status === SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
-      // Extract the first return value from the transaction meta
-      const returnValue = (result as SorobanRpc.Api.GetSuccessfulTransactionResponse)
-        .returnValue;
-      if (returnValue) {
-        return scValToString(returnValue);
+    try {
+      for (let i = 0; i < MAX_ATTEMPTS; i++) {
+        await sleep(INTERVAL_MS);
+        const result = await sorobanServer.getTransaction(hash);
+
+        if (result.status === SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
+          span.setAttribute("soroban.poll_attempts", i + 1);
+          const returnValue = (result as SorobanRpc.Api.GetSuccessfulTransactionResponse)
+            .returnValue;
+          if (returnValue) {
+            return scValToString(returnValue);
+          }
+          return hash;
+        }
+
+        if (result.status === SorobanRpc.Api.GetTransactionStatus.FAILED) {
+          throw new Error(`Transaction ${hash} failed on-chain`);
+        }
+        // NOT_FOUND means still pending — keep polling
       }
-      return hash;
-    }
 
-    if (result.status === SorobanRpc.Api.GetTransactionStatus.FAILED) {
-      throw new Error(`Transaction ${hash} failed on-chain`);
+      throw new Error(`Transaction ${hash} did not confirm within timeout`);
+    } catch (err) {
+      span.recordException(err as Error);
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { SpanStatusCode } = require("@opentelemetry/api");
+      span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+      throw err;
+    } finally {
+      span.end();
     }
-    // NOT_FOUND means still pending — keep polling
-  }
-
-  throw new Error(`Transaction ${hash} did not confirm within timeout`);
+  });
 }
 
 function scValToString(val: xdr.ScVal): string {

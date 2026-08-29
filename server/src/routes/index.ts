@@ -7,6 +7,9 @@ import webhooksRouter from './webhooks';
 import adminRouter from './admin';
 import eventsRouter from './events';
 import docsRouter from './docs';
+import referralsRouter from './referrals';
+import kycRouter from './kyc';
+import analyticsRouter from './analytics';
 
 export function registerRoutes(app: Express): void {
   app.use('/api/v1/auth', authRouter);
