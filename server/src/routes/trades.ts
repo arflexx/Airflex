@@ -9,6 +9,7 @@ import {
   VerificationError,
 } from "../services/tradeVerification";
 import { NotificationService } from "../services/notifications";
+import { asyncHandler } from "../utils/asyncHandler";
 import type { TradeOffer } from "../types/trade";
 import {
   createTradeSchema,
@@ -76,7 +77,7 @@ router.post(
   validate(createTradeSchema),
   async (req, res) => {
     const { assetType, amount, expiresInHours } = req.body as CreateTradeInput;
-    const { sub: sellerId, stellarPublicKey } = (req as AuthenticatedRequest).user;
+    const { sub: sellerId, stellarPublicKey } = (req as unknown as AuthenticatedRequest).user;
 
     // Fetch seller's encrypted secret key from their wallet record
     const { rows: walletRows } = await pool.query<{
@@ -152,7 +153,7 @@ router.post(
   validate(buyTradeSchema),
   async (req, res) => {
     const { id } = req.params;
-    const { sub: buyerId, stellarPublicKey } = (req as AuthenticatedRequest).user;
+    const { sub: buyerId, stellarPublicKey } = (req as unknown as AuthenticatedRequest).user;
     const { buyerSecretKey } = req.body as BuyTradeInput;
 
     // Load the trade offer
@@ -236,7 +237,7 @@ router.post(
   authenticate,
   async (req, res) => {
     const { id } = req.params;
-    const { sub: sellerId } = (req as AuthenticatedRequest).user;
+    const { sub: sellerId } = (req as unknown as AuthenticatedRequest).user;
 
     try {
       // triggerVerification validates synchronously then fires async work
@@ -256,6 +257,95 @@ router.post(
       tradeId: id,
     });
   }
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/trades/:id/dispute  (authenticated — buyer or seller)
+// ---------------------------------------------------------------------------
+
+/**
+ * Escalate a locked trade to Disputed status.
+ * Both the buyer and seller of a locked trade have permission to dispute.
+ */
+router.post(
+  "/:id/dispute",
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { sub: userId } = (req as unknown as AuthenticatedRequest).user;
+    const { reason } = (req.body ?? {}) as { reason?: string };
+
+    if (!reason || typeof reason !== "string" || !reason.trim()) {
+      res.status(400).json({ error: "Dispute reason is required" });
+      return;
+    }
+
+    if (reason.trim().length > 500) {
+      res.status(400).json({ error: "Dispute reason cannot exceed 500 characters" });
+      return;
+    }
+
+    // Fetch the trade offer
+    const { rows: tradeRows } = await pool.query<TradeOffer>(
+      `SELECT * FROM trade_offers WHERE id = $1`,
+      [id]
+    );
+
+    if (!tradeRows.length) {
+      res.status(404).json({ error: "Trade offer not found" });
+      return;
+    }
+
+    const trade = tradeRows[0]!;
+
+    // Viewer must be buyer or seller
+    if (trade.seller_id !== userId && trade.buyer_id !== userId) {
+      res.status(403).json({ error: "Only the buyer or seller can dispute this trade" });
+      return;
+    }
+
+    if (trade.status === "Disputed") {
+      res.status(409).json({ error: "Trade is already disputed" });
+      return;
+    }
+
+    if (trade.status !== "Locked") {
+      res.status(400).json({
+        error: `Only locked trades can be disputed (current status: ${trade.status})`,
+      });
+      return;
+    }
+
+    // Transition trade to Disputed
+    const { rows: updated } = await pool.query<TradeOffer>(
+      `UPDATE trade_offers
+       SET status = 'Disputed', updated_at = NOW()
+       WHERE id = $1 AND status = 'Locked'
+       RETURNING *`,
+      [id]
+    );
+
+    if (!updated.length) {
+      res.status(409).json({ error: "Trade is no longer in a locked state" });
+      return;
+    }
+
+    // Notify participants and admins
+    const participants = [trade.seller_id, trade.buyer_id].filter(Boolean) as string[];
+    void NotificationService.sendToMany(participants, "DISPUTE_FILED", {
+      tradeId: id,
+      reason: reason.trim(),
+    });
+    void NotificationService.sendToAdmins("DISPUTE_FILED", {
+      tradeId: id,
+      reason: reason.trim(),
+    });
+
+    res.status(200).json({
+      message: "Trade successfully disputed. An admin will review within 24 hours.",
+      data: updated[0],
+    });
+  })
 );
 
 export default router;

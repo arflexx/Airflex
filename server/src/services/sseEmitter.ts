@@ -25,7 +25,21 @@ import { Response } from "express";
  *
  *  // Push a broadcast admin alert:
  *  SseEmitter.emitAdmin({ type: "admin_alert", message: "..." });
+ *
+ * Heartbeat
+ * ---------
+ * While a client is connected the server writes an SSE comment line
+ * (`: heartbeat`) every 30 seconds. Comment lines are ignored by EventSource
+ * but keep the TCP connection alive through proxies and load balancers that
+ * would otherwise close idle connections.
  */
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** How often to write a keep-alive comment line to each connected client. */
+const HEARTBEAT_INTERVAL_MS = 30_000;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -67,8 +81,24 @@ function addClient(userId: string, res: Response): void {
 
   clients.push({ userId, res });
 
+  // Heartbeat: a comment line every 30s prevents proxies from closing idle
+  // connections. Per-client interval so it stops when this connection closes.
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(": heartbeat\n\n");
+      if (typeof (res as Response & { flush?: () => void }).flush === "function") {
+        (res as Response & { flush: () => void }).flush();
+      }
+    } catch {
+      // Client disconnected mid-write — the "close" handler will clean up
+    }
+  }, HEARTBEAT_INTERVAL_MS);
+  // Don't keep the process alive just for an open SSE stream
+  heartbeat.unref?.();
+
   // Clean up when the client disconnects
   res.on("close", () => {
+    clearInterval(heartbeat);
     const idx = clients.findIndex((c) => c.res === res);
     if (idx !== -1) clients.splice(idx, 1);
   });

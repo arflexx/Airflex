@@ -17,8 +17,13 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-
 import { useAuth } from "../hooks/useAuth";
+import { Button } from "../../components/ui/Button";
+import { Badge } from "../../components/ui/Badge";
+import { Card } from "../../components/ui/Card";
+import { Spinner } from "../../components/ui/Spinner";
+import { Modal } from "../../components/ui/Modal";
+import { StellarExplorerLink } from "../../components/StellarExplorerLink";
 
 interface Metrics {
   totalUsers: number;
@@ -50,6 +55,12 @@ interface UserLookup {
   trades: Array<{ id: string; status: string; amount: string; created_at: string }>;
 }
 
+interface FlaggedAccount {
+  user_id: string;
+  violation_count: number;
+  last_violation_at: string;
+}
+
 type Resolution = "release_to_seller" | "refund_to_buyer";
 
 export default function AdminDashboardPage(): JSX.Element {
@@ -57,6 +68,7 @@ export default function AdminDashboardPage(): JSX.Element {
 
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [disputed, setDisputed] = useState<DisputedTrade[]>([]);
+  const [flaggedAccounts, setFlaggedAccounts] = useState<FlaggedAccount[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [resolving, setResolving] = useState<DisputedTrade | null>(null);
@@ -81,24 +93,28 @@ export default function AdminDashboardPage(): JSX.Element {
     setLoadError(null);
 
     try {
-      const [metricsRes, tradesRes] = await Promise.all([
+      const [metricsRes, tradesRes, flaggedRes] = await Promise.all([
         fetch("/api/v1/admin/metrics", { headers: authHeaders() }),
         fetch("/api/v1/admin/trades?status=disputed", { headers: authHeaders() }),
+        fetch("/api/v1/admin/flagged-accounts", { headers: authHeaders() }),
       ]);
 
       if (metricsRes.status === 403 || tradesRes.status === 403) {
-        // The server is the authority on the role; if it says no, say so
-        // rather than showing an empty dashboard that looks like "no data".
         setLoadError("Your account does not have admin access.");
         return;
       }
-      if (!metricsRes.ok || !tradesRes.ok) {
-        setLoadError("Failed to load dashboard data.");
-        return;
-      }
 
-      setMetrics((await metricsRes.json()) as Metrics);
-      setDisputed(((await tradesRes.json()) as { trades: DisputedTrade[] }).trades);
+      if (metricsRes.ok) {
+        setMetrics((await metricsRes.json()) as Metrics);
+      }
+      if (tradesRes.ok) {
+        const body = (await tradesRes.json()) as { trades?: DisputedTrade[] };
+        setDisputed(body.trades || []);
+      }
+      if (flaggedRes.ok) {
+        const body = (await flaggedRes.json()) as { flaggedAccounts?: FlaggedAccount[] };
+        setFlaggedAccounts(body.flaggedAccounts || []);
+      }
     } catch {
       setLoadError("Could not reach the server.");
     }
@@ -169,7 +185,11 @@ export default function AdminDashboardPage(): JSX.Element {
   }
 
   if (isLoading) {
-    return <main className="p-10 text-sm text-zinc-400">Loading…</main>;
+    return (
+      <main className="flex justify-center p-16">
+        <Spinner size="lg" label="Loading admin dashboard…" />
+      </main>
+    );
   }
 
   if (!user || user.role !== "admin") {
@@ -213,13 +233,13 @@ export default function AdminDashboardPage(): JSX.Element {
               }),
             },
           ].map((stat) => (
-            <div
+            <Card
               key={stat.label}
-              className="rounded-xl border border-white/10 bg-white/5 p-4"
+              className="border-white/10 bg-white/5 p-4"
             >
-              <p className="text-xs uppercase tracking-wide text-zinc-500">{stat.label}</p>
+              <p className="text-xs uppercase tracking-wide text-zinc-400">{stat.label}</p>
               <p className="mt-1 text-2xl font-semibold text-white">{stat.value}</p>
-            </div>
+            </Card>
           ))}
         </section>
       )}
@@ -256,17 +276,51 @@ export default function AdminDashboardPage(): JSX.Element {
                       {new Date(trade.created_at).toLocaleDateString()}
                     </td>
                     <td className="py-2 text-right">
-                      <button
-                        type="button"
+                      <Button
+                        size="sm"
+                        variant="secondary"
                         onClick={() => {
                           setResolving(trade);
                           setResolution("release_to_seller");
                           setResolveError(null);
                         }}
-                        className="rounded-lg border border-white/15 px-3 py-1 text-xs text-zinc-200 hover:bg-white/10"
                       >
                         Resolve
-                      </button>
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      {/* ── Flagged Accounts ────────────────────────────────────────────── */}
+      <section className="mb-10 rounded-xl border border-red-500/20 bg-red-950/10 p-5">
+        <h2 className="mb-4 text-lg font-semibold text-red-200">
+          Flagged Accounts{flaggedAccounts.length > 0 ? ` (${flaggedAccounts.length})` : ""}
+        </h2>
+
+        {flaggedAccounts.length === 0 ? (
+          <p className="text-sm text-zinc-500">No flagged accounts with high velocity violations in the last 24 hours.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[640px] text-left text-sm">
+              <thead className="text-xs uppercase tracking-wide text-red-400/70">
+                <tr>
+                  <th className="pb-2 font-medium">User ID</th>
+                  <th className="pb-2 font-medium">Violations (24h)</th>
+                  <th className="pb-2 font-medium">Last Violation</th>
+                </tr>
+              </thead>
+              <tbody className="text-zinc-300">
+                {flaggedAccounts.map((account) => (
+                  <tr key={account.user_id} className="border-t border-white/5">
+                    <td className="py-2 font-mono text-xs text-red-300">{account.user_id}</td>
+                    <td className="py-2 text-sm font-bold text-red-400">{account.violation_count}</td>
+                    <td className="py-2 text-xs text-zinc-400">
+                      {new Date(account.last_violation_at).toLocaleString()}
                     </td>
                   </tr>
                 ))}
@@ -312,7 +366,15 @@ export default function AdminDashboardPage(): JSX.Element {
               <dd className="text-zinc-200">{lookup.user.fiat_balance ?? "0.00"}</dd>
               <dt className="text-zinc-500">Stellar key</dt>
               <dd className="truncate font-mono text-xs text-zinc-400">
-                {lookup.user.stellar_public_key ?? "—"}
+                {lookup.user.stellar_public_key ? (
+                  <StellarExplorerLink
+                    type="account"
+                    value={lookup.user.stellar_public_key}
+                    truncate={false}
+                  />
+                ) : (
+                  "—"
+                )}
               </dd>
             </dl>
 

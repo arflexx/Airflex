@@ -29,10 +29,14 @@ export function errorHandler(
     err.message
   );
 
+  const status = (err as Error & { status?: number; statusCode?: number }).status ??
+    (err as Error & { status?: number; statusCode?: number }).statusCode ??
+    500;
+
   if (process.env["NODE_ENV"] === "production") {
-    res.status(500).json({ error: "Internal server error" });
+    res.status(status).json({ error: "Internal server error" });
   } else {
-    res.status(500).json({
+    res.status(status).json({
       error: err.message,
       stack: err.stack,
     });

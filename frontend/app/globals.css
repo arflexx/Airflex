@@ -3,6 +3,7 @@
 @tailwind utilities;
 
 :root {
+  --color-brand: #7D00FF;
   color-scheme: light;
 }
 

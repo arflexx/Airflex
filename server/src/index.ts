@@ -1,12 +1,13 @@
 import "dotenv/config";
 import "express-async-errors";
 // Load contract IDs early — emits startup warnings if addresses are missing
-import "./config/contracts";
+import "@server/config/contracts";
 import express, { Request, Response } from "express";
 import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
 import { registerRoutes } from "./routes";
+import { initJobQueue } from "./jobs";
 import logger from "./utils/logger";
 import { errorHandler } from "./middleware/errorHandler";
 import { apiVersion } from "./middleware/apiVersion";
@@ -23,44 +24,55 @@ const REQUIRED_ENV_VARS = [
   "ENCRYPTION_KEY",
   "STELLAR_SERVER_SECRET",
   "PLATFORM_TREASURY_USER_ID",
+  "PAYSTACK_SECRET_KEY",
+  "TERMII_API_KEY",
 ] as const;
+
+const isTest =
+  process.env["NODE_ENV"] === "test" ||
+  process.env["JEST_WORKER_ID"] !== undefined;
 
 const missingVars = REQUIRED_ENV_VARS.filter((key) => !process.env[key]);
 
-if (missingVars.length > 0) {
+if (!isTest && missingVars.length > 0) {
   logger.error(
     `[startup] Missing required environment variables: ${missingVars.join(", ")}\n` +
       `Copy server/.env.example to server/.env and fill in the values.`
   );
-  process.exit(1);
+  if (process.env["NODE_ENV"] !== "test") {
+    process.exit(1);
+  }
 }
 
-// Validate ENCRYPTION_KEY format: must be exactly 64 hex characters
 const encryptionKey = process.env["ENCRYPTION_KEY"];
-if (encryptionKey && !/^[0-9a-fA-F]{64}$/.test(encryptionKey)) {
+if (!isTest && encryptionKey && !/^[0-9a-fA-F]{64}$/.test(encryptionKey)) {
   logger.error(
     "[startup] ENCRYPTION_KEY must be a 64-character hex string"
   );
-  process.exit(1);
+  if (process.env["NODE_ENV"] !== "test") {
+    process.exit(1);
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Database connection test on startup
 // ---------------------------------------------------------------------------
 
-const testQueryText = "SELECT 1";
-pool.query(testQueryText)
-  .then(() => {
-    logger.info({ query: testQueryText }, "Database connection validated");
-  })
-  .catch((err) => {
-    logger.error(
-      `[startup] Database connection failed: ${err.message}\n` +
-        "Verify DATABASE_URL is correct and PostgreSQL is reachable.\n" +
-        "Server exiting."
-    );
-    process.exit(1);
-  });
+if (!isTest) {
+  const testQueryText = "SELECT 1";
+  pool.query(testQueryText)
+    .then(() => {
+      logger.info({ query: testQueryText }, "Database connection validated");
+    })
+    .catch((err) => {
+      logger.error(
+        `[startup] Database connection failed: ${err.message}\n` +
+          "Verify DATABASE_URL is correct and PostgreSQL is reachable.\n" +
+          "Server exiting."
+      );
+      process.exit(1);
+    });
+}
 
 // ---------------------------------------------------------------------------
 // App setup
@@ -117,6 +129,10 @@ app.use(
 // signature check needs the original bytes, not req.body. See routes/webhooks.
 app.use(
   express.json({
+    // Cap JSON payloads at 10kb (asserted by index.test.ts). Webhooks and API
+    // bodies are all small; file uploads (KYC documents) go through busboy as
+    // multipart and are not affected.
+    limit: "10kb",
     verify: (req, _res, buf) => {
       (req as express.Request & { rawBody?: Buffer }).rawBody = buf;
     },
@@ -130,7 +146,6 @@ app.use(apiVersion);
 // Routes
 // ---------------------------------------------------------------------------
 
-/** Health-check — used by load balancers and uptime monitors */
 app.get("/health", (_req: Request, res: Response) => {
   res.status(200).json({
     status: "ok",
@@ -139,7 +154,6 @@ app.get("/health", (_req: Request, res: Response) => {
   });
 });
 
-/** Readiness probe — confirms DB connectivity before accepting traffic */
 app.get("/ready", async (_req: Request, res: Response) => {
   try {
     await query("SELECT 1");
@@ -149,8 +163,15 @@ app.get("/ready", async (_req: Request, res: Response) => {
   }
 });
 
-// Register all API routes
 registerRoutes(app);
+
+// ---------------------------------------------------------------------------
+// 404 handler
+// ---------------------------------------------------------------------------
+
+app.use((_req: Request, res: Response) => {
+  res.status(404).json({ error: "Not found" });
+});
 
 // ---------------------------------------------------------------------------
 // Global error handler  (must be last)
@@ -162,14 +183,16 @@ app.use(errorHandler);
 // Start
 // ---------------------------------------------------------------------------
 
-app.listen(PORT, () => {
-  logger.info(
-    { port: PORT, env: process.env["NODE_ENV"] ?? "development" },
-    "AirFlex API started"
-  );
+if (!isTest) {
+  app.listen(PORT, () => {
+    logger.info(
+      { port: PORT, env: process.env["NODE_ENV"] ?? "development" },
+      "AirFlex API started"
+    );
 
-  // Initialise background job queue (Redis-backed or in-process fallback)
-  initJobQueue();
-});
+    // Initialise background job queue (Redis-backed or in-process fallback)
+    initJobQueue();
+  });
+}
 
 export default app;

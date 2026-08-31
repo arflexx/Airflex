@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getToken } from "../lib/auth";
+import { CurrencyInput } from "../../components/CurrencyInput";
 
 // ---------------------------------------------------------------------------
 // Paystack inline checkout (Issue #25)
@@ -280,27 +281,18 @@ export default function DepositModal({
             >
               Amount
             </label>
-            <div className="relative">
-              <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-sm text-gray-500 dark:text-gray-400">
-                ₦
-              </span>
-              <input
-                id="deposit-amount"
-                name="amount"
-                type="text"
-                inputMode="decimal"
-                value={amount}
-                onChange={(e) => {
-                  setAmount(e.target.value);
-                  if (error) setError(null);
-                }}
-                placeholder={`${MIN_DEPOSIT_NAIRA}`}
-                aria-describedby="deposit-amount-hint"
-                aria-invalid={error ? "true" : undefined}
-                disabled={busy}
-                className="w-full rounded-xl border border-gray-200 bg-white py-2.5 pl-8 pr-4 text-sm text-gray-900 placeholder:text-gray-400 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20 disabled:opacity-60 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
-              />
-            </div>
+            <CurrencyInput
+              id="deposit-amount"
+              name="amount"
+              value={amount}
+              min={MIN_DEPOSIT_NAIRA}
+              onChange={(val) => {
+                setAmount(val ? String(val) : "");
+                if (error) setError(null);
+              }}
+              placeholder={`${MIN_DEPOSIT_NAIRA}`}
+              disabled={busy}
+            />
             <p
               id="deposit-amount-hint"
               className="mt-1 text-xs text-gray-500 dark:text-gray-400"

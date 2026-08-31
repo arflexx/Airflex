@@ -8,8 +8,12 @@
 export {
   requestOtpSchema,
   verifyOtpSchema,
+  recoverSchema,
+  changePhoneSchema,
   type RequestOtpInput,
   type VerifyOtpInput,
+  type RecoverInput,
+  type ChangePhoneInput,
 } from "./auth.schemas";
 
 export {
@@ -20,3 +24,14 @@ export {
   type BuyTradeInput,
   type PaginationInput,
 } from "./trade.schemas";
+
+export {
+  resolveDisputeSchema,
+  type ResolveDisputeInput,
+} from "./admin.schemas";
+
+export {
+  analyticsDateRangeSchema,
+  ANALYTICS_DEFAULT_WINDOW_DAYS,
+  type AnalyticsDateRangeInput,
+} from "./analytics.schemas";

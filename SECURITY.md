@@ -76,17 +76,6 @@ The following are **not** eligible for the responsible disclosure programme:
 
 ---
 
-## Coordinated Disclosure
-
-AirFlex follows a **coordinated disclosure** model:
-
-1. You report the issue privately via the channels above.
-2. We triage, develop a fix, and deploy it.
-3. We publish a GitHub Security Advisory crediting you (with your permission)
-   after the fix is live.
-4. You are free to publish your own write-up 30 days after the fix is deployed,
-   or earlier by mutual agreement.
-
 We will **not** pursue legal action against researchers who:
 
 - Discover and report vulnerabilities in good faith

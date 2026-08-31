@@ -4,25 +4,30 @@
   "description": "AirFlex Express API server",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "ts-node-dev --respawn --transpile-only -r ./src/telemetry.ts src/index.ts",
-    "build": "tsc",
+    "dev": "ts-node-dev --respawn --transpile-only -r tsconfig-paths/register -r ./src/telemetry.ts src/index.ts",
+    "build": "tsc && tsc-alias",
     "lint": "tsc --noEmit",
     "tsc": "tsc",
     "start": "node --require ./dist/telemetry.js dist/index.js",
     "test": "jest --runInBand --forceExit",
     "test:watch": "jest --watch",
     "generate:openapi": "ts-node scripts/generate-openapi.ts",
-    "check:openapi": "ts-node scripts/generate-openapi.ts && git diff --exit-code openapi.json"
+    "check:openapi": "ts-node scripts/generate-openapi.ts && git diff --exit-code openapi.json",
+    "db:migrate": "ts-node src/db/migrate.ts",
+    "db:migrate:rollback": "ts-node src/db/migrate.ts rollback"
   },
   "dependencies": {
     "@airflex/shared": "workspace:*",
     "@asteasolutions/zod-to-openapi": "7.1.1",
+    "@opentelemetry/api": "1.9.0",
     "@opentelemetry/auto-instrumentations-node": "0.57.0",
-    "@opentelemetry/exporter-otlp-http": "0.57.0",
+    "@opentelemetry/exporter-trace-otlp-http": "0.57.0",
     "@opentelemetry/resources": "1.30.1",
     "@opentelemetry/sdk-node": "0.57.0",
     "@opentelemetry/semantic-conventions": "1.30.0",
     "@stellar/stellar-sdk": "12.3.0",
+    "bcryptjs": "^3.0.3",
+    "busboy": "1.6.0",
     "cors": "2.8.5",
     "dotenv": "16.4.5",
     "express": "4.19.2",
@@ -36,6 +41,7 @@
     "zod": "3.23.8"
   },
   "devDependencies": {
+    "@types/busboy": "1.5.4",
     "@types/cors": "2.8.17",
     "@types/express": "4.17.21",
     "@types/jest": "29.5.12",
@@ -49,6 +55,8 @@
     "supertest": "7.0.0",
     "ts-jest": "29.2.3",
     "ts-node-dev": "2.0.0",
+    "tsc-alias": "1.8.10",
+    "tsconfig-paths": "4.2.0",
     "typescript": "5.5.3"
   },
   "jest": {
@@ -57,6 +65,9 @@
     "roots": [
       "<rootDir>/src"
     ],
+    "moduleNameMapper": {
+      "^@server/(.*)$": "<rootDir>/src/$1"
+    },
     "testMatch": [
       "**/*.test.ts"
     ],
@@ -65,6 +76,9 @@
       "js",
       "json"
     ],
+    "moduleNameMapper": {
+      "^@server/(.*)$": "<rootDir>/src/$1"
+    },
     "transform": {
       "^.+\\.ts$": [
         "ts-jest",

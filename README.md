@@ -220,20 +220,17 @@ Deployment guide → [SOROBAN_DEPLOY_GUIDE.md](./SOROBAN_DEPLOY_GUIDE.md)
 
 ## Roadmap
 
-| Status | Item |
-|--------|------|
-| ✅ | Express API server foundation |
-| ✅ | Trade marketplace endpoints |
-| ✅ | Soroban escrow contract (testnet) |
-| ✅ | JWT authentication middleware |
-| ✅ | Stellar SDK service layer |
-| 🚧 | OTP authentication (Termii) |
-| 🚧 | Wallet generation and management |
-| 🚧 | Paystack payment integration |
-| 📋 | Frontend marketplace UI |
-| 📋 | Admin dashboard |
-| 📋 | Mainnet deployment |
-| 📋 | Mobile apps |
+The full public roadmap — milestones, issue mapping, target dates, and
+deliberately deferred features — lives in
+**[`ROADMAP.md`](./ROADMAP.md)**.
+
+| Milestone | Focus | Target |
+|-----------|-------|--------|
+| v0.1.0 — Foundation | Monorepo, CI/CD, Docker, core server scaffold | Q3 2026 |
+| v0.2.0 — Auth & Wallets | OTP, Stellar wallet, virtual accounts, Paystack deposits | Q4 2026 |
+| v0.3.0 — Marketplace MVP | Trade listings, buy flow, escrow integration | Q1 2027 |
+| v0.4.0 — Full Trade Lifecycle | Dispute resolution, delivery confirmation, notifications | Q2 2027 |
+| v0.5.0 — Polish & Launch | Admin dashboard, PWA, i18n, docs site | Q3 2027 |
 
 ---
 

@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { getToken } from "../lib/auth";
+import { CurrencyInput } from "../../components/CurrencyInput";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -272,17 +273,13 @@ export default function WithdrawModal({
             >
               Amount (₦)
             </label>
-            <input
-              type="number"
+            <CurrencyInput
               id="amount"
+              name="amount"
               value={amount}
-              onChange={(e) => setAmount(e.target.value)}
+              max={parseFloat(currentBalance) || undefined}
+              onChange={(val) => setAmount(val ? String(val) : "")}
               placeholder="Enter amount"
-              step="0.01"
-              min="0"
-              max={currentBalance}
-              required
-              className="w-full rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm text-gray-900 placeholder:text-gray-400 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 dark:placeholder:text-gray-500"
             />
           </div>
 

@@ -1,47 +1,43 @@
 /**
  * admin.ts — Admin-only API routes.
  *
- * All routes require a valid Bearer JWT. In the MVP, admin access is checked
- * by looking for a role = 'admin' column on the users row.  The authenticate
- * middleware validates the JWT; the requireAdmin middleware below validates
- * the role.
+ * All routes require a valid Bearer JWT (`authenticate`) and an admin role
+ * (`authorize("admin")`). The admin role is checked against the `role` column
+ * on the users row.
+ *
+ * Endpoints:
+ *   GET  /api/v1/admin/queues            — background job queue health
+ *   GET  /api/v1/admin/trades            — all trades (optional status filter + pagination)
+ *   POST /api/v1/admin/trades/:id/resolve— settle a disputed trade (RELEASE | REFUND)
+ *   GET  /api/v1/admin/users             — paginated users with balance + trade count
+ *   GET  /api/v1/admin/users/:phone      — single user profile + wallet + trade history
  */
 
-import { Router, Request, Response, NextFunction } from "express";
-import { authenticate, AuthenticatedRequest } from "../middleware/authenticate";
+import { Router } from "express";
+import { authenticate } from "../middleware/authenticate";
+import { authorize } from "../middleware/authorize";
+import { validate } from "../middleware/validate";
 import { QueueService } from "../jobs";
 import { SseEmitter } from "../services/sseEmitter";
 import pool from "../db";
+import { resolveDispute } from "../services/stellar";
+import {
+  resolveDisputeSchema,
+  paginationSchema,
+  type ResolveDisputeInput,
+} from "../schemas";
+import type { TradeOffer } from "../types/trade";
+import { FraudDetectionService } from "../services/fraudDetection";
 
 const router = Router();
 
-// ---------------------------------------------------------------------------
-// requireAdmin middleware
-// ---------------------------------------------------------------------------
-
-/**
- * Ensures the authenticated user has role = 'admin' in the users table.
- * Returns 403 if the user is not an admin.
- */
-async function requireAdmin(
-  req: Request,
-  res: Response,
-  next: NextFunction
-): Promise<void> {
-  const { sub: userId } = (req as AuthenticatedRequest).user;
-
-  const { rows } = await pool.query<{ role: string }>(
-    `SELECT role FROM users WHERE id = $1 LIMIT 1`,
-    [userId]
-  );
-
-  if (!rows.length || rows[0]?.role !== "admin") {
-    res.status(403).json({ error: "Admin access required" });
-    return;
-  }
-
-  next();
-}
+const ALLOWED_TRADE_STATUSES = [
+  "Active",
+  "Locked",
+  "Completed",
+  "Cancelled",
+  "Disputed",
+] as const;
 
 // ---------------------------------------------------------------------------
 // GET /api/v1/admin/queues  (admin only)
@@ -49,24 +45,11 @@ async function requireAdmin(
 
 /**
  * Returns queue depths and recent failure counts for all background job queues.
- *
- * Response shape:
- * {
- *   queues: Array<{
- *     name: string
- *     waiting: number
- *     active: number
- *     completed: number
- *     failed: number
- *     delayed: number
- *     recentFailures: Array<{ jobId, data, failedReason, timestamp }>
- *   }>
- * }
  */
 router.get(
   "/queues",
   authenticate,
-  requireAdmin,
+  authorize("admin"),
   async (_req, res) => {
     const queues = QueueService.getStats();
     res.status(200).json({ queues });
@@ -74,201 +57,341 @@ router.get(
 );
 
 // ---------------------------------------------------------------------------
-// Dashboard endpoints (Issue #23)
+// GET /api/v1/admin/trades  (admin only)
 // ---------------------------------------------------------------------------
 
 /**
- * `GET /api/v1/admin/metrics`
- *
- * Summary counts for the dashboard panel. One round trip rather than five
- * separate count queries - the dashboard renders them together, so fetching
- * them together keeps the numbers mutually consistent. Five queries could
- * each land on a different moment and show, say, more completed trades than
- * total.
- */
-router.get(
-  "/metrics",
-  authenticate,
-  requireAdmin,
-  async (_req: Request, res: Response) => {
-    const { rows } = await pool.query<{
-      total_users: string;
-      open_trades: string;
-      locked_trades: string;
-      completed_trades: string;
-      disputed_trades: string;
-      total_volume: string;
-    }>(
-      `SELECT
-         (SELECT COUNT(*) FROM users)::text                                   AS total_users,
-         (SELECT COUNT(*) FROM trades WHERE status = 'open')::text            AS open_trades,
-         (SELECT COUNT(*) FROM trades WHERE status = 'locked')::text          AS locked_trades,
-         (SELECT COUNT(*) FROM trades WHERE status = 'completed')::text       AS completed_trades,
-         (SELECT COUNT(*) FROM trades WHERE status = 'disputed')::text        AS disputed_trades,
-         (SELECT COALESCE(SUM(amount), 0) FROM trades
-           WHERE status = 'completed')::text                                  AS total_volume`
-    );
-
-    const row = rows[0];
-    res.status(200).json({
-      totalUsers: Number(row.total_users),
-      openTrades: Number(row.open_trades),
-      lockedTrades: Number(row.locked_trades),
-      completedTrades: Number(row.completed_trades),
-      disputedTrades: Number(row.disputed_trades),
-      totalVolume: Number(row.total_volume),
-    });
-  }
-);
-
-/**
- * `GET /api/v1/admin/trades?status=disputed`
- *
- * Trades filtered by status, newest first. Capped at 100 - an admin table is
- * for triage, and an uncapped query on a growing table is a way to stall the
- * connection pool.
+ * Returns all trades with optional `?status=Disputed` filtering and pagination.
  */
 router.get(
   "/trades",
   authenticate,
-  requireAdmin,
-  async (req: Request, res: Response) => {
-    const status = typeof req.query["status"] === "string" ? req.query["status"] : null;
+  authorize("admin"),
+  async (req, res) => {
+    const parsed = paginationSchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({
+        error: "Invalid query parameters",
+        details: parsed.error.flatten().fieldErrors,
+      });
+      return;
+    }
 
-    const { rows } = await pool.query(
-      `SELECT t.id, t.status, t.amount, t.created_at,
-              buyer.phone  AS buyer_phone,
-              seller.phone AS seller_phone
-       FROM trades t
-       LEFT JOIN users buyer  ON buyer.id  = t.buyer_id
-       LEFT JOIN users seller ON seller.id = t.seller_id
-       WHERE ($1::text IS NULL OR t.status = $1::text)
-       ORDER BY t.created_at DESC
-       LIMIT 100`,
-      [status]
+    const { page, limit } = parsed.data;
+    const offset = (page - 1) * limit;
+
+    const rawStatus =
+      typeof req.query.status === "string" ? req.query.status : undefined;
+    const filterByStatus = rawStatus !== undefined;
+
+    if (
+      filterByStatus &&
+      !(ALLOWED_TRADE_STATUSES as readonly string[]).includes(rawStatus)
+    ) {
+      res.status(400).json({
+        error: `status must be one of: ${ALLOWED_TRADE_STATUSES.join(", ")}`,
+      });
+      return;
+    }
+
+    const where = filterByStatus ? "WHERE status = $1" : "";
+    const dataParams: (string | number)[] = filterByStatus
+      ? [rawStatus!, limit, offset]
+      : [limit, offset];
+    const countParams: (string | number)[] = filterByStatus ? [rawStatus!] : [];
+    const limitIdx = dataParams.length - 1;
+    const offsetIdx = dataParams.length;
+
+    const { rows: trades } = await pool.query<TradeOffer>(
+      `SELECT * FROM trade_offers
+       ${where}
+       ORDER BY created_at DESC
+       LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+      dataParams
     );
 
-    res.status(200).json({ trades: rows });
+    const { rows: countRows } = await pool.query<{ count: string }>(
+      `SELECT COUNT(*) FROM trade_offers ${where}`,
+      countParams
+    );
+
+    const total = parseInt(countRows[0]?.count ?? "0", 10);
+
+    res.status(200).json({
+      data: trades,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
   }
 );
 
+// ---------------------------------------------------------------------------
+// POST /api/v1/admin/trades/:id/resolve  (admin only)
+// ---------------------------------------------------------------------------
+
 /**
- * `POST /api/v1/admin/trades/:id/resolve`
+ * Settles a disputed trade by calling `resolve_dispute` on the Soroban escrow
+ * contract and updating the trade status in PostgreSQL.
  *
- * Settle a disputed trade one way or the other.
+ * Body: { resolution: "RELEASE" | "REFUND" }
+ *   - RELEASE → funds released to the seller; DB status becomes Completed.
+ *   - REFUND  → funds returned to the buyer;  DB status becomes Cancelled.
  *
- * Guarded on `status = 'disputed'` **inside the UPDATE**, not by a prior
- * SELECT. Two admins opening the same dispute is entirely normal, and a
- * check-then-update would let both resolutions apply - the second silently
- * overwriting the first, after both have already moved money. Making the
- * database arbitrate means the loser gets a 409 and can see what happened.
+ * If the on-chain contract call fails, the database update is rolled back and
+ * the endpoint responds with HTTP 502 and a descriptive error.
  */
 router.post(
   "/trades/:id/resolve",
   authenticate,
-  requireAdmin,
-  async (req: AuthenticatedRequest, res: Response) => {
-    const tradeId = req.params["id"];
-    const resolution = (req.body as { resolution?: string } | undefined)?.resolution;
+  authorize("admin"),
+  validate(resolveDisputeSchema),
+  async (req, res) => {
+    const { id } = req.params;
+    const { resolution } = req.body as ResolveDisputeInput;
 
-    if (resolution !== "release_to_seller" && resolution !== "refund_to_buyer") {
-      res.status(422).json({
-        error: "resolution must be 'release_to_seller' or 'refund_to_buyer'",
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      const { rows: tradeRows } = await client.query<TradeOffer>(
+        `SELECT * FROM trade_offers WHERE id = $1 FOR UPDATE`,
+        [id]
+      );
+
+      if (!tradeRows.length) {
+        await client.query("ROLLBACK");
+        res.status(404).json({ error: "Trade not found" });
+        return;
+      }
+
+      const trade = tradeRows[0]!;
+
+      if (trade.status !== "Disputed") {
+        await client.query("ROLLBACK");
+        res.status(400).json({
+          error:
+            `Trade cannot be resolved in its current state (${trade.status}). ` +
+            "Only Disputed trades can be resolved.",
+        });
+        return;
+      }
+
+      if (!trade.contract_listing_id) {
+        await client.query("ROLLBACK");
+        res.status(400).json({ error: "Trade has no associated on-chain listing ID" });
+        return;
+      }
+
+      let txHash: string;
+      try {
+        txHash = await resolveDispute({
+          contractTradeId: trade.contract_listing_id,
+          resolution,
+        });
+      } catch (err) {
+        await client.query("ROLLBACK");
+        const message = err instanceof Error ? err.message : String(err);
+        res.status(502).json({
+          error: `Failed to resolve dispute on-chain: ${message}`,
+        });
+        return;
+      }
+
+      const newStatus = resolution === "RELEASE" ? "Completed" : "Cancelled";
+
+      const { rows: updated } = await client.query<TradeOffer>(
+        `UPDATE trade_offers
+         SET status = $1, updated_at = NOW()
+         WHERE id = $2
+         RETURNING *`,
+        [newStatus, id]
+      );
+
+      await client.query("COMMIT");
+
+      const participants = [trade.seller_id];
+      if (trade.buyer_id) participants.push(trade.buyer_id);
+
+      SseEmitter.emit([...new Set(participants)], {
+        type: "trade_resolved",
+        tradeId: id,
+        status: newStatus,
+        resolution,
+        txHash,
+        message:
+          resolution === "RELEASE"
+            ? "The dispute was resolved in favour of the seller."
+            : "The dispute was resolved in favour of the buyer.",
       });
-      return;
+
+      res.status(200).json({ data: updated[0], txHash });
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
     }
-
-    const newStatus = resolution === "release_to_seller" ? "completed" : "refunded";
-
-    const { rows } = await pool.query<{
-      id: string;
-      status: string;
-      buyer_id: string;
-      seller_id: string;
-    }>(
-      `UPDATE trades
-       SET status = $2,
-           resolved_by = $3,
-           resolved_at = NOW()
-       WHERE id = $1 AND status = 'disputed'
-       RETURNING id, status, buyer_id, seller_id`,
-      [tradeId, newStatus, req.user?.userId ?? null]
-    );
-
-    if (rows.length === 0) {
-      // Either the trade does not exist or someone already resolved it. Both
-      // mean "your action did not apply", which is what the admin needs to know.
-      res.status(409).json({
-        error: "Trade not found or no longer disputed",
-      });
-      return;
-    }
-
-    const trade = rows[0];
-
-    // Tell both parties immediately - this is a status change they have been
-    // waiting on, and it is exactly what the notification hook (#24) consumes.
-    SseEmitter.emit([trade.buyer_id, trade.seller_id], {
-      type: "trade_status",
-      tradeId: trade.id,
-      newStatus: trade.status,
-    });
-
-    res.status(200).json({ trade });
   }
 );
 
+// ---------------------------------------------------------------------------
+// GET /api/v1/admin/users  (admin only)
+// ---------------------------------------------------------------------------
+
 /**
- * `GET /api/v1/admin/users?phone=...`
- *
- * Look up one user with their wallet and trade history.
- *
- * Requires an exact phone match rather than offering a wildcard search: this
- * endpoint returns balances and full trade history, and a prefix search over
- * that is a bulk-export tool for anyone who reaches an admin token.
+ * Returns a paginated list of users with their ledger balance, trade count,
+ * and registration date.
  */
 router.get(
   "/users",
   authenticate,
-  requireAdmin,
-  async (req: Request, res: Response) => {
-    const phone = typeof req.query["phone"] === "string" ? req.query["phone"] : null;
-
-    if (!phone) {
-      res.status(422).json({ error: "phone query parameter is required" });
+  authorize("admin"),
+  async (req, res) => {
+    const parsed = paginationSchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({
+        error: "Invalid query parameters",
+        details: parsed.error.flatten().fieldErrors,
+      });
       return;
     }
 
-    const { rows: users } = await pool.query(
-      `SELECT u.id, u.phone, u.role, u.created_at,
-              w.fiat_balance, w.stellar_public_key
+    const { page, limit } = parsed.data;
+    const offset = (page - 1) * limit;
+
+    const { rows: users } = await pool.query<{
+      id: string;
+      phone: string;
+      registrationDate: string;
+      balance: number;
+      tradeCount: number;
+    }>(
+      `SELECT
+         u.id,
+         u.phone,
+         u.created_at AS "registrationDate",
+         COALESCE((
+           SELECT SUM(CASE WHEN t.direction = 'credit' THEN t.amount ELSE -t.amount END)
+           FROM transactions t
+           WHERE t.user_id = u.id
+         ), 0)::float8 AS balance,
+         COALESCE((
+           SELECT COUNT(*)
+           FROM trade_offers o
+           WHERE o.seller_id = u.id OR o.buyer_id = u.id
+         ), 0)::int AS "tradeCount"
        FROM users u
-       LEFT JOIN wallets w ON w.user_id = u.id
+       ORDER BY u.created_at DESC
+       LIMIT $1 OFFSET $2`,
+      [limit, offset]
+    );
+
+    const { rows: countRows } = await pool.query<{ count: string }>(
+      `SELECT COUNT(*) FROM users`
+    );
+
+    const total = parseInt(countRows[0]?.count ?? "0", 10);
+
+    res.status(200).json({
+      data: users,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+  }
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/admin/users/:phone  (admin only)
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns a single user's full profile, wallet balance, and trade history by
+ * phone number.
+ */
+router.get(
+  "/users/:phone",
+  authenticate,
+  authorize("admin"),
+  async (req, res) => {
+    const { phone } = req.params;
+
+    const { rows: userRows } = await pool.query<{
+      id: string;
+      phone: string;
+      role: string;
+      created_at: string;
+      stellar_public_key: string | null;
+      balance: number;
+    }>(
+      `SELECT
+         u.id,
+         u.phone,
+         u.role,
+         u.created_at,
+         u.stellar_public_key,
+         COALESCE((
+           SELECT SUM(CASE WHEN t.direction = 'credit' THEN t.amount ELSE -t.amount END)
+           FROM transactions t
+           WHERE t.user_id = u.id
+         ), 0)::float8 AS balance
+       FROM users u
        WHERE u.phone = $1
        LIMIT 1`,
       [phone]
     );
 
-    if (users.length === 0) {
+    if (!userRows.length) {
       res.status(404).json({ error: "User not found" });
       return;
     }
 
-    const { rows: trades } = await pool.query(
-      `SELECT id, status, amount, created_at
-       FROM trades
-       WHERE buyer_id = $1 OR seller_id = $1
-       ORDER BY created_at DESC
-       LIMIT 50`,
-      [users[0].id]
+    const user = userRows[0]!;
+
+    const { rows: tradeHistory } = await pool.query<TradeOffer>(
+      `SELECT * FROM trade_offers
+       WHERE seller_id = $1 OR buyer_id = $1
+       ORDER BY created_at DESC`,
+      [user.id]
     );
 
-    res.status(200).json({ user: users[0], trades });
+    res.status(200).json({
+      data: {
+        id: user.id,
+        phone: user.phone,
+        role: user.role,
+        registrationDate: user.created_at,
+        stellarPublicKey: user.stellar_public_key,
+        balance: user.balance,
+        tradeCount: tradeHistory.length,
+        tradeHistory,
+      },
+    });
   }
 );
 
-router.patch("/users/:id", authenticate, requireAdmin, (_req: Request, res: Response) => {
-  res.status(501).json({ error: "Not Implemented" });
-});
+// ---------------------------------------------------------------------------
+// GET /api/v1/admin/flagged-accounts  (admin only)
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns accounts flagged for velocity violations (> 3 violations in past 24h).
+ */
+router.get(
+  "/flagged-accounts",
+  authenticate,
+  authorize("admin"),
+  async (_req, res) => {
+    const flagged = await FraudDetectionService.getFlaggedAccounts();
+    res.status(200).json({ flaggedAccounts: flagged });
+  }
+);
 
 export default router;

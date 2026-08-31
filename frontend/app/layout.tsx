@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { Metadata } from "next";
 import Navbar from "../components/Navbar";
+import ServiceWorkerRegister from "../components/ServiceWorkerRegister";
 import { AuthProvider } from "./context/AuthContext";
 import "./globals.css";
 import { SITE_DESCRIPTION, SITE_NAME, siteUrl } from "./lib/seo";
@@ -60,6 +61,8 @@ export default function RootLayout({ children }: { children: ReactNode }) {
           <Navbar />
           {children}
         </AuthProvider>
+        {/* Registers the PWA service worker in production (issue #107) */}
+        <ServiceWorkerRegister />
       </body>
     </html>
   );

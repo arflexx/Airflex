@@ -38,7 +38,7 @@ if (
   } = require("@opentelemetry/auto-instrumentations-node");
   const {
     OTLPTraceExporter,
-  } = require("@opentelemetry/exporter-otlp-http");
+  } = require("@opentelemetry/exporter-trace-otlp-http");
   const { Resource } = require("@opentelemetry/resources");
   const {
     SEMRESATTRS_SERVICE_NAME,

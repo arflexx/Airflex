@@ -9,10 +9,11 @@ import { encrypt, decrypt } from "./crypto";
 describe("crypto utils", () => {
   const originalEnv = process.env["ENCRYPTION_KEY"];
 
-  beforeAll(() => {
-    // Set a valid 64-char hex key for testing
-    process.env["ENCRYPTION_KEY"] =
-      "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+  const VALID_KEY =
+    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+
+  beforeEach(() => {
+    process.env["ENCRYPTION_KEY"] = VALID_KEY;
   });
 
   afterAll(() => {
@@ -44,6 +45,8 @@ describe("crypto utils", () => {
     it("throws when ENCRYPTION_KEY is not 64 hex characters", () => {
       process.env["ENCRYPTION_KEY"] = "short-key";
       expect(() => encrypt("test")).toThrow();
+      process.env["ENCRYPTION_KEY"] =
+        "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
     });
   });
 

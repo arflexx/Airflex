@@ -1,0 +1,6 @@
+-- Seller KYC columns for issue #114
+ALTER TABLE users ADD COLUMN IF NOT EXISTS kyc_status VARCHAR(20) DEFAULT 'unverified';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS kyc_legal_name VARCHAR(255);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS kyc_date_of_birth DATE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS kyc_nin VARCHAR(11);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS kyc_document_path TEXT;

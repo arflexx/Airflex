@@ -1,6 +1,8 @@
 #![no_std]
 #![allow(clippy::too_many_arguments)]
 
+extern crate alloc;
+
 use soroban_sdk::{
     contract, contractimpl, contracttype, symbol_short,
     token, Address, Env, Symbol, Vec,
@@ -75,6 +77,8 @@ pub struct SubEscrow {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ContractError {
     ContractPaused,
+    Unauthorized,
+    TimelockNotExpired,
 }
 
 // ---------------------------------------------------------------------------
@@ -863,6 +867,50 @@ mod test {
         client.deposit_to_escrow(&buyer, &trade_id, &500_0000000i128);
 
         client.cancel_and_refund(&buyer, &trade_id);
+    }
+
+    #[test]
+    fn test_admin_cancels_immediately() {
+        let (env, client, admin, seller, buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let trade_id = client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &symbol_short!("AIRTIME"),
+            &(1_000_000 + 86_400),
+        );
+        client.deposit_to_escrow(&buyer, &trade_id, &500_0000000i128);
+
+        // Admin cancels immediately before timelock expiry
+        client.cancel_and_refund(&admin, &trade_id);
+
+        let trade = client.get_trade(&trade_id);
+        assert_eq!(trade.status, TradeStatus::Cancelled);
+        assert_eq!(trade.filled_amount, 0);
+
+        let token_client = TokenClient::new(&env, &token);
+        assert_eq!(token_client.balance(&buyer), 10_000_0000000i128);
+    }
+
+    #[test]
+    #[should_panic(expected = "only admin or buyer can cancel")]
+    fn test_seller_cancel_fails() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let trade_id = client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &symbol_short!("AIRTIME"),
+            &(1_000_000 + 86_400),
+        );
+        client.deposit_to_escrow(&buyer, &trade_id, &500_0000000i128);
+
+        // Seller attempts to cancel and refund
+        client.cancel_and_refund(&seller, &trade_id);
     }
 
     // -----------------------------------------------------------------------

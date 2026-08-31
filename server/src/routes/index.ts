@@ -8,6 +8,8 @@ import adminRouter from './admin';
 import eventsRouter from './events';
 import docsRouter from './docs';
 import referralsRouter from './referrals';
+import kycRouter from './kyc';
+import analyticsRouter from './analytics';
 
 export function registerRoutes(app: Express): void {
   // API v1 routes
@@ -20,7 +22,17 @@ export function registerRoutes(app: Express): void {
   app.use('/api/v1/events', eventsRouter);
   app.use('/api/v1/referrals', referralsRouter);
 
-  // Legacy SSE path — kept for backwards compatibility; prefer /api/v1/events
+  // KYC submission (issue #114)
+  app.use('/api/kyc', kycRouter);
+
+  // Admin analytics (issue #110) — mounted under the versioned admin router
+  // and exposed at the unversioned /api/admin/analytics path referenced in the
+  // issue for dashboard tooling.
+  app.use('/api/v1/admin', analyticsRouter);
+  app.use('/api/admin', analyticsRouter);
+
+  // Legacy alias paths
+  app.use('/api/trades', tradesRouter);
   app.use('/api/events', eventsRouter);
 
   // OpenAPI 3.1 spec + Swagger UI

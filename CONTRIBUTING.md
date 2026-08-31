@@ -317,6 +317,7 @@ without redeployment.
   stellar contract build
   ```
 - Update `docs/smart-contract.md` with any new or changed functions.
+- Keep `contracts/readme.md` **Storage Schema** section in sync with `DataKey` changes in `escrow/src/lib.rs` (tiers, TTL, and off-chain query examples).
 - If redeployment is required, add the new contract address to `server/.env.example`
   and document it in the PR description.
 
@@ -374,18 +375,7 @@ Open a [GitHub Issue](https://github.com/dark-sarge/Airflex/issues/new) and incl
 
 ---
 
-## Suggesting Features
 
-Open a [GitHub Issue](https://github.com/dark-sarge/Airflex/issues/new) with the
-`enhancement` label and include:
-
-1. **Problem statement** — what user need or pain point does this address?
-2. **Proposed solution** — describe the feature at a high level.
-3. **Alternatives considered** — other approaches you thought about and why you ruled
-   them out.
-4. **Scope** — which layer(s) are affected: frontend, server, database, smart contract?
-
----
 
 ## Security Vulnerabilities
 

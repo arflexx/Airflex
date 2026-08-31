@@ -36,6 +36,7 @@ import { releasePayment } from "./stellar";
 import { SseEmitter } from "./sseEmitter";
 import { WalletService } from "./wallet";
 import { creditReferralReward } from "./referrals";
+import { NotificationService } from "./notifications";
 import type { TradeOffer } from "../types/trade";
 
 // ---------------------------------------------------------------------------

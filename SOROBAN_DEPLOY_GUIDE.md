@@ -91,10 +91,7 @@ rustup target add wasm32v1-none
 rustup toolchain list
 ```
 
-You want `stable-x86_64-pc-windows-msvc` or a working `gnu` toolchain
-(requires MinGW with `dlltool`). The WASM build itself does not need a linker,
-but `cargo test` (native) does.
-
+Y
 If `cargo test` fails with `dlltool not found`, either:
 - Install the MSVC C++ build tools via Visual Studio Installer, **or**
 - Run tests in CI (Linux) and only do WASM builds locally
@@ -404,21 +401,7 @@ stellar contract invoke \
   -- my_function --param1 value1 --param2 value2
 ```
 
-### Passing an Address argument
 
-```bash
--- my_function --user GABC...XYZ
-```
-
-### Passing an integer
-
-```bash
--- my_function --amount 5000000000
-```
-
-> Stellar token amounts use 7 decimal places. `1 XLM = 10_000_000 stroops`.
-
----
 
 ## 12. Deploy to Mainnet
 

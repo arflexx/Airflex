@@ -43,7 +43,7 @@ export function decrypt(ciphertext: string): string {
   }
 
   const [ivBase64, tagBase64, encryptedBase64] = ciphertext.split(":");
-  if (!ivBase64 || !tagBase64 || !encryptedBase64) {
+  if (!ivBase64 || !tagBase64 || encryptedBase64 === undefined) {
     throw new Error("Invalid ciphertext format");
   }
 

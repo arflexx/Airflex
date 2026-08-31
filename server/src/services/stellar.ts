@@ -437,6 +437,73 @@ export async function releasePayment(contractTradeId: string): Promise<string> {
 
 
 /**
+ * Calls the smart contract's `resolve_dispute` function to settle a disputed
+ * trade. Only the admin (STELLAR_SERVER_SECRET) can invoke this — the same
+ * signing key used by `release_payment`.
+ *
+ * The `resolution` maps to a `refund` flag on-chain:
+ *   - "RELEASE" → funds are released to the seller (refund = false).
+ *   - "REFUND"  → funds are returned to the buyer (refund = true).
+ *
+ * @param contractTradeId  The on-chain trade ID (u64) stored in contract_listing_id
+ * @param resolution       "RELEASE" | "REFUND"
+ * @returns Transaction hash of the confirmed resolution
+ */
+export async function resolveDispute(params: {
+  contractTradeId: string;
+  resolution: "RELEASE" | "REFUND";
+}): Promise<string> {
+  const contractAddress = process.env["ESCROW_CONTRACT_ADDRESS"];
+  if (!contractAddress) {
+    throw new Error("ESCROW_CONTRACT_ADDRESS environment variable is not set");
+  }
+
+  const serverSecret = process.env["STELLAR_SERVER_SECRET"];
+  if (!serverSecret) {
+    throw new Error("STELLAR_SERVER_SECRET environment variable is not set");
+  }
+
+  // Derive keypair from server secret — never log this object
+  const keypair = Keypair.fromSecret(serverSecret);
+  const serverPublicKey = keypair.publicKey();
+
+  const account = await horizonServer.loadAccount(serverPublicKey);
+  const contract = new Contract(contractAddress);
+
+  const tradeIdU64 = BigInt(params.contractTradeId);
+  const refund = params.resolution === "REFUND";
+
+  const tx = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(
+      contract.call(
+        "resolve_dispute",
+        nativeToScVal(tradeIdU64, { type: "u64" }),
+        nativeToScVal(refund, { type: "bool" })
+      )
+    )
+    .setTimeout(30)
+    .build();
+
+  const preparedTx = await sorobanServer.prepareTransaction(tx);
+  preparedTx.sign(keypair);
+
+  const response = await sorobanServer.sendTransaction(preparedTx);
+
+  if (response.status === "ERROR") {
+    throw new Error(
+      `Contract resolve_dispute failed: ${JSON.stringify(response.errorResult)}`
+    );
+  }
+
+  await pollForResult(response.hash);
+  return response.hash;
+}
+
+
+/**
  * Polls Soroban RPC until a submitted transaction reaches a terminal state.
  * Returns the stringified return value on SUCCESS, throws on FAILED.
  */

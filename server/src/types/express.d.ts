@@ -1,7 +1,5 @@
-// Extend Express request and response-local types through declaration merging.
-// See https://www.typescriptlang.org/docs/handbook/declaration-merging.html#module-augmentation
-import "express";
-
+// Uses TypeScript declaration merging to augment Express types globally:
+// https://www.typescriptlang.org/docs/handbook/declaration-merging.html#module-augmentation
 declare global {
   namespace Express {
     interface Request {
@@ -11,6 +9,8 @@ declare global {
         role: string;
         iat: number;
         exp: number;
+        sub?: string;
+        stellarPublicKey?: string;
       };
     }
 

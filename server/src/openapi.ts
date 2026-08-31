@@ -137,6 +137,71 @@ export const openApiDocument = {
               },
             },
           },
+          recoveryCodes: {
+            type: "array",
+            items: { type: "string", example: "ABC23456789ABCDE" },
+            description:
+              "8 single-use backup codes. Present ONLY on the very first signup " +
+              "(issue #108) — never on later logins.",
+          },
+        },
+      },
+      RecoverBody: {
+        type: "object",
+        required: ["recoveryCode"],
+        properties: {
+          recoveryCode: {
+            type: "string",
+            minLength: 16,
+            maxLength: 16,
+            pattern: "^[A-Za-z0-9]{16}$",
+            description: "A single-use backup code issued at signup (issue #108).",
+            example: "ABC23456789ABCDE",
+          },
+        },
+      },
+      RecoveryTokenResponse: {
+        type: "object",
+        required: ["token", "message", "expiresIn"],
+        properties: {
+          token: {
+            type: "string",
+            description: "One-time JWT (15 min) scoped to recovery — present it to POST /api/v1/auth/recover/change-phone.",
+          },
+          message: { type: "string" },
+          expiresIn: { type: "string", example: "15m" },
+        },
+      },
+      ChangePhoneBody: {
+        type: "object",
+        required: ["token", "newPhone"],
+        properties: {
+          token: {
+            type: "string",
+            description: "The one-time recovery JWT from POST /api/v1/auth/recover.",
+          },
+          newPhone: {
+            type: "string",
+            description: "E.164 or Nigerian local format (0XXXXXXXXXX). 10–15 digits.",
+            example: "+2348098765432",
+          },
+        },
+      },
+      RecoveryStatusResponse: {
+        type: "object",
+        required: ["data"],
+        properties: {
+          data: {
+            type: "object",
+            required: ["remaining"],
+            properties: {
+              remaining: {
+                type: "integer",
+                description: "How many backup codes remain unused (issue #108).",
+                example: 8,
+              },
+            },
+          },
         },
       },
 
@@ -394,6 +459,66 @@ export const openApiDocument = {
           },
         },
       },
+      AnalyticsOverview: {
+        type: "object",
+        required: ["data"],
+        properties: {
+          data: {
+            type: "object",
+            required: [
+              "totalUsers",
+              "totalTrades",
+              "tradeVolume",
+              "feeRevenue",
+              "successRate",
+            ],
+            properties: {
+              totalUsers: { type: "integer", example: 1240 },
+              totalTrades: { type: "integer", example: 860 },
+              tradeVolume: { type: "number", example: 482500 },
+              feeRevenue: { type: "number", example: 9650 },
+              successRate: { type: "number", example: 87.5 },
+            },
+          },
+        },
+      },
+      AnalyticsTimeseriesPoint: {
+        type: "object",
+        required: ["date", "tradeCount", "volume"],
+        properties: {
+          date: { type: "string", format: "date", example: "2026-08-01" },
+          tradeCount: { type: "integer", example: 42 },
+          volume: { type: "number", example: 21000 },
+        },
+      },
+      AnalyticsTimeseriesResponse: {
+        type: "object",
+        required: ["data"],
+        properties: {
+          data: {
+            type: "array",
+            items: { $ref: "#/components/schemas/AnalyticsTimeseriesPoint" },
+          },
+        },
+      },
+      AnalyticsAssetsResponse: {
+        type: "object",
+        required: ["data"],
+        properties: {
+          data: {
+            type: "array",
+            items: {
+              type: "object",
+              required: ["assetType", "tradeCount", "volume"],
+              properties: {
+                assetType: { type: "string", example: "MTN_AIRTIME" },
+                tradeCount: { type: "integer", example: 310 },
+                volume: { type: "number", example: 155000 },
+              },
+            },
+          },
+        },
+      },
     },
 
     // ------------------------------------------------------------------
@@ -616,6 +741,116 @@ export const openApiDocument = {
               },
             },
           },
+        },
+      },
+    },
+    "/api/v1/auth/recover": {
+      post: {
+        tags: ["Auth"],
+        summary: "Recover account with a backup code",
+        description:
+          "Redeems a single-use backup code (issue #108) and returns a short-lived " +
+          "one-time token that can be used to register a new phone number. " +
+          "5 failed attempts from the same IP within 1 hour trigger a 429 lockout.",
+        security: [],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/RecoverBody" },
+            },
+          },
+        },
+        responses: {
+          "200": {
+            description: "Code accepted — one-time recovery token issued.",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/RecoveryTokenResponse" },
+              },
+            },
+          },
+          "401": {
+            description: "Invalid or already-used recovery code.",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/ErrorResponse" },
+              },
+            },
+          },
+          "422": { $ref: "#/components/responses/UnprocessableEntity" },
+          "429": { $ref: "#/components/responses/TooManyRequests" },
+          "500": { $ref: "#/components/responses/InternalError" },
+        },
+      },
+    },
+    "/api/v1/auth/recover/change-phone": {
+      post: {
+        tags: ["Auth"],
+        summary: "Register a new phone number after recovery",
+        description:
+          "Presents the one-time recovery token from POST /api/v1/auth/recover " +
+          "and moves the account to a new phone number (issue #108). Returns a " +
+          "fresh session JWT so the user is signed in immediately.",
+        security: [],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/ChangePhoneBody" },
+            },
+          },
+        },
+        responses: {
+          "200": {
+            description: "Phone number updated — session JWT issued.",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/AuthTokenResponse" },
+              },
+            },
+          },
+          "401": {
+            description: "Recovery token is invalid, expired, or not recovery-scoped.",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/ErrorResponse" },
+              },
+            },
+          },
+          "404": { $ref: "#/components/responses/NotFound" },
+          "409": {
+            description: "The new phone number is already registered to another account.",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/ErrorResponse" },
+              },
+            },
+          },
+          "422": { $ref: "#/components/responses/UnprocessableEntity" },
+          "500": { $ref: "#/components/responses/InternalError" },
+        },
+      },
+    },
+    "/api/v1/auth/recovery-codes/status": {
+      get: {
+        tags: ["Auth"],
+        summary: "Check remaining recovery codes",
+        description:
+          "Returns how many backup codes remain unused for the authenticated user " +
+          "(issue #108). The codes themselves are never revealed.",
+        security: [{ bearerAuth: [] }],
+        responses: {
+          "200": {
+            description: "Remaining code count.",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/RecoveryStatusResponse" },
+              },
+            },
+          },
+          "401": { $ref: "#/components/responses/Unauthorized" },
+          "500": { $ref: "#/components/responses/InternalError" },
         },
       },
     },
@@ -1180,6 +1415,105 @@ export const openApiDocument = {
             content: {
               "application/json": {
                 schema: { $ref: "#/components/schemas/QueuesResponse" },
+              },
+            },
+          },
+          "401": { $ref: "#/components/responses/Unauthorized" },
+          "403": { $ref: "#/components/responses/Forbidden" },
+          "500": { $ref: "#/components/responses/InternalError" },
+        },
+      },
+    },
+    "/api/v1/admin/analytics/overview": {
+      get: {
+        tags: ["Admin"],
+        summary: "Platform analytics overview",
+        description:
+          "Platform-level metrics for the admin dashboard (issue #110): total users, " +
+          "total trades, completed trade volume, platform fee revenue, and success " +
+          "rate. Cached in Redis for 5 minutes.",
+        security: [{ bearerAuth: [] }],
+        responses: {
+          "200": {
+            description: "Platform metrics.",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/AnalyticsOverview" },
+              },
+            },
+          },
+          "401": { $ref: "#/components/responses/Unauthorized" },
+          "403": { $ref: "#/components/responses/Forbidden" },
+          "500": { $ref: "#/components/responses/InternalError" },
+        },
+      },
+    },
+    "/api/v1/admin/analytics/trades/timeseries": {
+      get: {
+        tags: ["Admin"],
+        summary: "Daily trade volume timeseries",
+        description:
+          "Daily trade counts and volume for the range [?from, ?to] (issue #110). " +
+          "Both params are ISO-8601 dates; they default to the last 30 days. " +
+          "Cached in Redis for 5 minutes.",
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: "from",
+            in: "query",
+            schema: {
+              type: "string",
+              format: "date",
+              example: "2026-08-01",
+            },
+          },
+          {
+            name: "to",
+            in: "query",
+            schema: {
+              type: "string",
+              format: "date",
+              example: "2026-08-28",
+            },
+          },
+        ],
+        responses: {
+          "200": {
+            description: "Daily trade counts and volume.",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/AnalyticsTimeseriesResponse" },
+              },
+            },
+          },
+          "400": {
+            description: "Invalid query parameters.",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/ErrorResponse" },
+              },
+            },
+          },
+          "401": { $ref: "#/components/responses/Unauthorized" },
+          "403": { $ref: "#/components/responses/Forbidden" },
+          "500": { $ref: "#/components/responses/InternalError" },
+        },
+      },
+    },
+    "/api/v1/admin/analytics/assets": {
+      get: {
+        tags: ["Admin"],
+        summary: "Per-asset-type trade breakdown",
+        description:
+          "Trade counts and volume grouped by asset_type (issue #110), ordered by " +
+          "volume. Cached in Redis for 5 minutes.",
+        security: [{ bearerAuth: [] }],
+        responses: {
+          "200": {
+            description: "Per-asset breakdown.",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/AnalyticsAssetsResponse" },
               },
             },
           },
