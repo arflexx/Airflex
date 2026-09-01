@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
 import type { Metadata } from "next";
+import { NextIntlClientProvider } from "next-intl";
+import { getLocale, getMessages } from "next-intl/server";
 import Navbar from "../components/Navbar";
 import ServiceWorkerRegister from "../components/ServiceWorkerRegister";
 import { AuthProvider } from "./context/AuthContext";
@@ -44,25 +46,32 @@ export const metadata: Metadata = {
 
 /**
  * Root layout — mounts the shared Navbar on every page and provides
- * application-wide authentication state via AuthProvider.
+ * application-wide authentication state via AuthProvider, plus the
+ * next-intl messages for the active locale.
  *
  * AuthProvider is a "use client" component, but this layout can stay a
  * Server Component: Next.js allows importing client components from server
  * components as long as we don't call client-only hooks here.
- *
- * suppressHydrationWarning is set on <html> to accommodate the theme
- * toggling script injected by next-themes (when that branch is merged).
  */
-export default function RootLayout({ children }: { children: ReactNode }) {
+export default async function RootLayout({
+  children,
+}: {
+  children: ReactNode;
+}) {
+  const locale = await getLocale();
+  const messages = await getMessages();
+
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang={locale} suppressHydrationWarning>
       <body className="bg-gray-50 text-gray-900 antialiased dark:bg-gray-900 dark:text-gray-100">
-        <AuthProvider>
-          <Navbar />
-          {children}
-        </AuthProvider>
-        {/* Registers the PWA service worker in production (issue #107) */}
-        <ServiceWorkerRegister />
+<NextIntlClientProvider messages={messages}>
+          <AuthProvider>
+            <Navbar />
+            {children}
+          </AuthProvider>
+          {/* Registers the PWA service worker in production (issue #107) */}
+          <ServiceWorkerRegister />
+        </NextIntlClientProvider>
       </body>
     </html>
   );

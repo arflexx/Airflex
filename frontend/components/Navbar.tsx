@@ -21,7 +21,9 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { usePathname } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { getToken, getUser, clearToken, isAuthenticated } from "../app/lib/auth";
+import LanguageSwitcher from "./LanguageSwitcher";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -38,9 +40,9 @@ interface WalletResponse {
 // ---------------------------------------------------------------------------
 
 const NAV_LINKS = [
-  { href: "/",         label: "Marketplace" },
-  { href: "/sell",     label: "Sell"        },
-  { href: "/profile",  label: "Wallet"      },
+  { href: "/",         labelKey: "marketplace" },
+  { href: "/sell",     labelKey: "sell"        },
+  { href: "/profile",  labelKey: "wallet"      },
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -177,6 +179,7 @@ function maskPhone(phone: string): string {
 
 export default function Navbar() {
   const pathname = usePathname();
+  const t = useTranslations("Nav");
 
   // ---- auth / user state --------------------------------------------------
   const [mounted, setMounted]         = useState(false);
@@ -308,17 +311,17 @@ export default function Navbar() {
 
           {/* Desktop nav links — hidden on mobile */}
           <nav
-            aria-label="Primary"
+            aria-label={t("primary")}
             className="hidden md:flex items-center gap-1"
           >
-            {NAV_LINKS.map(({ href, label }) => (
+            {NAV_LINKS.map(({ href, labelKey }) => (
               <a
                 key={href}
                 href={href}
                 aria-current={isActive(href) ? "page" : undefined}
                 className={`${desktopLinkBase} ${isActive(href) ? desktopLinkActive : desktopLinkDefault}`}
               >
-                {label}
+                {t(labelKey)}
               </a>
             ))}
           </nav>
@@ -346,7 +349,7 @@ export default function Navbar() {
                   <a
                     href="/profile"
                     className="hidden lg:flex items-center rounded-lg px-2 py-1.5 text-xs font-medium text-gray-500 transition-colors hover:text-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 dark:text-gray-400 dark:hover:text-violet-400"
-                    aria-label="View your profile"
+                    aria-label={t("viewProfile")}
                   >
                     {maskedPhone}
                   </a>
@@ -357,7 +360,7 @@ export default function Navbar() {
                     onClick={handleLogout}
                     className="inline-flex items-center rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-gray-700 transition-colors hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
                   >
-                    Log out
+                    {t("logOut")}
                   </button>
                 </div>
               ) : (
@@ -366,12 +369,13 @@ export default function Navbar() {
                   href="/auth/signup"
                   className="hidden md:inline-flex items-center rounded-xl bg-violet-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"
                 >
-                  Sign In
+                  {t("signIn")}
                 </a>
               )
             )}
 
             {/* Theme toggle — always visible */}
+            <LanguageSwitcher />
             <ThemeToggle />
 
             {/* Hamburger — mobile only */}
@@ -381,7 +385,7 @@ export default function Navbar() {
               onClick={() => setDrawerOpen((o) => !o)}
               aria-expanded={drawerOpen}
               aria-controls="mobile-drawer"
-              aria-label={drawerOpen ? "Close menu" : "Open menu"}
+              aria-label={drawerOpen ? t("closeMenu") : t("openMenu")}
               className="inline-flex md:hidden h-9 w-9 items-center justify-center rounded-lg text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
             >
               {drawerOpen ? <CloseIcon /> : <HamburgerIcon />}
@@ -407,7 +411,7 @@ export default function Navbar() {
         ref={drawerRef}
         role="dialog"
         aria-modal="true"
-        aria-label="Navigation menu"
+        aria-label={t("navMenu")}
         className={`fixed inset-y-0 right-0 z-50 w-72 max-w-full transform bg-white shadow-2xl transition-transform duration-200 ease-in-out md:hidden dark:bg-gray-900 ${
           drawerOpen ? "translate-x-0" : "translate-x-full"
         }`}
@@ -427,7 +431,7 @@ export default function Navbar() {
           <button
             type="button"
             onClick={() => { setDrawerOpen(false); hamburgerRef.current?.focus(); }}
-            aria-label="Close menu"
+            aria-label={t("closeMenu")}
             className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-gray-500 transition-colors hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 dark:text-gray-400 dark:hover:bg-gray-800"
           >
             <CloseIcon />
@@ -435,15 +439,15 @@ export default function Navbar() {
         </div>
 
         {/* Drawer nav links */}
-        <nav aria-label="Mobile primary" className="flex flex-col gap-1 px-3 pt-4">
-          {NAV_LINKS.map(({ href, label }) => (
+        <nav aria-label={t("mobilePrimary")} className="flex flex-col gap-1 px-3 pt-4">
+          {NAV_LINKS.map(({ href, labelKey }) => (
             <a
               key={href}
               href={href}
               aria-current={isActive(href) ? "page" : undefined}
               className={`${drawerLinkBase} ${isActive(href) ? drawerLinkActive : drawerLinkDefault}`}
             >
-              {label}
+              {t(labelKey)}
             </a>
           ))}
         </nav>
@@ -457,9 +461,9 @@ export default function Navbar() {
                 <div className="flex items-center gap-2 rounded-xl border border-gray-100 bg-gray-50 px-4 py-3 dark:border-gray-700 dark:bg-gray-800">
                   <WalletIcon />
                   <div className="flex flex-col">
-                    <span className="text-xs text-gray-400 dark:text-gray-500">Balance</span>
+                    <span className="text-xs text-gray-400 dark:text-gray-500">{t("balance")}</span>
                     <span className="text-sm font-semibold text-gray-800 tabular-nums dark:text-gray-200">
-                      {balanceLoading ? "Loading…" : (balance ?? "—")}
+                      {balanceLoading ? t("loadingBalance") : (balance ?? "—")}
                     </span>
                   </div>
                 </div>
@@ -479,7 +483,7 @@ export default function Navbar() {
                   onClick={handleLogout}
                   className="flex w-full items-center justify-center rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold text-gray-700 transition-colors hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
                 >
-                  Log out
+                  {t("logOut")}
                 </button>
               </div>
             ) : (
@@ -487,7 +491,7 @@ export default function Navbar() {
                 href="/auth/signup"
                 className="flex w-full items-center justify-center rounded-xl bg-violet-600 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"
               >
-                Sign In
+                {t("signIn")}
               </a>
             )}
           </div>

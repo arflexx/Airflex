@@ -13,6 +13,8 @@ Soroban (Rust) smart contracts for the AirFlex P2P airtime/data marketplace on t
 | `escrow`    | Trustless escrow for P2P trades (deposit, release, refund) |
 | `marketplace` | On-chain listing registry with seller reputation tracking |
 
+See [ERROR_CODES.md](./ERROR_CODES.md) for the full list of typed contract error codes, their numeric values, and the conditions that trigger them.
+
 ---
 
 ## Deployed Addresses

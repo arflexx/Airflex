@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useTranslations } from "next-intl";
 import { getToken, isAuthenticated } from "../lib/auth";
 import DepositModal from "./DepositModal";
 import WithdrawModal from "./WithdrawModal";
@@ -43,6 +44,7 @@ interface WalletTransaction {
 // ---------------------------------------------------------------------------
 
 export default function WalletPage() {
+  const t = useTranslations("Wallet");
   const apiUrl = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:3001";
 
   const [authChecked, setAuthChecked] = useState(false);
@@ -84,7 +86,7 @@ export default function WalletPage() {
     ])
       .then(([data, tradesData]) => {
         if (data.error || !data.publicKey) {
-          setError(data.error ?? "Failed to load wallet.");
+          setError(data.error ?? t("loadFailed"));
         } else {
           setWallet({
             publicKey: data.publicKey,
@@ -97,9 +99,9 @@ export default function WalletPage() {
           }
         }
       })
-      .catch(() => setError("Network error. Check your connection."))
+      .catch(() => setError(t("networkError")))
       .finally(() => setLoading(false));
-  }, [authChecked, apiUrl]);
+  }, [authChecked, apiUrl, t]);
 
   function handleWithdrawSuccess() {
     // Refresh wallet data after successful withdrawal
@@ -121,14 +123,14 @@ export default function WalletPage() {
           });
         }
       })
-      .catch(() => setError("Failed to refresh balance"))
+      .catch(() => setError(t("refreshFailed")))
       .finally(() => setLoading(false));
   }
 
   if (!authChecked || loading) {
     return (
       <div className="flex items-center justify-center py-32">
-        <Spinner size="lg" label="Loading wallet details…" />
+<Spinner size="lg" label="Loading wallet details…" />
       </div>
     );
   }
@@ -138,10 +140,10 @@ export default function WalletPage() {
       {/* Page heading */}
       <div>
         <p className="mb-1 text-xs font-semibold uppercase tracking-widest text-violet-500 dark:text-violet-400">
-          Wallet
+          {t("label")}
         </p>
         <h1 className="text-3xl font-extrabold tracking-tight text-gray-900 dark:text-gray-100">
-          My Wallet
+          {t("title")}
         </h1>
       </div>
 
@@ -160,7 +162,7 @@ export default function WalletPage() {
         <Card className="flex flex-col">
           <div className="mb-6 flex flex-col gap-1">
             <p className="text-sm font-medium text-gray-500 dark:text-gray-400">
-              Available Balance
+              {t("availableBalance")}
             </p>
             <p className="text-4xl font-extrabold text-gray-900 dark:text-gray-100">
               ₦{parseFloat(wallet.balance).toLocaleString()}
@@ -169,7 +171,10 @@ export default function WalletPage() {
 
           <div className="mb-6 flex flex-col gap-2 rounded-xl bg-gray-50 p-4 dark:bg-gray-700">
             <p className="text-xs font-medium text-gray-500 dark:text-gray-400">
-              Stellar Public Key (On-chain Account)
+Stellar Public Key (On-chain Account)
+            </p>
+            <p className="break-all font-mono text-xs text-gray-700 dark:text-gray-300">
+              {wallet.publicKey}
             </p>
             <div className="flex items-center gap-2">
               <StellarExplorerLink
@@ -189,7 +194,7 @@ export default function WalletPage() {
             </div>
           </div>
 
-          <div className="flex flex-col gap-3 sm:flex-row">
+<div className="flex flex-col gap-3 sm:flex-row">
             <Button
               variant="primary"
               onClick={() => setIsDepositOpen(true)}
@@ -202,7 +207,7 @@ export default function WalletPage() {
               onClick={() => setIsModalOpen(true)}
               className="w-full"
             >
-              Withdraw Funds
+              {t("withdrawFunds")}
             </Button>
           </div>
         </Card>

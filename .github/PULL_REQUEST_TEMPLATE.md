@@ -19,7 +19,7 @@ Closes #<!-- issue number -->
 
 ---
 
-## What Changed
+## What Changed.
 
 <!-- List the files/modules changed and what was done to each one. -->
 
