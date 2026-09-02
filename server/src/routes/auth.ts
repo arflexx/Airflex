@@ -30,6 +30,7 @@ import {
   countRemainingRecoveryCodes,
   redeemRecoveryCode,
 } from "../services/recoveryCodes";
+import { provisionVirtualAccountForUser } from "../services/virtualAccount";
 
 const router = Router();
 
@@ -272,6 +273,18 @@ router.post(
         (err as Error).message
       );
     }
+
+    // Provision a Paystack dedicated virtual account (non-fatal).
+    // Uses the phone number as display name until KYC provides a legal name.
+    // If inline creation fails the service enqueues a background retry job.
+    void provisionVirtualAccountForUser(user.id, phone).catch((err) => {
+      console.error(
+        "[auth] Virtual account provisioning error for user",
+        user.id,
+        "–",
+        (err as Error).message
+      );
+    });
 
     // Issue JWT — same payload shape the authenticate middleware expects
     const secret = process.env["JWT_SECRET"]!;

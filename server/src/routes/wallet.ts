@@ -142,8 +142,18 @@ router.get(
   async (req, res) => {
     const { sub: userId } = (req as AuthenticatedRequest).user;
 
-    const { rows } = await pool.query<{ stellar_public_key: string }>(
-      `SELECT stellar_public_key FROM wallets WHERE user_id = $1 LIMIT 1`,
+    const { rows } = await pool.query<{
+      stellar_public_key: string;
+      virtual_account_number: string | null;
+      virtual_bank_name: string | null;
+    }>(
+      `SELECT w.stellar_public_key,
+              u.virtual_account_number,
+              u.virtual_bank_name
+       FROM wallets w
+       JOIN users u ON u.id = w.user_id
+       WHERE w.user_id = $1
+       LIMIT 1`,
       [userId]
     );
 
@@ -154,7 +164,7 @@ router.get(
       return;
     }
 
-    const publicKey = rows[0].stellar_public_key;
+    const { stellar_public_key: publicKey, virtual_account_number, virtual_bank_name } = rows[0];
 
     let balance: string;
     try {
@@ -170,6 +180,13 @@ router.get(
       balance,          // XLM balance as a decimal string, e.g. "10000.0000000"
       asset: "XLM",
       network: process.env["STELLAR_NETWORK"] ?? "testnet",
+      // Virtual bank account for NGN deposits — null while still provisioning
+      virtualAccount: virtual_account_number
+        ? {
+            accountNumber: virtual_account_number,
+            bankName: virtual_bank_name,
+          }
+        : null,
     });
   }
 );
