@@ -3,6 +3,7 @@
 import { useState, useEffect, type FormEvent, type ChangeEvent } from "react";
 import { getToken, isAuthenticated } from "../lib/auth";
 import type { TradeOffer } from "../../../server/src/types/trade";
+import { useAnnouncement } from "../components/AnnouncementRegions";
 import { CurrencyInput } from "../../components/CurrencyInput";
 
 // ---------------------------------------------------------------------------
@@ -112,10 +113,21 @@ function Field({
 }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <label htmlFor={id} className="text-sm font-medium text-gray-700 dark:text-gray-300">
+      <label 
+        htmlFor={id} 
+        id={`${id}-label`}
+        className="text-sm font-medium text-gray-700 dark:text-gray-300"
+      >
         {label}
       </label>
-      {hint && <p className="text-xs text-gray-400 dark:text-gray-500">{hint}</p>}
+      {hint && (
+        <p 
+          id={`${id}-hint`} 
+          className="text-xs text-gray-500 dark:text-gray-400"
+        >
+          {hint}
+        </p>
+      )}
       {children}
       {error && (
         <p id={`${id}-error`} role="alert" className="text-xs text-red-600 dark:text-red-400">
@@ -129,7 +141,7 @@ function Field({
 const inputBase =
   "w-full rounded-xl border px-4 py-3 text-sm text-gray-900 outline-none transition-colors " +
   "focus:ring-2 focus:ring-violet-500 disabled:cursor-not-allowed disabled:bg-gray-50 " +
-  "disabled:text-gray-400 placeholder-gray-400 " +
+  "disabled:text-gray-500 placeholder-gray-500 " +
   "dark:text-gray-100 dark:placeholder-gray-500 dark:disabled:bg-gray-800 dark:disabled:text-gray-500";
 
 const inputNormal =
@@ -160,7 +172,7 @@ function SuccessPanel({ trade }: { trade: TradeOffer }) {
         <h2 className="text-2xl font-extrabold text-gray-900 dark:text-gray-100">
           Listing Created!
         </h2>
-        <p className="text-sm text-gray-600 dark:text-gray-400">
+        <p className="text-sm text-gray-600 dark:text-gray-300">
           Your trade offer is now live on the AirFlex marketplace.
         </p>
       </div>
@@ -212,7 +224,7 @@ function SuccessPanel({ trade }: { trade: TradeOffer }) {
 function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-start justify-between gap-4 px-5 py-3">
-      <dt className="shrink-0 text-xs font-medium text-gray-500 dark:text-gray-400">{label}</dt>
+      <dt className="shrink-0 text-xs font-medium text-gray-500 dark:text-gray-300">{label}</dt>
       <dd className="text-right text-sm text-gray-900 dark:text-gray-100">{children}</dd>
     </div>
   );
@@ -224,6 +236,7 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
 
 export default function SellPage() {
   const [authChecked, setAuthChecked] = useState(false);
+  const { announceError, announceSuccess } = useAnnouncement();
   const [kycStatus, setKycStatus] = useState<string>("unverified");
   const [kycLoading, setKycLoading] = useState(true);
   const [fields, setFields] = useState<FormFields>({
@@ -285,6 +298,10 @@ export default function SellPage() {
     if (Object.keys(fieldErrors).length > 0) {
       setErrors(fieldErrors);
       const firstErrorId = Object.keys(fieldErrors)[0];
+      const firstError = Object.values(fieldErrors)[0];
+      if (firstError) {
+        announceError(`Form validation error: ${firstError}`);
+      }
       document.getElementById(firstErrorId ?? "")?.focus();
       return;
     }
@@ -323,18 +340,25 @@ export default function SellPage() {
         const detail = data.details
           ? Object.values(data.details).flat()[0]
           : data.error;
-        setServerError(detail ?? "Something went wrong. Please try again.");
+        const errorMsg = detail ?? "Something went wrong. Please try again.";
+        setServerError(errorMsg);
+        announceError(errorMsg);
         return;
       }
 
       if (!data.data) {
-        setServerError("Unexpected server response. Please try again.");
+        const errorMsg = "Unexpected server response. Please try again.";
+        setServerError(errorMsg);
+        announceError(errorMsg);
         return;
       }
 
       setCreatedTrade(data.data);
+      announceSuccess("Listing created successfully! Your trade offer is now live on the marketplace.");
     } catch {
-      setServerError("Network error. Check your connection and try again.");
+      const errorMsg = "Network error. Check your connection and try again.";
+      setServerError(errorMsg);
+      announceError(errorMsg);
     } finally {
       setLoading(false);
     }
@@ -364,7 +388,7 @@ export default function SellPage() {
         <h1 className="text-3xl font-extrabold tracking-tight text-gray-900 dark:text-gray-100">
           Sell Airtime or Data
         </h1>
-        <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+        <p className="mt-2 text-sm text-gray-500 dark:text-gray-300">
           Fill in the details below. Your listing will be registered on the
           Stellar escrow contract and visible to buyers immediately.
         </p>

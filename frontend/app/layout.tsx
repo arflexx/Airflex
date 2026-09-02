@@ -5,6 +5,8 @@ import { getLocale, getMessages } from "next-intl/server";
 import Navbar from "../components/Navbar";
 import ServiceWorkerRegister from "../components/ServiceWorkerRegister";
 import { AuthProvider } from "./context/AuthContext";
+import AxeDevTools from "./components/AxeDevTools";
+import { AnnouncementProvider } from "./components/AnnouncementRegions";
 import "./globals.css";
 import { SITE_DESCRIPTION, SITE_NAME, siteUrl } from "./lib/seo";
 
@@ -64,14 +66,22 @@ export default async function RootLayout({
   return (
     <html lang={locale} suppressHydrationWarning>
       <body className="bg-gray-50 text-gray-900 antialiased dark:bg-gray-900 dark:text-gray-100">
-<NextIntlClientProvider messages={messages}>
+        {/* Skip to main content link for keyboard users */}
+        <a
+          href="#main-content"
+          className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 z-50 rounded bg-violet-600 px-4 py-2 text-sm font-medium text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 focus-visible:ring-offset-2"
+        >
+          Skip to main content
+        </a>
+        <AnnouncementProvider>
           <AuthProvider>
             <Navbar />
-            {children}
+            <main id="main-content">
+              {children}
+            </main>
+            <AxeDevTools />
           </AuthProvider>
-          {/* Registers the PWA service worker in production (issue #107) */}
-          <ServiceWorkerRegister />
-        </NextIntlClientProvider>
+        </AnnouncementProvider>
       </body>
     </html>
   );

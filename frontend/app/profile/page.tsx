@@ -88,8 +88,26 @@ function formatDateTime(iso: string): string {
 // ---------------------------------------------------------------------------
 
 function StatusBadge({ status }: { status: TradeStatus }) {
-  const variant = status === "Active" ? "Open" : status;
-  return <Badge variant={variant as any} />;
+  const styles: Record<TradeStatus, string> = {
+    Active:    "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300",
+    Locked:    "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
+    Completed: "bg-blue-100  text-blue-700  dark:bg-blue-900/40  dark:text-blue-300",
+    Cancelled: "bg-gray-100  text-gray-500  dark:bg-gray-700     dark:text-gray-400",
+    Disputed:  "bg-red-100   text-red-700   dark:bg-red-900/40   dark:text-red-300",
+  };
+
+  // Display "Disputed" in the UI for Locked trades to match filter label
+  const label = status === "Locked" ? "Disputed" : status;
+
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+        styles[status] ?? "bg-gray-100 text-gray-500"
+      }`}
+    >
+      {label}
+    </span>
+  );
 }
 
 /** A single stat card in the profile summary */
@@ -199,7 +217,7 @@ function TradeRow({
   return (
     <tr className="group border-b border-gray-50 transition-colors hover:bg-gray-50/60 dark:border-gray-700/60 dark:hover:bg-gray-700/30">
       {/* Date */}
-      <td className="py-3.5 pl-5 pr-4 text-sm text-gray-500 dark:text-gray-400 whitespace-nowrap">
+      <td className="py-3.5 pl-5 pr-4 text-sm text-gray-500 dark:text-gray-300 whitespace-nowrap">
         {formatDate(trade.created_at)}
       </td>
 
@@ -227,7 +245,7 @@ function TradeRow({
       </td>
 
       {/* Counterparty */}
-      <td className="px-4 py-3.5 text-sm text-gray-500 dark:text-gray-400 font-mono">
+      <td className="px-4 py-3.5 text-sm text-gray-500 dark:text-gray-300 font-mono">
         {counterparty}
       </td>
 

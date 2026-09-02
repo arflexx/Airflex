@@ -5,6 +5,7 @@ import { useTranslations } from "next-intl";
 import { getToken, isAuthenticated } from "../lib/auth";
 import DepositModal from "./DepositModal";
 import WithdrawModal from "./WithdrawModal";
+import { useAnnouncement } from "../components/AnnouncementRegions";
 import { Button } from "../../components/ui/Button";
 import { Badge } from "../../components/ui/Badge";
 import { Card, CardHeader, CardTitle, CardContent } from "../../components/ui/Card";
@@ -46,6 +47,7 @@ interface WalletTransaction {
 export default function WalletPage() {
   const t = useTranslations("Wallet");
   const apiUrl = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:3001";
+  const { announceError, announceStatus } = useAnnouncement();
 
   const [authChecked, setAuthChecked] = useState(false);
   const [wallet, setWallet] = useState<WalletData | null>(null);
@@ -94,6 +96,7 @@ export default function WalletPage() {
             asset: data.asset ?? "XLM",
             network: data.network ?? "testnet",
           });
+          announceStatus(`Wallet loaded. Balance: ${data.balance ?? "0"} ${data.asset ?? "XLM"}`);
           if (tradesData && Array.isArray(tradesData.data)) {
             setTransactions(tradesData.data);
           }
@@ -121,6 +124,7 @@ export default function WalletPage() {
             asset: data.asset ?? "XLM",
             network: data.network ?? "testnet",
           });
+          announceStatus(`Balance refreshed: ${data.balance ?? "0"} ${data.asset ?? "XLM"}`);
         }
       })
       .catch(() => setError(t("refreshFailed")))

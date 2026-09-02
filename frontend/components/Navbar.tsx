@@ -23,6 +23,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { usePathname } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { getToken, getUser, clearToken, isAuthenticated } from "../app/lib/auth";
+import { useAnnouncement } from "../app/components/AnnouncementRegions";
 import LanguageSwitcher from "./LanguageSwitcher";
 
 // ---------------------------------------------------------------------------
@@ -179,6 +180,7 @@ function maskPhone(phone: string): string {
 
 export default function Navbar() {
   const pathname = usePathname();
+  const { announceStatus } = useAnnouncement();
   const t = useTranslations("Nav");
 
   // ---- auth / user state --------------------------------------------------
@@ -221,12 +223,16 @@ export default function Navbar() {
         if (data.balance) {
           // Format to 2 dp and append asset symbol
           const num = parseFloat(data.balance);
-          setBalance(`${isNaN(num) ? data.balance : num.toFixed(2)} ${data.asset ?? "XLM"}`);
+          const formattedBalance = `${isNaN(num) ? data.balance : num.toFixed(2)} ${data.asset ?? "XLM"}`;
+          setBalance(formattedBalance);
+          
+          // Announce balance update to screen readers
+          announceStatus(`Wallet balance updated: ${formattedBalance}`);
         }
       })
       .catch(() => {/* silent — balance is non-critical */})
       .finally(() => setBalanceLoading(false));
-  }, [apiUrl]);
+  }, [apiUrl, announceStatus]);
 
   useEffect(() => {
     if (mounted && authed) fetchBalance();
@@ -302,6 +308,7 @@ export default function Navbar() {
           <a
             href="/"
             className="flex shrink-0 items-center gap-2 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"
+            aria-label="AirFlex homepage"
           >
             <span aria-hidden="true" className="text-2xl">🌀</span>
             <span className="text-xl font-extrabold tracking-tight text-violet-700 dark:text-violet-400">
@@ -422,6 +429,7 @@ export default function Navbar() {
             href="/"
             className="flex items-center gap-2 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"
             onClick={() => setDrawerOpen(false)}
+            aria-label="AirFlex homepage"
           >
             <span aria-hidden="true" className="text-2xl">🌀</span>
             <span className="text-lg font-extrabold tracking-tight text-violet-700 dark:text-violet-400">
@@ -472,6 +480,7 @@ export default function Navbar() {
                 <a
                   href="/profile"
                   className="flex items-center gap-2 rounded-xl border border-gray-100 bg-gray-50 px-4 py-3 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700"
+                  aria-label={`View profile for ${maskedPhone}`}
                 >
                   <span aria-hidden="true">👤</span>
                   {maskedPhone}

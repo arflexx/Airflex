@@ -38,10 +38,50 @@ function AssetBadge({ assetType }: { assetType: string }) {
   );
 }
 
+function StatusBadge({ status }: { status: TradeOffer["status"] }) {
+  const styles: Record<TradeOffer["status"], string> = {
+    Active:    "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300",
+    Locked:    "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
+    Completed: "bg-blue-100  text-blue-700  dark:bg-blue-900/40  dark:text-blue-300",
+    Cancelled: "bg-gray-100  text-gray-500  dark:bg-gray-700     dark:text-gray-400",
+    Disputed:  "bg-red-100   text-red-700   dark:bg-red-900/40   dark:text-red-300",
+  };
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${
+        styles[status] ?? "bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400"
+      }`}
+    >
+      <span
+        aria-hidden="true"
+        className={`h-1.5 w-1.5 rounded-full inline-block ${
+          status === "Active" ? "bg-green-500" : "bg-current opacity-50"
+        }`}
+      />
+      {status}
+    </span>
+  );
+}
+
+function Spinner({ label = "Loading…" }: { label?: string }) {
+  return (
+    <svg
+      className="h-4 w-4 animate-spin"
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-label={label}
+      role="img"
+    >
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
+    </svg>
+  );
+}
+
 function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-start justify-between gap-4 px-5 py-3.5">
-      <dt className="shrink-0 text-xs font-medium text-gray-500 dark:text-gray-400">{label}</dt>
+      <dt className="shrink-0 text-xs font-medium text-gray-500 dark:text-gray-300">{label}</dt>
       <dd className="text-right text-sm font-semibold text-gray-900 dark:text-gray-100">{children}</dd>
     </div>
   );
@@ -162,6 +202,7 @@ interface Props {
 export default function TradeDetailClient({ trade }: Props) {
   const t = useTranslations("Trade");
   const countdown = useCountdown(trade.expires_at);
+  const { announceError, announceSuccess } = useAnnouncement();
 
   const [status, setStatus]               = useState<TradeOffer["status"]>(trade.status);
   const [authed, setAuthed]               = useState(false);
@@ -234,6 +275,7 @@ export default function TradeDetailClient({ trade }: Props) {
       setStatus("Locked");
       setTxHash(data.data?.escrow_tx_hash ?? "");
       setConfirmed(true);
+      announceSuccess(`Purchase confirmed! Your ${formatAssetType(trade.asset_type)} order has been placed.`);
     } catch {
       setBuyError(t("networkError"));
     } finally {
@@ -285,7 +327,7 @@ export default function TradeDetailClient({ trade }: Props) {
         >
           {formatAssetType(trade.asset_type)}
         </h1>
-        <p className="mt-1 font-mono text-xs text-gray-400 dark:text-gray-500 break-all">
+        <p className="mt-1 font-mono text-xs text-gray-500 dark:text-gray-400 break-all">
           ID: {trade.id}
         </p>
       </div>
@@ -473,7 +515,7 @@ export default function TradeDetailClient({ trade }: Props) {
         {isSeller && isActive && (
           <p
             role="note"
-            className="rounded-xl border border-gray-200 bg-gray-50 px-5 py-3 text-center text-sm text-gray-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400"
+            className="rounded-xl border border-gray-200 bg-gray-50 px-5 py-3 text-center text-sm text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
           >
             {t("yourListing")}
           </p>

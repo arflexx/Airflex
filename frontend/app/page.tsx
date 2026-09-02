@@ -123,9 +123,8 @@ export default async function HomePage() {
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
-      <main>
-        {/* Hero */}
-        <section className="bg-white border-b border-gray-100 dark:bg-gray-800 dark:border-gray-700">
+      {/* Hero */}
+      <section className="bg-white border-b border-gray-100 dark:bg-gray-800 dark:border-gray-700">
           <div className="mx-auto max-w-7xl px-4 py-16 sm:px-6 sm:py-20 lg:px-8">
             <div className="max-w-2xl">
               <p className="mb-3 inline-block rounded-full bg-violet-100 px-3 py-1 text-xs font-semibold uppercase tracking-widest text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
@@ -192,14 +191,13 @@ export default async function HomePage() {
             </p>
           )}
         </section>
-      </main>
 
       <footer className="border-t border-gray-100 bg-white dark:border-gray-700 dark:bg-gray-800">
         <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4">
           <p className="text-sm text-gray-400 dark:text-gray-500">
             {t("copyright", { year: new Date().getFullYear() })}
           </p>
-          <div className="flex gap-5 text-sm text-gray-400 dark:text-gray-500">
+          <div className="flex gap-5 text-sm text-gray-500 dark:text-gray-400">
             <a href="/docs" className="hover:text-gray-600 transition-colors dark:hover:text-gray-300">
               {t("docs")}
             </a>
