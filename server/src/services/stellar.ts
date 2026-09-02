@@ -15,6 +15,7 @@ import {
   ESCROW_CONTRACT_ID,
   MARKETPLACE_CONTRACT_ID,
 } from "../config/contracts";
+import { parseContractError } from "./contractErrors";
 
 // ---------------------------------------------------------------------------
 // OpenTelemetry tracing helpers
@@ -257,7 +258,8 @@ export async function createListing(params: {
       const response = await sorobanServer.sendTransaction(preparedTx);
 
       if (response.status === "ERROR") {
-        throw new Error(
+        const parsed = parseContractError(response);
+        throw parsed ?? new Error(
           `Contract create_listing failed: ${JSON.stringify(response.errorResult)}`
         );
       }
@@ -331,7 +333,8 @@ export async function depositToEscrow(params: {
       const response = await sorobanServer.sendTransaction(preparedTx);
 
       if (response.status === "ERROR") {
-        throw new Error(
+        const parsed = parseContractError(response);
+        throw parsed ?? new Error(
           `Contract deposit_to_escrow failed: ${JSON.stringify(response.errorResult)}`
         );
       }
@@ -414,7 +417,8 @@ export async function releasePayment(contractTradeId: string): Promise<string> {
       const response = await sorobanServer.sendTransaction(preparedTx);
 
       if (response.status === "ERROR") {
-        throw new Error(
+        const parsed = parseContractError(response);
+        throw parsed ?? new Error(
           `Contract release_payment failed: ${JSON.stringify(response.errorResult)}`
         );
       }
@@ -493,7 +497,8 @@ export async function resolveDispute(params: {
   const response = await sorobanServer.sendTransaction(preparedTx);
 
   if (response.status === "ERROR") {
-    throw new Error(
+    const parsed = parseContractError(response);
+    throw parsed ?? new Error(
       `Contract resolve_dispute failed: ${JSON.stringify(response.errorResult)}`
     );
   }
@@ -531,7 +536,8 @@ async function pollForResult(hash: string): Promise<string> {
         }
 
         if (result.status === SorobanRpc.Api.GetTransactionStatus.FAILED) {
-          throw new Error(`Transaction ${hash} failed on-chain`);
+          const parsed = parseContractError(result);
+          throw parsed ?? new Error(`Transaction ${hash} failed on-chain`);
         }
         // NOT_FOUND means still pending — keep polling
       }

@@ -1,31 +1,30 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-
-// ---------------------------------------------------------------------------
-// Validation
-// ---------------------------------------------------------------------------
-
-function validatePhone(value: string): string | null {
-  const trimmed = value.trim();
-  if (!trimmed) return "Phone number is required.";
-  if (!/^\+?[1-9]\d{9,14}$/.test(trimmed)) {
-    return "Enter a valid phone number (e.g. +2348012345678 or 08012345678).";
-  }
-  return null;
-}
+import { useTranslations } from "next-intl";
 
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
 export default function SignupPage() {
+  const t = useTranslations("Auth");
+
   const [phone, setPhone]             = useState("");
   const [fieldError, setFieldError]   = useState<string | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
   const [loading, setLoading]         = useState(false);
 
   const apiUrl = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:3001";
+
+  function validatePhone(value: string): string | null {
+    const trimmed = value.trim();
+    if (!trimmed) return t("phoneRequired");
+    if (!/^\+?[1-9]\d{9,14}$/.test(trimmed)) {
+      return t("phoneInvalid");
+    }
+    return null;
+  }
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -56,14 +55,14 @@ export default function SignupPage() {
         const detail = data.details
           ? Object.values(data.details).flat()[0]
           : data.error;
-        setServerError(detail ?? "Something went wrong. Please try again.");
+        setServerError(detail ?? t("somethingWentWrong"));
         return;
       }
 
       const encoded = encodeURIComponent(phone.trim());
       window.location.href = `/auth/verify?phone=${encoded}`;
     } catch {
-      setServerError("Network error. Check your connection and try again.");
+      setServerError(t("networkError"));
     } finally {
       setLoading(false);
     }
@@ -74,10 +73,10 @@ export default function SignupPage() {
       {/* Heading */}
       <div className="mb-8">
         <h1 className="text-2xl font-extrabold text-gray-900 dark:text-gray-100">
-          Create your account
+          {t("createAccount")}
         </h1>
         <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
-          Enter your phone number and we'll send a 6-digit OTP to verify it.
+          {t("createAccountBody")}
         </p>
       </div>
 
@@ -89,7 +88,7 @@ export default function SignupPage() {
             htmlFor="phone"
             className="text-sm font-medium text-gray-700 dark:text-gray-300"
           >
-            Phone number
+            {t("phoneNumber")}
           </label>
           <input
             id="phone"
@@ -144,22 +143,22 @@ export default function SignupPage() {
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
               </svg>
-              Sending OTP…
+              {t("sendingOtp")}
             </>
           ) : (
-            "Send OTP"
+            t("sendOtp")
           )}
         </button>
       </form>
 
       {/* Sign-in link */}
       <p className="mt-6 text-center text-sm text-gray-500 dark:text-gray-400">
-        Already have an account?{" "}
+        {t("alreadyHaveAccount")}{" "}
         <a
           href="/auth/verify"
           className="font-semibold text-violet-600 hover:text-violet-700 focus:outline-none focus-visible:ring-1 focus-visible:ring-violet-500 rounded dark:text-violet-400 dark:hover:text-violet-300"
         >
-          Sign in
+          {t("signIn")}
         </a>
       </p>
     </>

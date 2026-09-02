@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useTranslations } from "next-intl";
 import { getToken } from "../lib/auth";
 import { CurrencyInput } from "../../components/CurrencyInput";
 
@@ -40,6 +41,7 @@ export default function WithdrawModal({
   currentBalance,
   onWithdrawSuccess,
 }: WithdrawModalProps) {
+  const t = useTranslations("Withdraw");
   const apiUrl = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:3001";
 
   // Form state
@@ -63,6 +65,7 @@ export default function WithdrawModal({
     if (isOpen) {
       fetchBanks();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen]);
 
   async function fetchBanks() {
@@ -88,6 +91,7 @@ export default function WithdrawModal({
       setAccountName("");
       setAccountConfirmed(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedBank, accountNumber]);
 
   async function resolveAccount() {
@@ -111,10 +115,10 @@ export default function WithdrawModal({
       if (data.account_name) {
         setAccountName(data.account_name);
       } else {
-        setError(data.error || "Failed to resolve account name");
+        setError(data.error || t("resolveFailed"));
       }
     } catch (err) {
-      setError("Network error. Please try again.");
+      setError(t("networkError"));
     } finally {
       setIsResolving(false);
     }
@@ -124,19 +128,19 @@ export default function WithdrawModal({
     e.preventDefault();
 
     if (!accountConfirmed) {
-      setError("Please confirm the account name before proceeding.");
+      setError(t("confirmFirst"));
       return;
     }
 
     const amountNum = parseFloat(amount);
     if (isNaN(amountNum) || amountNum <= 0) {
-      setError("Please enter a valid amount.");
+      setError(t("enterValidAmount"));
       return;
     }
 
     const currentBalanceNum = parseFloat(currentBalance);
     if (amountNum > currentBalanceNum) {
-      setError("Insufficient balance.");
+      setError(t("insufficientBalance"));
       return;
     }
 
@@ -163,16 +167,16 @@ export default function WithdrawModal({
       const data = (await res.json()) as WithdrawResponse;
 
       if (data.success) {
-        setSuccessMessage("Withdrawal request submitted successfully!");
+        setSuccessMessage(t("success"));
         setTimeout(() => {
           onWithdrawSuccess();
           handleClose();
         }, 2000);
       } else {
-        setError(data.error || "Failed to submit withdrawal request");
+        setError(data.error || t("submitFailed"));
       }
     } catch (err) {
-      setError("Network error. Please try again.");
+      setError(t("networkError"));
     } finally {
       setIsSubmitting(false);
     }
@@ -209,13 +213,13 @@ export default function WithdrawModal({
             id="withdraw-modal-title"
             className="text-xl font-bold text-gray-900 dark:text-gray-100"
           >
-            Withdraw Funds
+            {t("title")}
           </h2>
           <button
             type="button"
             onClick={handleClose}
             className="rounded-lg p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
-            aria-label="Close modal"
+            aria-label={t("close")}
           >
             <svg
               className="h-5 w-5"
@@ -237,7 +241,7 @@ export default function WithdrawModal({
         {/* Current balance display */}
         <div className="mb-6 rounded-xl bg-gray-50 p-4 dark:bg-gray-700">
           <p className="text-sm font-medium text-gray-500 dark:text-gray-400">
-            Available Balance
+            {t("availableBalance")}
           </p>
           <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">
             ₦{parseFloat(currentBalance).toLocaleString()}
@@ -271,15 +275,15 @@ export default function WithdrawModal({
               htmlFor="amount"
               className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300"
             >
-              Amount (₦)
+              {t("amount")}
             </label>
             <CurrencyInput
               id="amount"
               name="amount"
               value={amount}
-              max={parseFloat(currentBalance) || undefined}
+max={parseFloat(currentBalance) || undefined}
               onChange={(val) => setAmount(val ? String(val) : "")}
-              placeholder="Enter amount"
+              placeholder={t("enterAmount")}
             />
           </div>
 
@@ -289,7 +293,7 @@ export default function WithdrawModal({
               htmlFor="bank"
               className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300"
             >
-              Bank
+              {t("bank")}
             </label>
             <div className="relative">
               <input
@@ -301,7 +305,7 @@ export default function WithdrawModal({
                   setShowBankDropdown(true);
                 }}
                 onFocus={() => setShowBankDropdown(true)}
-                placeholder="Search bank..."
+                placeholder={t("searchBank")}
                 required
                 className="w-full rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm text-gray-900 placeholder:text-gray-400 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 dark:placeholder:text-gray-500"
               />
@@ -313,7 +317,7 @@ export default function WithdrawModal({
                     setBankSearch("");
                   }}
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                  aria-label="Clear bank selection"
+                  aria-label={t("clearBank")}
                 >
                   <svg
                     className="h-4 w-4"
@@ -359,7 +363,7 @@ export default function WithdrawModal({
               htmlFor="accountNumber"
               className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300"
             >
-              Account Number
+              {t("accountNumber")}
             </label>
             <input
               type="text"
@@ -369,14 +373,14 @@ export default function WithdrawModal({
                 const value = e.target.value.replace(/\D/g, "").slice(0, 10);
                 setAccountNumber(value);
               }}
-              placeholder="10-digit account number"
+              placeholder={t("accountNumberPlaceholder")}
               maxLength={10}
               required
               className="w-full rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm text-gray-900 placeholder:text-gray-400 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 dark:placeholder:text-gray-500"
             />
             {isResolving && (
               <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
-                Resolving account name...
+                {t("resolving")}
               </p>
             )}
           </div>
@@ -385,7 +389,7 @@ export default function WithdrawModal({
           {accountName && (
             <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-gray-600 dark:bg-gray-700">
               <p className="mb-2 text-sm font-medium text-gray-700 dark:text-gray-300">
-                Account Name
+                {t("accountName")}
               </p>
               <p className="text-base font-semibold text-gray-900 dark:text-gray-100">
                 {accountName}
@@ -398,7 +402,7 @@ export default function WithdrawModal({
                   className="mt-0.5 h-4 w-4 rounded border-gray-300 text-violet-600 focus:ring-violet-500"
                 />
                 <span className="text-sm text-gray-600 dark:text-gray-400">
-                  I confirm this is the correct account name
+                  {t("confirmAccount")}
                 </span>
               </label>
             </div>
@@ -437,10 +441,10 @@ export default function WithdrawModal({
                     d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z"
                   />
                 </svg>
-                Processing...
+                {t("processing")}
               </span>
             ) : (
-              "Withdraw"
+              t("withdraw")
             )}
           </button>
         </form>

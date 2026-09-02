@@ -220,8 +220,9 @@ async function runVerificationWithRetry(
     });
 
   } catch (err) {
+    const errorName = err instanceof Error ? err.constructor.name : "UnknownError";
     const message = err instanceof Error ? err.message : String(err);
-    log("error", tradeId, `Attempt ${attempt} failed: ${message}`);
+    log("error", tradeId, `Attempt ${attempt} failed [${errorName}]: ${message}`);
 
     if (attempt < MAX_RETRIES) {
       // Exponential back-off with ±20 % jitter

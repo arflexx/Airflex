@@ -2,6 +2,8 @@ import { Router, Request, Response } from "express";
 import crypto from "crypto";
 
 import { pool } from "../db/pool";
+import { maskAccountNumber } from "../services/virtualAccount";
+import { WalletService } from "../services/wallet";
 
 /**
  * Webhook endpoints.
@@ -36,6 +38,14 @@ interface PaystackEvent {
     status?: string;
     customer?: { phone?: string; email?: string };
     metadata?: { user_id?: string; phone?: string };
+    // dedicatedaccount.assign.success fields
+    account_number?: string;
+    bank?: { name?: string; slug?: string; id?: number };
+    dedicated_account?: {
+      account_number?: string;
+      account_name?: string;
+      bank?: { name?: string; slug?: string; id?: number };
+    };
   };
 }
 
@@ -147,6 +157,106 @@ async function applyChargeSuccess(event: PaystackEvent): Promise<"credited" | "d
 }
 
 /**
+ * Handle dedicatedaccount.assign.success — Paystack fires this when a transfer
+ * arrives on a user's dedicated virtual account. We credit the user's fiat
+ * balance exactly as we do for charge.success, using the same idempotency guard.
+ *
+ * Paystack sends the amount in kobo (smallest NGN unit).
+ */
+async function applyDVAAssigned(
+  event: PaystackEvent
+): Promise<"credited" | "duplicate" | "unmatched"> {
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    // Idempotency: use the event reference as a unique key
+    const reference = event.data.reference;
+
+    const inserted = await client.query<{ id: string }>(
+      `INSERT INTO payment_events (provider, event_type, reference, payload, status)
+       VALUES ('paystack', $1, $2, $3, 'processing')
+       ON CONFLICT (provider, reference) DO NOTHING
+       RETURNING id`,
+      [event.event, reference, JSON.stringify(event)]
+    );
+
+    if (inserted.rowCount === 0) {
+      await client.query("COMMIT");
+      return "duplicate";
+    }
+
+    // Resolve the account number from the event payload.
+    // Paystack can nest it under data.dedicated_account or data directly.
+    const accountNumber =
+      event.data.dedicated_account?.account_number ??
+      event.data.account_number ??
+      null;
+
+    if (!accountNumber) {
+      await client.query(
+        `UPDATE payment_events
+         SET status = 'unmatched', processed_at = NOW()
+         WHERE provider = 'paystack' AND reference = $1`,
+        [reference]
+      );
+      await client.query("COMMIT");
+      console.warn(
+        `[webhooks] DVA event ${reference} has no account_number — held for reconciliation`
+      );
+      return "unmatched";
+    }
+
+    // Look up which user owns this virtual account number
+    const { rows } = await client.query<{ id: string }>(
+      `SELECT id FROM users WHERE virtual_account_number = $1 LIMIT 1`,
+      [accountNumber]
+    );
+
+    if (rows.length === 0) {
+      await client.query(
+        `UPDATE payment_events
+         SET status = 'unmatched', processed_at = NOW()
+         WHERE provider = 'paystack' AND reference = $1`,
+        [reference]
+      );
+      await client.query("COMMIT");
+      console.warn(
+        `[webhooks] DVA account ${maskAccountNumber(accountNumber)} matched no user — held for reconciliation`
+      );
+      return "unmatched";
+    }
+
+    const userId = rows[0]!.id;
+    const amountNaira = event.data.amount / KOBO_PER_NAIRA;
+
+    // Credit the transaction ledger and update fiat balance via WalletService
+    await new WalletService(client).credit({
+      userId,
+      amount: amountNaira,
+      type: "deposit",
+      externalReference: reference,
+    });
+
+    await client.query(
+      `UPDATE payment_events
+       SET status = 'processed', user_id = $2, processed_at = NOW()
+       WHERE provider = 'paystack' AND reference = $1`,
+      [reference, userId]
+    );
+
+    await client.query("COMMIT");
+    return "credited";
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
  * `POST /api/v1/webhooks/paystack`
  *
  * Responds before doing the work. Paystack's contract is that a 200 means
@@ -194,47 +304,69 @@ router.post("/paystack", (req: Request, res: Response) => {
   // Acknowledge now; process after. See the note on the handler.
   res.status(200).json({ received: true });
 
-  if (event.event !== "charge.success") {
-    // Still recorded: the issue requires every event logged, not only the ones
-    // that move money. A failed charge is exactly what someone investigating a
-    // missing deposit needs to find.
-    void pool
-      .query(
-        `INSERT INTO payment_events (provider, event_type, reference, payload, status, processed_at)
-         VALUES ('paystack', $1, $2, $3, 'ignored', NOW())
-         ON CONFLICT (provider, reference) DO NOTHING`,
-        [event.event, event.data?.reference ?? null, JSON.stringify(event)]
-      )
-      .catch((err: Error) =>
-        console.error("[webhooks] Failed to log non-charge event:", err.message)
-      );
+  if (event.event === "charge.success") {
+    void applyChargeSuccess(event)
+      .then((outcome) => {
+        if (outcome === "unmatched") {
+          console.warn(
+            `[webhooks] Paystack charge ${event.data.reference} matched no user; held for reconciliation`
+          );
+        }
+      })
+      .catch((err: Error) => {
+        console.error(
+          `[webhooks] Failed to process Paystack charge ${event.data.reference}:`,
+          err.message
+        );
+        void pool
+          .query(
+            `UPDATE payment_events
+             SET status = 'failed', error = $2, processed_at = NOW()
+             WHERE provider = 'paystack' AND reference = $1`,
+            [event.data.reference, err.message]
+          )
+          .catch(() => undefined);
+      });
     return;
   }
 
-  void applyChargeSuccess(event)
-    .then((outcome) => {
-      if (outcome === "unmatched") {
-        console.warn(
-          `[webhooks] Paystack charge ${event.data.reference} matched no user; held for reconciliation`
+  if (event.event === "dedicatedaccount.assign.success") {
+    void applyDVAAssigned(event)
+      .then((outcome) => {
+        if (outcome === "unmatched") {
+          console.warn(
+            `[webhooks] DVA transfer ${event.data.reference} matched no user; held for reconciliation`
+          );
+        }
+      })
+      .catch((err: Error) => {
+        console.error(
+          `[webhooks] Failed to process DVA transfer ${event.data.reference}:`,
+          err.message
         );
-      }
-    })
-    .catch((err: Error) => {
-      console.error(
-        `[webhooks] Failed to process Paystack charge ${event.data.reference}:`,
-        err.message
-      );
-      // Mark it failed so reconciliation can find it. The response has already
-      // gone out, so this row is the only trace that anything went wrong.
-      void pool
-        .query(
-          `UPDATE payment_events
-           SET status = 'failed', error = $2, processed_at = NOW()
-           WHERE provider = 'paystack' AND reference = $1`,
-          [event.data.reference, err.message]
-        )
-        .catch(() => undefined);
-    });
+        void pool
+          .query(
+            `UPDATE payment_events
+             SET status = 'failed', error = $2, processed_at = NOW()
+             WHERE provider = 'paystack' AND reference = $1`,
+            [event.data.reference, err.message]
+          )
+          .catch(() => undefined);
+      });
+    return;
+  }
+
+  // All other events are logged and ignored
+  void pool
+    .query(
+      `INSERT INTO payment_events (provider, event_type, reference, payload, status, processed_at)
+       VALUES ('paystack', $1, $2, $3, 'ignored', NOW())
+       ON CONFLICT (provider, reference) DO NOTHING`,
+      [event.event, event.data?.reference ?? null, JSON.stringify(event)]
+    )
+    .catch((err: Error) =>
+      console.error("[webhooks] Failed to log non-charge event:", err.message)
+    );
 });
 
 /** Stellar webhook — still to be implemented. */
@@ -242,5 +374,5 @@ router.post("/stellar", (_req: Request, res: Response) => {
   res.status(501).json({ error: "Not Implemented" });
 });
 
-export { signatureMatches, applyChargeSuccess };
+export { signatureMatches, applyChargeSuccess, applyDVAAssigned };
 export default router;
