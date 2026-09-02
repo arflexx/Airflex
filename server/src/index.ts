@@ -13,6 +13,7 @@ import { errorHandler } from "./middleware/errorHandler";
 import { apiVersion } from "./middleware/apiVersion";
 import { requestId } from "./middleware/requestId";
 import { pool, query } from "./db/pool";
+import { initJobQueue } from "./jobs";
 
 // ---------------------------------------------------------------------------
 // Environment validation
@@ -39,9 +40,7 @@ if (!isTest && missingVars.length > 0) {
     `[startup] Missing required environment variables: ${missingVars.join(", ")}\n` +
       `Copy server/.env.example to server/.env and fill in the values.`
   );
-  if (process.env["NODE_ENV"] !== "test") {
-    process.exit(1);
-  }
+  if (process.env["NODE_ENV"] !== "test" && process.env["JEST_WORKER_ID"] === undefined) process.exit(1);
 }
 
 const encryptionKey = process.env["ENCRYPTION_KEY"];
@@ -49,30 +48,26 @@ if (!isTest && encryptionKey && !/^[0-9a-fA-F]{64}$/.test(encryptionKey)) {
   logger.error(
     "[startup] ENCRYPTION_KEY must be a 64-character hex string"
   );
-  if (process.env["NODE_ENV"] !== "test") {
-    process.exit(1);
-  }
+  if (process.env["NODE_ENV"] !== "test" && process.env["JEST_WORKER_ID"] === undefined) process.exit(1);
 }
 
 // ---------------------------------------------------------------------------
 // Database connection test on startup
 // ---------------------------------------------------------------------------
 
-if (!isTest) {
-  const testQueryText = "SELECT 1";
-  pool.query(testQueryText)
-    .then(() => {
-      logger.info({ query: testQueryText }, "Database connection validated");
-    })
-    .catch((err) => {
-      logger.error(
-        `[startup] Database connection failed: ${err.message}\n` +
-          "Verify DATABASE_URL is correct and PostgreSQL is reachable.\n" +
-          "Server exiting."
-      );
-      process.exit(1);
-    });
-}
+const testQueryText = "SELECT 1";
+if (process.env["NODE_ENV"] !== "test") pool.query(testQueryText)
+  .then(() => {
+    logger.info({ query: testQueryText }, "Database connection validated");
+  })
+  .catch((err) => {
+    console.error(
+      `[startup] Database connection failed: ${err.message}\n` +
+        "Verify DATABASE_URL is correct and PostgreSQL is reachable.\n" +
+        "Server exiting."
+    );
+    if (process.env["NODE_ENV"] !== "test" && process.env["JEST_WORKER_ID"] === undefined) process.exit(1);
+  });
 
 // ---------------------------------------------------------------------------
 // App setup
@@ -183,12 +178,11 @@ app.use(errorHandler);
 // Start
 // ---------------------------------------------------------------------------
 
-if (!isTest) {
-  app.listen(PORT, () => {
-    logger.info(
-      { port: PORT, env: process.env["NODE_ENV"] ?? "development" },
-      "AirFlex API started"
-    );
+if (process.env["NODE_ENV"] !== "test") app.listen(PORT, () => {
+  logger.info(
+    { port: PORT, env: process.env["NODE_ENV"] ?? "development" },
+    "AirFlex API started"
+  );
 
     // Initialise background job queue (Redis-backed or in-process fallback)
     initJobQueue();

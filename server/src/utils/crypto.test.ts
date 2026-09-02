@@ -9,11 +9,15 @@ import { encrypt, decrypt } from "./crypto";
 describe("crypto utils", () => {
   const originalEnv = process.env["ENCRYPTION_KEY"];
 
-  const VALID_KEY =
-    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
-
   beforeEach(() => {
-    process.env["ENCRYPTION_KEY"] = VALID_KEY;
+    process.env["ENCRYPTION_KEY"] =
+      "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+  });
+
+  beforeAll(() => {
+    // Set a valid 64-char hex key for testing
+    process.env["ENCRYPTION_KEY"] =
+      "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
   });
 
   afterAll(() => {
@@ -52,6 +56,8 @@ describe("crypto utils", () => {
 
   describe("decrypt", () => {
     it("decrypts what encrypt produces (round-trip)", () => {
+      process.env["ENCRYPTION_KEY"] =
+        "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
       const inputs = [
         "Hello, world!",
         "",

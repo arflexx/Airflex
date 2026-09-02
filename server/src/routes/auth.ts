@@ -451,24 +451,4 @@ router.post(
   }
 );
 
-// ---------------------------------------------------------------------------
-// GET /api/v1/auth/recovery-codes/status
-// ---------------------------------------------------------------------------
-
-/**
- * Authenticated status check: how many backup codes remain unused. Never
- * reveals the codes themselves.
- */
-router.get(
-  "/recovery-codes/status",
-  authenticate,
-  async (req, res) => {
-    const { sub: userId } = (req as AuthenticatedRequest).user;
-
-    const remaining = await countRemainingRecoveryCodes(userId);
-
-    res.status(200).json({ data: { remaining } });
-  }
-);
-
 export default router;
