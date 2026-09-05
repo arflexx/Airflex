@@ -1,53 +1,45 @@
-# ---------------------------------------------------------------------------
-# AirFlex API Server — Multi-stage Dockerfile
-# ---------------------------------------------------------------------------
-# Stage 1 : Build — compiles TypeScript to JavaScript
-# Stage 2 : Production — minimal runtime image (no dev dependencies, no tsc)
-# ---------------------------------------------------------------------------
-
-# ── Stage 1: Build ──────────────────────────────────────────────────────────
+#AirFlex API Server - multi-stage Dockerfile
+#Build context must be the repository root because the server is a pnpm workspace package.
 FROM node:20-alpine AS builder
 
-# Set a non-root working directory
 WORKDIR /app
+RUN corecack enable
 
-# Copy dependency manifests first to leverage Docker layer caching.
-# node_modules are only re-installed when package files change.
-COPY package.json package-lock.json ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY server/package.json ./server/package.json
+COPY packages/shared/package.json ./packages/shared/package.json
+COPY packages/escrow/package.json ./packages/escrow/package.json
 
-# Install all dependencies (including devDependencies needed for tsc)
-RUN npm ci
+RUN pnpm install --frozen-lockfile --filter airflex-server...
 
-# Copy the rest of the source
-COPY tsconfig.json ./
-COPY src/ ./src/
+COPY server/ ./server/
+COPY packages/shared/ ./packages/shared/
+COPY packages/escrow/ ./packages/escrow/
 
-# Compile TypeScript → JavaScript
-RUN npm run build
-
-# ── Stage 2: Production ─────────────────────────────────────────────────────
+WORKDIR /app/server
+RUN pnpm build
 FROM node:20-alpine AS production
 
-# Principle of least privilege — run as a non-root user
 RUN addgroup -S airflex && adduser -S airflex -G airflex
 
 WORKDIR /app
+RUN coreck enable
 
-# Copy only the compiled output and production dependency manifests
-COPY --from=builder /app/dist ./dist
-COPY package.json package-lock.json ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY server/package.json ./server/package.json
+COPY packages/shared/package.json ./packages/shared/package.json
 
-# Install production dependencies only
-RUN npm ci --omit=dev && npm cache clean --force
+RUN pnpm install --prod --frozen-lockfile --filter airflex-server... && pnpm store prune
 
-# Switch to non-root user
+COPY --from=builder /app/server/dist ./server/dist
+COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
+COPY --from=builder /app/packages/escrow/dist ./packages/escrow/dist
+
 USER airflex
-
-# Expose the default API port (overridable via PORT env var)
 EXPOSE 3001
 
-# Health-check so container orchestrators can detect unhealthy instances
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- http://localhost:3001/health || exit 1
+HEALTHCHECK -interval=30s -timeout=5s -start-period=10s -retries=3 \
+  CMD wget -qO= http://localhost:3001/health || exit 1
 
+WORKDIR /app/server
 CMD ["node", "dist/index.js"]

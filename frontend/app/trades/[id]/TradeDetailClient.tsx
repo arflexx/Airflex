@@ -1,16 +1,27 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
 import { useTranslations } from "next-intl";
 import type { TradeOffer } from "../../../../server/src/types/trade";
 import { getToken, getUser, isAuthenticated } from "../../lib/auth";
 import { Button } from "../../../components/ui/Button";
 import { Badge } from "../../../components/ui/Badge";
-import { Spinner } from "../../../components/ui/Spinner";
 import { Card } from "../../../components/ui/Card";
 import { Toast } from "../../../components/ui/Toast";
 import { StellarExplorerLink } from "../../../components/StellarExplorerLink";
 import { DisputeModal } from "./dispute/DisputeModal";
+
+// ---------------------------------------------------------------------------
+// Escrow trade types
+// ---------------------------------------------------------------------------
+
+type EscrowTradeStatus = TradeOffer["status"];
+
+type EscrowBadgeVariant = Exclude<EscrowTradeStatus, "Active"> | "Open";
+
+function escrowStatusBadgeVariant(status: EscrowTradeStatus): EscrowBadgeVariant {
+  return status === "Active" ? "Open" : status;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -38,7 +49,7 @@ function AssetBadge({ assetType }: { assetType: string }) {
   );
 }
 
-function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
+function DetailRow({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex items-start justify-between gap-4 px-5 py-3.5">
       <dt className="shrink-0 text-xs font-medium text-gray-500 dark:text-gray-400">{label}</dt>
@@ -163,7 +174,7 @@ export default function TradeDetailClient({ trade }: Props) {
   const t = useTranslations("Trade");
   const countdown = useCountdown(trade.expires_at);
 
-  const [status, setStatus]               = useState<TradeOffer["status"]>(trade.status);
+  const [status, setStatus]               = useState<EscrowTradeStatus>(trade.status);
   const [authed, setAuthed]               = useState(false);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [buying, setBuying]               = useState(false);
@@ -295,7 +306,7 @@ export default function TradeDetailClient({ trade }: Props) {
         {/* Coloured header strip */}
         <div className="flex items-center justify-between gap-3 bg-violet-50 px-5 py-4 border-b border-violet-100 dark:bg-violet-900/20 dark:border-violet-800">
           <AssetBadge assetType={trade.asset_type} />
-          <Badge variant={status === "Active" ? "Open" : (status as any)} />
+          <Badge variant={escrowStatusBadgeVariant(status)} />
         </div>
 
         {/* Detail rows */}
@@ -370,9 +381,9 @@ export default function TradeDetailClient({ trade }: Props) {
           {t("howItWorks")}
         </p>
         <ol className="mt-2 flex flex-col gap-1 text-sm text-violet-800 list-decimal list-inside dark:text-violet-300">
-          <li>{t("step1")}</li>
-          <li>{t("step2", { asset: formatAssetType(trade.asset_type) })}</li>
-          <li>{t("step3")}</li>
+          <li>Click &quot;Buy Now&quot; to lock your funds in a Soroban escrow contract.</li>
+          <li>The seller delivers your {formatAssetType(trade.asset_type)}.</li>
+          <li>Platform confirms delivery and releases the payment to the seller.</li>
         </ol>
       </div>
 

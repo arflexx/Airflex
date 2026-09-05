@@ -2,6 +2,7 @@
 
 import { useState, type FormEvent } from "react";
 import { useTranslations } from "next-intl";
+import Link from "next/link";
 
 // ---------------------------------------------------------------------------
 // Page
@@ -10,10 +11,10 @@ import { useTranslations } from "next-intl";
 export default function SignupPage() {
   const t = useTranslations("Auth");
 
-  const [phone, setPhone]             = useState("");
-  const [fieldError, setFieldError]   = useState<string | null>(null);
+  const [phone, setPhone] = useState("");
+  const [fieldError, setFieldError] = useState<string | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
-  const [loading, setLoading]         = useState(false);
+  const [loading, setLoading] = useState(false);
 
   const apiUrl = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:3001";
 
@@ -76,7 +77,7 @@ export default function SignupPage() {
           {t("createAccount")}
         </h1>
         <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
-          {t("createAccountBody")}
+          Enter your phone number and we&apos;ll send a 6-digit OTP to verify it.
         </p>
       </div>
 
@@ -154,12 +155,12 @@ export default function SignupPage() {
       {/* Sign-in link */}
       <p className="mt-6 text-center text-sm text-gray-500 dark:text-gray-400">
         {t("alreadyHaveAccount")}{" "}
-        <a
+        <Link
           href="/auth/verify"
           className="font-semibold text-violet-600 hover:text-violet-700 focus:outline-none focus-visible:ring-1 focus-visible:ring-violet-500 rounded dark:text-violet-400 dark:hover:text-violet-300"
         >
           {t("signIn")}
-        </a>
+        </Link>
       </p>
     </>
   );
