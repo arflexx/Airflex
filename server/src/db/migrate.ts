@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { Pool, PoolClient } from "pg";
 import dotenv from "dotenv";
+import logger from "../utils/logger";
 
 dotenv.config();
 
@@ -69,7 +70,7 @@ export async function runMigrations(options?: MigrateOptions): Promise<Migration
     const appliedSet = new Set(appliedList);
 
     if (!fs.existsSync(migrationsDir)) {
-      console.log("No pending migrations");
+      logger.info("[migrate] No pending migrations");
       return { applied: [], skipped: [] };
     }
 
@@ -82,7 +83,7 @@ export async function runMigrations(options?: MigrateOptions): Promise<Migration
     const skipped = files.filter((file) => appliedSet.has(file));
 
     if (pending.length === 0) {
-      console.log("No pending migrations");
+      logger.info("[migrate] No pending migrations");
       return { applied: [], skipped };
     }
 
@@ -92,6 +93,9 @@ export async function runMigrations(options?: MigrateOptions): Promise<Migration
       const filePath = path.join(migrationsDir, file);
       const sql = fs.readFileSync(filePath, "utf-8");
 
+      logger.info(`[migrate] Applying: ${file}`);
+
+      const startedAt = Date.now();
       await client.query("BEGIN");
       try {
         await client.query(sql);
@@ -101,10 +105,15 @@ export async function runMigrations(options?: MigrateOptions): Promise<Migration
         );
         await client.query("COMMIT");
         applied.push(file);
-        console.log(`Applied migration: ${file}`);
+        const durationMs = Date.now() - startedAt;
+        logger.info(`[migrate] Applied: ${file} (${durationMs}ms)`);
       } catch (err) {
         await client.query("ROLLBACK");
-        console.error(`Failed to apply migration ${file}:`, err);
+        const message = err instanceof Error ? err.message : String(err);
+        logger.error(
+          { err, file },
+          `[migrate] FAILED: ${file} — ${message}`
+        );
         throw err;
       }
     }
@@ -141,15 +150,14 @@ export async function rollbackLastMigration(options?: MigrateOptions): Promise<s
     );
 
     if (res.rows.length === 0) {
-      console.log("No migrations to rollback");
+      logger.info("[migrate] No migrations to rollback");
       return null;
     }
 
     const lastMigration = res.rows[0];
     await client.query(`DELETE FROM schema_migrations WHERE id = $1;`, [lastMigration.id]);
 
-    console.log(`Rolled back migration record: ${lastMigration.filename}`);
-    console.log(`Migration to reverse: ${lastMigration.filename}`);
+    logger.info(`[migrate] Rolled back migration record: ${lastMigration.filename}`);
 
     return lastMigration.filename;
   } finally {
@@ -171,7 +179,7 @@ if (require.main === module) {
       process.exit(0);
     })
     .catch((err) => {
-      console.error(err);
+      logger.error({ err }, "[migrate] Migration run failed");
       process.exit(1);
     });
 }
