@@ -29,6 +29,7 @@ pub enum ListingStatus {
     Active,
     Sold,
     Cancelled,
+    Released,
 }
 
 #[contracttype]
@@ -43,14 +44,14 @@ pub enum AssetCategory {
 pub struct Listing {
     pub id: u64,
     pub seller: Address,
-    pub token: Address,        // payment token (e.g. USDC / NGNC)
-    pub price: i128,           // price in base token units
+    pub token: Address, // payment token (e.g. USDC / NGNC)
+    pub price: i128,    // price in base token units
     pub asset_category: AssetCategory,
-    pub asset_type: Symbol,    // e.g. symbol_short!("MTN")
-    pub quantity: i128,        // units of airtime/data being sold
+    pub asset_type: Symbol, // e.g. symbol_short!("MTN")
+    pub quantity: i128,     // units of airtime/data being sold
     pub status: ListingStatus,
-    pub created_at: u64,       // ledger timestamp
-    pub expires_at: u64,       // listing expiry
+    pub created_at: u64, // ledger timestamp
+    pub expires_at: u64, // listing expiry
 }
 
 #[contracttype]
@@ -73,32 +74,44 @@ pub struct Reputation {
 #[contracterror]
 #[derive(Clone, Debug, PartialEq)]
 pub enum ContractError {
-    AlreadyInitialized   = 1,
-    Unauthorized         = 2,
-    TradeNotFound        = 3,
-    WrongStatus          = 4,
-    TradeExpired         = 5,
-    InsufficientFunds    = 6,
-    InvalidExpiry        = 7,
-    AlreadyDisputed      = 8,
-    ContractPaused       = 9,
-    TimelockNotExpired   = 10,
-    UnsupportedToken     = 11,
-    InvalidAmount        = 12,
+    AlreadyInitialized = 1,
+    Unauthorized = 2,
+    TradeNotFound = 3,
+    WrongStatus = 4,
+    TradeExpired = 5,
+    InsufficientFunds = 6,
+    InvalidExpiry = 7,
+    AlreadyDisputed = 8,
+    ContractPaused = 9,
+    TimelockNotExpired = 10,
+    UnsupportedToken = 11,
+    InvalidAmount = 12,
     FillAlreadyProcessed = 13,
-    NotAParty            = 14,
+    NotAParty = 14,
 }
 
 // ---------------------------------------------------------------------------
 // Events
 // ---------------------------------------------------------------------------
 
-fn topic_listed()    -> Symbol { symbol_short!("listed")    }
-fn topic_sold()      -> Symbol { symbol_short!("sold")      }
-fn topic_cancelled() -> Symbol { symbol_short!("cancelled") }
-fn topic_contract()  -> Symbol { symbol_short!("contract")  }
-fn topic_paused()    -> Symbol { symbol_short!("paused")    }
-fn topic_unpaused()  -> Symbol { symbol_short!("unpaused")  }
+fn topic_listed() -> Symbol {
+    symbol_short!("listed")
+}
+fn topic_sold() -> Symbol {
+    symbol_short!("sold")
+}
+fn topic_cancelled() -> Symbol {
+    symbol_short!("cancelled")
+}
+fn topic_contract() -> Symbol {
+    symbol_short!("contract")
+}
+fn topic_paused() -> Symbol {
+    symbol_short!("paused")
+}
+fn topic_unpaused() -> Symbol {
+    symbol_short!("unpaused")
+}
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -144,9 +157,11 @@ fn update_reputation(env: &Env, seller: &Address, volume: i128, disputed: bool) 
     env.storage()
         .persistent()
         .set(&DataKey::Reputation(seller.clone()), &rep);
-    env.storage()
-        .persistent()
-        .extend_ttl(&DataKey::Reputation(seller.clone()), 17_280, 17_280 * 365);
+    env.storage().persistent().extend_ttl(
+        &DataKey::Reputation(seller.clone()),
+        17_280,
+        17_280 * 365,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -170,7 +185,9 @@ impl MarketplaceContract {
         }
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::ListingCounter, &0u64);
+        env.storage()
+            .instance()
+            .set(&DataKey::ListingCounter, &0u64);
         env.storage().instance().set(&DataKey::Paused, &false);
         env.storage().instance().extend_ttl(17_280, 17_280 * 30);
         Ok(())
@@ -188,8 +205,7 @@ impl MarketplaceContract {
 
         env.storage().instance().set(&DataKey::Paused, &true);
 
-        env.events()
-            .publish((topic_contract(), topic_paused()), ());
+        env.events().publish((topic_contract(), topic_paused()), ());
         Ok(())
     }
 
@@ -335,12 +351,15 @@ impl MarketplaceContract {
         let admin = get_admin(&env)?;
         admin.require_auth();
 
-        let listing: Listing = env
+        let mut listing: Listing = env
             .storage()
             .persistent()
             .get(&DataKey::Listing(listing_id))
             .ok_or(ContractError::TradeNotFound)?;
 
+        if listing.status == ListingStatus::Released {
+            return Err(ContractError::FillAlreadyProcessed);
+        }
         if listing.status != ListingStatus::Sold {
             return Err(ContractError::WrongStatus);
         }
@@ -351,6 +370,12 @@ impl MarketplaceContract {
             &listing.seller,
             &listing.price,
         );
+
+        listing.status = ListingStatus::Released;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Listing(listing_id), &listing);
 
         update_reputation(&env, &listing.seller, listing.price, false);
 
@@ -387,11 +412,7 @@ impl MarketplaceContract {
         }
 
         let token_client = token::Client::new(&env, &listing.token);
-        token_client.transfer(
-            &env.current_contract_address(),
-            &buyer,
-            &listing.price,
-        );
+        token_client.transfer(&env.current_contract_address(), &buyer, &listing.price);
 
         listing.status = ListingStatus::Cancelled;
 
@@ -434,11 +455,7 @@ impl MarketplaceContract {
         }
 
         let token_client = token::Client::new(&env, &listing.token);
-        token_client.transfer(
-            &env.current_contract_address(),
-            &recipient,
-            &listing.price,
-        );
+        token_client.transfer(&env.current_contract_address(), &recipient, &listing.price);
 
         listing.status = ListingStatus::Cancelled;
 
@@ -534,7 +551,7 @@ mod test {
         let env = Env::default();
         env.mock_all_auths();
 
-        let contract_id = env.register_contract(None, MarketplaceContract);
+        let contract_id = env.register(MarketplaceContract, ());
         let client = MarketplaceContractClient::new(&env, &contract_id);
 
         let admin = Address::generate(&env);
@@ -547,7 +564,7 @@ mod test {
         let sac = StellarAssetClient::new(&env, &token_address);
 
         // Mint tokens to buyer
-        sac.mint(&buyer, &10_000_0000000i128);
+        sac.mint(&buyer, &100_000_000_000_i128);
 
         client.initialize(&admin);
 
@@ -827,7 +844,8 @@ mod test {
     fn test_err_unauthorized_uninitialised_pause() {
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register_contract(None, MarketplaceContract);
+
+        let contract_id = env.register(MarketplaceContract, ());
         let client = MarketplaceContractClient::new(&env, &contract_id);
         // Contract not initialised — pause should fail with Unauthorized
         let result = client.try_pause();

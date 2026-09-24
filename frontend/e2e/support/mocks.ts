@@ -10,6 +10,8 @@ import type { Page, Route } from "@playwright/test";
 
 export const API_URL = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:3001";
 
+export type TradeStatus = "Active" | "Locked";
+
 export const TEST_TRADE = {
   id: "trade_e2e_001",
   seller_id: "seller_1",
@@ -159,6 +161,19 @@ export async function mockTradeDetail(page: Page, trade = TEST_TRADE) {
 export async function mockAuth(page: Page) {
   await page.route(`${API_URL}/api/v1/auth/**`, (route) =>
     json(route, { success: true, token: "e2e-test-token", userId: "user_e2e" }),
+  );
+}
+
+/** Stub the signed-in user's profile. */
+export async function mockProfile(page: Page, profile: { kycStatus?: string } = {}) {
+  await page.route(`${API_URL}/api/v1/profile`, (route) =>
+    json(route, {
+      data: {
+        id: "user_e2e",
+        kycStatus: "verified",
+        ...profile,
+      },
+    }),
   );
 }
 
