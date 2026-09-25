@@ -21,7 +21,7 @@ curl http://localhost:3001/health
 curl "http://localhost:3001/api/v1/trades?page=1&limit=10"
 Full setup instructions → docs/getting-started.md
 
-Environment Variables
+Environment Variables.
 Minimum required variables to start the server:
 
 DATABASE_URL=postgresql://user:password@localhost:5432/airflex
