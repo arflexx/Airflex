@@ -69,6 +69,39 @@ const sorobanServer = new SorobanRpc.Server(SOROBAN_RPC_URL, {
 });
 
 // ---------------------------------------------------------------------------
+// Server signing key (issue #313) — validated once at module load so a
+// missing/invalid secret fails server startup instead of failing queued
+// release jobs at runtime. Never exported; use getServerKeypair().
+// ---------------------------------------------------------------------------
+
+function loadServerKeypair(): Keypair {
+  const secret = process.env["STELLAR_SERVER_SECRET"];
+  if (!secret) {
+    throw new Error(
+      "STELLAR_SERVER_SECRET environment variable is not set. Set it to the admin Stellar secret key before starting the server."
+    );
+  }
+  try {
+    return Keypair.fromSecret(secret);
+  } catch {
+    throw new Error(
+      "STELLAR_SERVER_SECRET is invalid (not a decodable Stellar secret seed). Refusing to start."
+    );
+  }
+}
+
+const serverKeypair = loadServerKeypair();
+
+/**
+ * Internal accessor for the pre-validated server signing keypair.
+ * The instance is intentionally not exported — call sites use this getter
+ * so the secret-derived object never leaks into logs or responses.
+ */
+export function getServerKeypair(): Keypair {
+  return serverKeypair;
+}
+
+// ---------------------------------------------------------------------------
 // Encryption helpers (AES-256-GCM)
 // ---------------------------------------------------------------------------
 
@@ -423,8 +456,9 @@ export async function submitSignedTransaction(params: {
  * The server signing key (STELLAR_SERVER_SECRET) must be the admin address
  * that was set during contract initialisation.
  *
- * SECURITY: The secret key is read once from env, used to sign the transaction,
- * and the Keypair object is not exported or logged anywhere.
+ * SECURITY: The secret key is validated once at module load (see
+ * getServerKeypair), used to sign the transaction, and the Keypair object
+ * is not exported or logged anywhere.
  *
  * @param contractTradeId  The on-chain trade ID (u64) stored in contract_listing_id
  * @returns Transaction hash of the confirmed release
@@ -437,10 +471,8 @@ export async function releasePayment(contractTradeId: string): Promise<string> {
     );
   }
 
-  const serverSecret = process.env["STELLAR_SERVER_SECRET"];
-  if (!serverSecret) {
-    throw new Error("STELLAR_SERVER_SECRET environment variable is not set");
-  }
+  // Pre-validated once at module load — never read env or decode per call.
+  const keypair = getServerKeypair();
 
   const tracer = getTracer();
   return tracer.startActiveSpan("soroban.release_payment", async (span: Span) => {
@@ -450,8 +482,7 @@ export async function releasePayment(contractTradeId: string): Promise<string> {
     span.setAttribute("trade.contract_trade_id", contractTradeId);
 
     try {
-      // Derive keypair from server secret — never log this object
-      const keypair = Keypair.fromSecret(serverSecret);
+      // Module-load keypair — never log this object
       const serverPublicKey = keypair.publicKey();
 
       const account = await horizonServer.loadAccount(serverPublicKey);
@@ -524,13 +555,8 @@ export async function resolveDispute(params: {
     throw new Error("ESCROW_CONTRACT_ADDRESS environment variable is not set");
   }
 
-  const serverSecret = process.env["STELLAR_SERVER_SECRET"];
-  if (!serverSecret) {
-    throw new Error("STELLAR_SERVER_SECRET environment variable is not set");
-  }
-
-  // Derive keypair from server secret — never log this object
-  const keypair = Keypair.fromSecret(serverSecret);
+  // Pre-validated once at module load — never read env or decode per call.
+  const keypair = getServerKeypair();
   const serverPublicKey = keypair.publicKey();
 
   const account = await horizonServer.loadAccount(serverPublicKey);

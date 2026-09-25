@@ -1,4 +1,9 @@
 process.env["DATABASE_URL"] = process.env["DATABASE_URL"] || "postgresql://test:test@localhost:5432/test";
+// Issue #313: tradeVerification imports stellar.ts, whose server keypair is
+// validated at module load — seed a valid-format secret so the import works.
+process.env["STELLAR_SERVER_SECRET"] =
+  process.env["STELLAR_SERVER_SECRET"] ||
+  "SAIXYZSSAQUEJO3Z3LUQ4PM3VVDK3DIO55V76ORFO6HH2VULC43AFHZX";
 import { calculatePlatformFee } from "./tradeVerification";
 
 describe("calculatePlatformFee", () => {
