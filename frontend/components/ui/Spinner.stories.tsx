@@ -24,27 +24,30 @@ type Story = StoryObj<typeof Spinner>;
 export const Small: Story = {
   args: {
     size: "sm",
+    label: "Loading small content",
   },
 };
 
 export const Medium: Story = {
   args: {
     size: "md",
+    label: "Loading content",
   },
 };
 
 export const Large: Story = {
   args: {
     size: "lg",
+    label: "Loading large content",
   },
 };
 
 export const AllSizes: Story = {
   render: () => (
     <div className="flex items-center gap-6">
-      <Spinner size="sm" />
-      <Spinner size="md" />
-      <Spinner size="lg" />
+      <Spinner size="sm" label="Loading small content" />
+      <Spinner size="md" label="Loading content" />
+      <Spinner size="lg" label="Loading large content" />
     </div>
   ),
 };
