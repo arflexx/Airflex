@@ -4,6 +4,7 @@ import { useState, useEffect, type FormEvent, type ChangeEvent } from "react";
 import { getToken, isAuthenticated } from "../lib/auth";
 import type { TradeOffer } from "../../../server/src/types/trade";
 import { CurrencyInput } from "../../components/CurrencyInput";
+import { getCachedConversionRate, setCachedConversionRate } from "./ratesCache";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -226,6 +227,7 @@ export default function SellPage() {
   const [authChecked, setAuthChecked] = useState(false);
   const [kycStatus, setKycStatus] = useState<string>("unverified");
   const [kycLoading, setKycLoading] = useState(true);
+  const [conversionRate, setConversionRate] = useState<number | null>(getCachedConversionRate());
   const [fields, setFields] = useState<FormFields>({
     assetType: "",
     amount: "",
@@ -237,6 +239,35 @@ export default function SellPage() {
   const [createdTrade, setCreatedTrade] = useState<TradeOffer | null>(null);
 
   const apiUrl = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:3001";
+
+  useEffect(() => {
+    const cached = getCachedConversionRate();
+    if (cached !== null) {
+      setConversionRate(cached);
+      return;
+    }
+
+    let isMounted = true;
+    fetch(`${apiUrl}/api/v1/rates`)
+      .then((r) => {
+        if (!r.ok) throw new Error("Rates unavailable");
+        return r.json() as Promise<{ rate?: number; data?: { rate?: number } }>;
+      })
+      .then((data) => {
+        const rate = data.rate ?? data.data?.rate;
+        if (typeof rate === "number" && rate > 0) {
+          setCachedConversionRate(rate);
+          if (isMounted) setConversionRate(rate);
+        }
+      })
+      .catch(() => {
+        // If conversion rate is unavailable, keep conversionRate null (preview remains hidden)
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [apiUrl]);
 
   useEffect(() => {
     if (!isAuthenticated()) {
@@ -350,6 +381,12 @@ export default function SellPage() {
 
   const kycBlocked = kycStatus !== "verified";
 
+  const numericAmount = parseFloat(fields.amount) || 0;
+  const usdcPreview =
+    conversionRate && conversionRate > 0
+      ? (numericAmount / conversionRate).toFixed(2)
+      : "0.00";
+
   if (createdTrade) {
     return <SuccessPanel trade={createdTrade} />;
   }
@@ -454,6 +491,15 @@ export default function SellPage() {
             disabled={loading || kycBlocked}
             placeholder="500"
           />
+          {conversionRate !== null && (
+            <p
+              data-testid="conversion-preview"
+              aria-live="polite"
+              className="mt-1 text-xs font-medium text-gray-500 dark:text-gray-400"
+            >
+              ≈ {usdcPreview} USDC
+            </p>
+          )}
         </Field>
 
         {/* Expiry */}

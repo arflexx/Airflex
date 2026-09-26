@@ -8,6 +8,9 @@ export interface UseTradeListOptions {
   page: number;
   limit: number;
   assetType?: string;
+  carrier?: string;
+  minAmount?: number | string;
+  maxAmount?: number | string;
   status?: string;
 }
 
@@ -39,7 +42,7 @@ export function clearTradeListCache(): void {
 }
 
 export function useTradeList(options: UseTradeListOptions): UseTradeListReturn {
-  const { page, limit, assetType, status } = options;
+  const { page, limit, assetType, carrier, minAmount, maxAmount, status } = options;
 
   const [trades, setTrades] = useState<TradeOffer[]>([]);
   const [total, setTotal] = useState<number>(0);
@@ -50,6 +53,9 @@ export function useTradeList(options: UseTradeListOptions): UseTradeListReturn {
   queryParams.set("page", String(page));
   queryParams.set("limit", String(limit));
   if (assetType) queryParams.set("assetType", assetType);
+  if (carrier) queryParams.set("carrier", carrier);
+  if (minAmount !== undefined && minAmount !== "") queryParams.set("minAmount", String(minAmount));
+  if (maxAmount !== undefined && maxAmount !== "") queryParams.set("maxAmount", String(maxAmount));
   if (status) queryParams.set("status", status);
 
   const cacheKey = `/api/v1/trades?${queryParams.toString()}`;

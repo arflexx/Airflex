@@ -76,6 +76,19 @@ export const paginationSchema = z.object({
         .min(1, "limit must be at least 1")
         .max(100, "limit must be 100 or fewer")
     ),
+
+  assetType: z.string().optional(),
+  carrier: z.string().optional(),
+  minAmount: z
+    .string()
+    .optional()
+    .transform((v) => (v ? parseFloat(v) : undefined))
+    .pipe(z.number().min(0).optional()),
+  maxAmount: z
+    .string()
+    .optional()
+    .transform((v) => (v ? parseFloat(v) : undefined))
+    .pipe(z.number().min(0).optional()),
 });
 
 export type PaginationInput = z.infer<typeof paginationSchema>;

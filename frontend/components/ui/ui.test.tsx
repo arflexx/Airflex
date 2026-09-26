@@ -53,6 +53,21 @@ describe("UI Primitives", () => {
       expect(input).toHaveAttribute("aria-invalid", "true");
       expect(screen.getByRole("alert")).toHaveTextContent("Username already taken");
     });
+
+    it("forwards ref to the underlying native input element", () => {
+      const ref = React.createRef<HTMLInputElement>();
+      render(<Input ref={ref} id="ref-input" placeholder="Ref target" />);
+      expect(ref.current).toBeInstanceOf(HTMLInputElement);
+      expect(ref.current).toBe(screen.getByPlaceholderText("Ref target"));
+    });
+
+    it("allows focusing and interacting via forwarded ref", () => {
+      const ref = React.createRef<HTMLInputElement>();
+      render(<Input ref={ref} id="focus-input" defaultValue="Initial text" />);
+      expect(ref.current?.value).toBe("Initial text");
+      ref.current?.focus();
+      expect(document.activeElement).toBe(ref.current);
+    });
   });
 
   describe("Select", () => {

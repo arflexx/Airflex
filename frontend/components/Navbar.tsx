@@ -43,7 +43,7 @@ interface WalletResponse {
 const NAV_LINKS = [
   { href: "/",         labelKey: "marketplace" },
   { href: "/sell",     labelKey: "sell"        },
-  { href: "/profile",  labelKey: "wallet"      },
+  { href: "/wallet",   labelKey: "wallet"      },
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -227,13 +227,13 @@ export default function Navbar() {
 
   // ---- shared link classes ------------------------------------------------
   const desktopLinkBase =
-    "text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 rounded-lg px-2 py-1";
-  const desktopLinkActive  = "text-violet-700 dark:text-violet-400";
-  const desktopLinkDefault = "text-gray-600 hover:text-violet-700 dark:text-gray-400 dark:hover:text-violet-400";
+    "text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 rounded-lg px-2.5 py-1.5";
+  const desktopLinkActive  = "bg-violet-50 text-violet-700 font-semibold dark:bg-violet-900/40 dark:text-violet-300";
+  const desktopLinkDefault = "text-gray-600 hover:bg-gray-50 hover:text-violet-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-violet-400";
 
   const drawerLinkBase =
     "flex items-center rounded-xl px-4 py-3 text-base font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500";
-  const drawerLinkActive  = "bg-violet-50 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300";
+  const drawerLinkActive  = "bg-violet-50 text-violet-700 font-semibold dark:bg-violet-900/30 dark:text-violet-300";
   const drawerLinkDefault = "text-gray-700 hover:bg-gray-50 hover:text-violet-700 dark:text-gray-300 dark:hover:bg-gray-800 dark:hover:text-violet-400";
 
   // -------------------------------------------------------------------------
@@ -298,7 +298,12 @@ export default function Navbar() {
                   {/* Masked phone — links to profile */}
                   <a
                     href="/profile"
-                    className="hidden lg:flex items-center rounded-lg px-2 py-1.5 text-xs font-medium text-gray-500 transition-colors hover:text-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 dark:text-gray-400 dark:hover:text-violet-400"
+                    aria-current={isActive("/profile") ? "page" : undefined}
+                    className={`hidden lg:flex items-center rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 ${
+                      isActive("/profile")
+                        ? "bg-violet-50 text-violet-700 font-semibold dark:bg-violet-900/40 dark:text-violet-300"
+                        : "text-gray-500 hover:bg-gray-50 hover:text-violet-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-violet-400"
+                    }`}
                     aria-label={t("viewProfile")}
                   >
                     {maskedPhone}
@@ -421,7 +426,12 @@ export default function Navbar() {
                 {/* Masked phone */}
                 <a
                   href="/profile"
-                  className="flex items-center gap-2 rounded-xl border border-gray-100 bg-gray-50 px-4 py-3 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700"
+                  aria-current={isActive("/profile") ? "page" : undefined}
+                  className={`flex items-center gap-2 rounded-xl border border-gray-100 bg-gray-50 px-4 py-3 text-sm font-medium transition-colors hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 dark:border-gray-700 dark:bg-gray-800 ${
+                    isActive("/profile")
+                      ? "border-violet-500 text-violet-700 font-semibold dark:border-violet-500 dark:text-violet-300"
+                      : "text-gray-600 dark:text-gray-400 dark:hover:bg-gray-700"
+                  }`}
                 >
                   <span aria-hidden="true">👤</span>
                   {maskedPhone}
