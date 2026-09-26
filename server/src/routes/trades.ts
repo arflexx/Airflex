@@ -54,13 +54,42 @@ router.get(
       return;
     }
 
-    const { page, limit } = parsed.data;
+    const { page, limit, assetType, carrier, minAmount, maxAmount } = parsed.data;
     const offset = (page - 1) * limit;
+
+    const whereConditions: string[] = ["t.status = 'Active'", "t.expires_at > NOW()"];
+    const queryParams: unknown[] = [];
+
+    if (carrier && carrier.trim()) {
+      queryParams.push(`${carrier.trim().toUpperCase()}%`);
+      whereConditions.push(`t.asset_type ILIKE $${queryParams.length}`);
+    }
+
+    if (assetType && assetType.trim()) {
+      queryParams.push(`%${assetType.trim().toUpperCase()}%`);
+      whereConditions.push(`t.asset_type ILIKE $${queryParams.length}`);
+    }
+
+    if (minAmount !== undefined && !isNaN(minAmount)) {
+      queryParams.push(minAmount);
+      whereConditions.push(`t.amount >= $${queryParams.length}`);
+    }
+
+    if (maxAmount !== undefined && !isNaN(maxAmount)) {
+      queryParams.push(maxAmount);
+      whereConditions.push(`t.amount <= $${queryParams.length}`);
+    }
+
+    const whereClause = whereConditions.join(" AND ");
 
     // Join ratings on reviewee_display_id so the count survives account
     // anonymisation (issue #362).  The display_id is captured at rating
     // creation time and is never modified by the anonymisation job, unlike
     // the raw UUID which becomes a dangling reference once PII is scrubbed.
+    const limitIndex = queryParams.length + 1;
+    const offsetIndex = queryParams.length + 2;
+    const selectParams = [...queryParams, limit, offset];
+
     const { rows: trades } = await pool.query<
       PublicTradeOffer & {
         seller_average_rating: number;
@@ -89,15 +118,16 @@ router.get(
          FROM ratings
          WHERE reviewee_display_id = t.seller_id::text
        ) sr ON TRUE
-       WHERE t.status = 'Active' AND t.expires_at > NOW()
+       WHERE ${whereClause}
        ORDER BY t.created_at DESC
-       LIMIT $1 OFFSET $2`,
-      [limit, offset]
+       LIMIT $${limitIndex} OFFSET $${offsetIndex}`,
+      selectParams
     );
 
     const { rows: countRows } = await pool.query<{ count: string }>(
-      `SELECT COUNT(*) FROM trade_offers
-       WHERE status = 'Active' AND expires_at > NOW()`
+      `SELECT COUNT(*) FROM trade_offers t
+       WHERE ${whereClause}`,
+      queryParams
     );
 
     const total = parseInt(countRows[0]?.count ?? "0", 10);
