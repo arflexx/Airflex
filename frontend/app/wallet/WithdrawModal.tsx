@@ -241,10 +241,10 @@ export default function WithdrawModal({
         {/* Current balance display */}
         <div className="mb-6 rounded-xl bg-gray-50 p-4 dark:bg-gray-700">
           <p className="text-sm font-medium text-gray-500 dark:text-gray-400">
-            {t("availableBalance")}
+            Available: ₦{Number(currentBalance || 0).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </p>
           <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">
-            ₦{parseFloat(currentBalance).toLocaleString()}
+            ₦{Number(currentBalance || 0).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </p>
         </div>
 
@@ -271,17 +271,35 @@ export default function WithdrawModal({
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           {/* Amount field */}
           <div>
-            <label
-              htmlFor="amount"
-              className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300"
-            >
-              {t("amount")}
-            </label>
+            <div className="mb-1.5 flex items-center justify-between">
+              <label
+                htmlFor="amount"
+                className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+              >
+                {t("amount")}
+              </label>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-500 dark:text-gray-400">
+                  Available: ₦{Number(currentBalance || 0).toLocaleString("en-NG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const parsed = parseFloat(currentBalance);
+                    setAmount(!isNaN(parsed) && parsed > 0 ? String(parsed) : "");
+                  }}
+                  className="rounded px-2 py-0.5 text-xs font-semibold text-violet-600 hover:bg-violet-50 hover:text-violet-700 dark:text-violet-400 dark:hover:bg-violet-900/30"
+                  aria-label="Max amount"
+                >
+                  Max
+                </button>
+              </div>
+            </div>
             <CurrencyInput
               id="amount"
               name="amount"
               value={amount}
-max={parseFloat(currentBalance) || undefined}
+              max={parseFloat(currentBalance) || undefined}
               onChange={(val) => setAmount(val ? String(val) : "")}
               placeholder={t("enterAmount")}
             />

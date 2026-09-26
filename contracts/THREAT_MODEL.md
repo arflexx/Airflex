@@ -49,3 +49,16 @@ This document outlines the threat modeling analysis for AirFlex Soroban smart co
 * **Mitigation**:
   * Automated TTL extension (bumping persistent storage entries) on every interaction with a trade listing.
   * Emergency admin recovery mechanism to restore state from on-chain event logs if archival occurs.
+
+---
+
+### 6. Critical Contract Bug or Settlement Deadlock (Trapped Funds Escape Hatch)
+* **Threat Vector**: A zero-day defect or irrecoverable logic deadlock permanently breaks settlement workflows (`release_payment`, `cancel_and_refund`, `resolve_dispute`), locking protocol assets permanently inside contract balances with no standard path for user withdrawal.
+* **Impact**: Critical — Permanent loss of trapped protocol liquidity and user deposits.
+* **Mitigation**:
+  * **Emergency Withdrawal Function**: Both Escrow and Marketplace contracts provide an `emergency_withdraw(env, token, recipient, amount)` function designed specifically to extract trapped assets during catastrophic protocol failure.
+  * **Strict Role Authorization**: Execution requires explicit caller authentication by the configured protocol administrator via `admin.require_auth()`.
+  * **Enforced Circuit Breaker**: The function is strictly gated behind the paused contract state (`DataKey::Paused == true`) with `ContractError::WrongStatus` returned if executed while active.
+  * **72-Hour Anti-Rugpull Timelock**: To prevent compromised admin keys or insider attacks from draining user funds unilaterally, a mandatory 72-hour delay (`EMERGENCY_TIMELOCK_SECS = 259_200`) is enforced between `pause` invocation and `emergency_withdraw` eligibility. Attempted withdrawals before timelock expiry revert with `ContractError::TimelockNotExpired`.
+  * **Transparent Observability**: Every execution emits a high-severity `emergency_withdrawal` event with full payload telemetry (`token`, `recipient`, `amount`), providing on-chain visibility and alerting capabilities for the community and protocol monitors.
+
