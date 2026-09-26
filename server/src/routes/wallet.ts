@@ -305,28 +305,117 @@ router.post(
       return;
     }
 
-    // TODO: Implement actual withdrawal logic via Paystack transfer
-    // For now, we'll just log the request and return success
-    console.log("[wallet] Withdrawal request:", {
-      userId,
-      amount: amountNum,
-      bank_code,
-      account_number,
-      account_name,
-    });
+    const paystackSecretKey = process.env["PAYSTACK_SECRET_KEY"];
+    if (!paystackSecretKey) {
+      res.status(500).json({ error: "Payment service not configured" });
+      return;
+    }
 
-    // In production, you would:
-    // 1. Create a withdrawal record in the database
-    // 2. Initiate a Paystack transfer
-    // 3. Update the wallet balance after successful transfer
-    // 4. Handle transfer failures and retries
+    // Step 1: Create a transfer recipient on Paystack
+    let recipientCode: string;
+    try {
+      const recipientRes = await fetch("https://api.paystack.co/transferrecipient", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${paystackSecretKey}`,
+        },
+        body: JSON.stringify({
+          type: "nuban",
+          name: account_name,
+          account_number,
+          bank_code,
+          currency: "NGN",
+        }),
+      });
 
-    // Notify the user that their withdrawal was processed (best-effort)
+      const recipientData = (await recipientRes.json()) as {
+        status: boolean;
+        data?: { recipient_code: string };
+        message?: string;
+      };
+
+      if (!recipientRes.ok || !recipientData.status || !recipientData.data?.recipient_code) {
+        console.error("[wallet] Paystack recipient creation failed:", recipientData.message);
+        res.status(502).json({ error: "Unable to register withdrawal account. Check account details." });
+        return;
+      }
+
+      recipientCode = recipientData.data.recipient_code;
+    } catch (err) {
+      console.error("[wallet] Paystack recipient error:", (err as Error).message);
+      res.status(502).json({ error: "Payment service unavailable. Try again." });
+      return;
+    }
+
+    // Step 2: Initiate the Paystack transfer (amount in kobo)
+    const amountKobo = Math.round(amountNum * 100);
+    let transferReference: string;
+    try {
+      const transferRes = await fetch("https://api.paystack.co/transfer", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${paystackSecretKey}`,
+        },
+        body: JSON.stringify({
+          source: "balance",
+          amount: amountKobo,
+          recipient: recipientCode,
+          reason: `AirFlex withdrawal for user ${userId}`,
+          reference: `airflex-withdrawal-${userId}-${Date.now()}`,
+        }),
+      });
+
+      const transferData = (await transferRes.json()) as {
+        status: boolean;
+        data?: { reference: string; transfer_code: string; status: string };
+        message?: string;
+      };
+
+      if (!transferRes.ok || !transferData.status || !transferData.data) {
+        console.error("[wallet] Paystack transfer initiation failed:", transferData.message);
+        res.status(502).json({ error: "Withdrawal failed. Please try again." });
+        return;
+      }
+
+      transferReference = transferData.data.reference;
+    } catch (err) {
+      console.error("[wallet] Paystack transfer error:", (err as Error).message);
+      res.status(502).json({ error: "Payment service unavailable. Try again." });
+      return;
+    }
+
+    // Step 3: Record the debit transaction in the DB
+    try {
+      await pool.query(
+        `INSERT INTO transactions (user_id, amount, direction, type, external_reference)
+         VALUES ($1, $2, 'debit', 'withdrawal', $3)`,
+        [userId, amountNum, transferReference]
+      );
+
+      // Deduct from fiat_balance
+      await pool.query(
+        `UPDATE wallets SET fiat_balance = GREATEST(0, fiat_balance - $1) WHERE user_id = $2`,
+        [amountNum, userId]
+      );
+    } catch (dbErr) {
+      // Log but don't fail — the transfer is already initiated on Paystack
+      console.error("[wallet] Failed to record withdrawal transaction:", (dbErr as Error).message);
+    }
+
+    // Notify the user (best-effort)
     void NotificationService.send(userId, "WITHDRAWAL_PROCESSED", {
       amount: amountNum,
     });
 
-    res.status(200).json({ success: true });
+    console.info(`[wallet] Withdrawal initiated: user=${userId} amount=${amountNum} ref=${transferReference}`);
+
+    res.status(200).json({
+      success: true,
+      reference: transferReference,
+      message: "Withdrawal initiated successfully. Funds will arrive within 1–2 business days.",
+    });
   }
 );
 
