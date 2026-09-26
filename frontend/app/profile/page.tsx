@@ -7,6 +7,7 @@ import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { Spinner } from "../../components/ui/Spinner";
+import { Modal } from "../../components/ui/Modal";
 import { StellarExplorerLink } from "../../components/StellarExplorerLink";
 
 // ---------------------------------------------------------------------------
@@ -325,6 +326,56 @@ export default function ProfilePage() {
   // Filter + pagination state
   const [filter, setFilter]   = useState<FilterStatus>("All");
   const [page, setPage]       = useState(1);
+
+  // Deletion modal state (Issue #343)
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [deletePhrase, setDeletePhrase]           = useState("");
+  const [deleteCountdown, setDeleteCountdown]     = useState(5);
+  const [isDeleting, setIsDeleting]               = useState(false);
+  const [deleteError, setDeleteError]             = useState<string | null>(null);
+  const [deleteSuccess, setDeleteSuccess]         = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isDeleteModalOpen) return;
+    setDeleteCountdown(5);
+    const interval = setInterval(() => {
+      setDeleteCountdown((prev) => (prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [isDeleteModalOpen]);
+
+  const isPhraseMatched = deletePhrase.trim().toUpperCase() === "DELETE MY ACCOUNT";
+  const isDeleteButtonDisabled = !isPhraseMatched || deleteCountdown > 0 || isDeleting;
+
+  async function handleDeleteAccount() {
+    if (!isPhraseMatched || deleteCountdown > 0 || isDeleting) return;
+    setIsDeleting(true);
+    setDeleteError(null);
+
+    try {
+      const token = getToken();
+      const res = await fetch(`${apiUrl}/api/v1/profile`, {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        setDeleteError(data.error || "Failed to schedule account deletion.");
+      } else {
+        setDeleteSuccess(data.message || "Account deletion scheduled. Your personal data will be anonymised in 30 days.");
+        setTimeout(() => {
+          setIsDeleteModalOpen(false);
+        }, 2000);
+      }
+    } catch {
+      setDeleteError("Network error. Please try again.");
+    } finally {
+      setIsDeleting(false);
+    }
+  }
 
   const apiUrl = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:3001";
 
@@ -713,6 +764,119 @@ export default function ProfilePage() {
           </>
         )}
       </section>
+
+      {/* ------------------------------------------------------------------ */}
+      {/* Danger Zone: Account Deletion (Issue #343)                         */}
+      {/* ------------------------------------------------------------------ */}
+      <section aria-labelledby="danger-zone-heading">
+        <h2
+          id="danger-zone-heading"
+          className="mb-4 text-lg font-bold text-red-700 dark:text-red-400"
+        >
+          Danger Zone
+        </h2>
+        <Card className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-red-200 bg-red-50/30 p-5 dark:border-red-900/40 dark:bg-red-950/20">
+          <div>
+            <h3 className="text-sm font-bold text-gray-900 dark:text-gray-100">
+              Delete account
+            </h3>
+            <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">
+              Permanently schedule your account for deletion. Active and locked trades will be cancelled and personal data anonymised after a 30-day grace period.
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="danger"
+            onClick={() => {
+              setDeletePhrase("");
+              setDeleteError(null);
+              setDeleteSuccess(null);
+              setIsDeleteModalOpen(true);
+            }}
+            className="whitespace-nowrap"
+          >
+            Delete account
+          </Button>
+        </Card>
+      </section>
+
+      {/* Account Deletion Confirmation Modal */}
+      <Modal
+        isOpen={isDeleteModalOpen}
+        onClose={() => {
+          if (!isDeleting) {
+            setIsDeleteModalOpen(false);
+            setDeletePhrase("");
+            setDeleteError(null);
+          }
+        }}
+        title="Confirm Account Deletion"
+        description="This action will schedule your account and all associated personal data for permanent deletion following a 30-day grace period."
+        footer={
+          <div className="flex items-center justify-end gap-3">
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={isDeleting}
+              onClick={() => setIsDeleteModalOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="danger"
+              disabled={isDeleteButtonDisabled}
+              onClick={handleDeleteAccount}
+            >
+              {isDeleting
+                ? "Deleting…"
+                : deleteCountdown > 0
+                ? `Confirm Deletion (${deleteCountdown}s)`
+                : "Confirm Deletion"}
+            </Button>
+          </div>
+        }
+      >
+        <div className="flex flex-col gap-4 py-2">
+          {deleteError && (
+            <div
+              role="alert"
+              className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-400"
+            >
+              {deleteError}
+            </div>
+          )}
+          {deleteSuccess && (
+            <div
+              role="alert"
+              className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-xs text-green-700 dark:border-green-800 dark:bg-green-900/20 dark:text-green-400"
+            >
+              {deleteSuccess}
+            </div>
+          )}
+          <p className="text-sm text-gray-700 dark:text-gray-300">
+            To prevent accidental deletion, please type{" "}
+            <span className="font-mono font-bold text-red-600 dark:text-red-400">
+              DELETE MY ACCOUNT
+            </span>{" "}
+            below:
+          </p>
+          <input
+            type="text"
+            value={deletePhrase}
+            onChange={(e) => setDeletePhrase(e.target.value)}
+            placeholder="DELETE MY ACCOUNT"
+            disabled={isDeleting}
+            aria-label="Confirmation phrase"
+            className="w-full rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-sm text-gray-900 placeholder:text-gray-400 focus:border-red-500 focus:outline-none focus:ring-2 focus:ring-red-500/20 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+          />
+          {deleteCountdown > 0 && (
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              Please wait {deleteCountdown} second{deleteCountdown === 1 ? "" : "s"} before confirming.
+            </p>
+          )}
+        </div>
+      </Modal>
     </div>
   );
 }
