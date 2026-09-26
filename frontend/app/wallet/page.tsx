@@ -31,13 +31,28 @@ interface WalletResponse {
   error?: string;
 }
 
+/** Status values returned by the wallet transactions endpoint. */
+type WalletTransactionStatus = "Active" | "Locked" | "Completed" | "Cancelled" | "Disputed";
+
 interface WalletTransaction {
   id: string;
   asset_type: string;
   amount: number;
-  status: "Active" | "Locked" | "Completed" | "Cancelled" | "Disputed";
+  status: WalletTransactionStatus;
   escrow_tx_hash: string | null;
   created_at: string;
+}
+
+/**
+ * Maps a WalletTransactionStatus to a BadgeStatusVariant.
+ * "Active" on the backend is displayed as "Open" in the UI because
+ * the trade is open/available, not yet locked by a buyer.
+ */
+function walletStatusToBadgeVariant(
+  status: WalletTransactionStatus,
+): "Open" | "Locked" | "Completed" | "Cancelled" | "Disputed" {
+  if (status === "Active") return "Open";
+  return status;
 }
 
 interface TradesResponse {
@@ -316,7 +331,7 @@ Stellar Public Key (On-chain Account)
                         ₦{tx.amount.toLocaleString()}
                       </td>
                       <td className="px-6 py-3.5">
-                        <Badge variant={tx.status === "Active" ? "Open" : (tx.status as any)} />
+                        <Badge variant={walletStatusToBadgeVariant(tx.status)} />
                       </td>
                       <td className="px-6 py-3.5">
                         {tx.escrow_tx_hash ? (

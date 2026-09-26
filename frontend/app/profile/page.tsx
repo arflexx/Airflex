@@ -90,7 +90,7 @@ function formatDateTime(iso: string): string {
 
 function StatusBadge({ status }: { status: TradeStatus }) {
   const variant = status === "Active" ? "Open" : status;
-  return <Badge variant={variant as any} />;
+  return <Badge variant={variant} />;
 }
 
 /** A single stat card in the profile summary */

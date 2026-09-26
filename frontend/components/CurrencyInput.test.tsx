@@ -21,6 +21,19 @@ describe("CurrencyInput Component", () => {
     expect(handleChange).toHaveBeenCalledWith(50000);
   });
 
+  it("strips non-numeric characters on paste and passes plain number to onChange", () => {
+    const handleChange = jest.fn();
+    render(<CurrencyInput value={0} onChange={handleChange} id="test-input" />);
+
+    const input = screen.getByRole("textbox");
+    fireEvent.paste(input, {
+      clipboardData: { getData: () => "1,234.56abc" },
+    });
+
+    // "1,234.56abc" → strip non-digits → "123456" → parseInt → 123456
+    expect(handleChange).toHaveBeenCalledWith(123456);
+  });
+
   it("displays inline red error message when value is below min", () => {
     render(<CurrencyInput value={50} onChange={jest.fn()} min={100} id="test-input" />);
 

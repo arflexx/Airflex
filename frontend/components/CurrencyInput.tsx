@@ -1,6 +1,6 @@
 "use client";
 
-import React, { type KeyboardEvent, type ChangeEvent } from "react";
+import React, { type KeyboardEvent, type ChangeEvent, type ClipboardEvent } from "react";
 
 export interface CurrencyInputProps
   extends Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "min" | "max"> {
@@ -44,7 +44,28 @@ export function CurrencyInput({
   const minErrorMessage = isBelowMin ? `Minimum amount is ₦${min.toLocaleString("en-NG")}` : null;
 
   const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
-    const cleaned = e.target.value.replace(/\D/g, "");
+    // Strip everything except digits; a decimal point in pasted text is also
+    // removed because the component only handles whole-number Naira amounts.
+    const cleaned = e.target.value.replace(/[^0-9]/g, "");
+    const parsed = cleaned ? parseInt(cleaned, 10) : 0;
+    onChange(parsed);
+  };
+
+  /**
+   * Sanitises pasted text before it reaches the input.
+   *
+   * Mobile keyboards (and desktop paste) can inject currency symbols, commas,
+   * letters, or other non-numeric characters.  We strip them here so
+   * parseFloat / parseInt never receives garbage and returns NaN.
+   *
+   * A single decimal point is also removed because this input represents
+   * whole-number Naira amounts.
+   */
+  const handlePaste = (e: ClipboardEvent<HTMLInputElement>) => {
+    e.preventDefault();
+    const pasted = e.clipboardData.getData("text");
+    // Keep only digits; strip commas, currency symbols, letters, etc.
+    const cleaned = pasted.replace(/[^0-9]/g, "");
     const parsed = cleaned ? parseInt(cleaned, 10) : 0;
     onChange(parsed);
   };
@@ -84,6 +105,7 @@ export function CurrencyInput({
           value={displayValue}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           placeholder={placeholder}
           disabled={disabled}
           aria-invalid={isBelowMin || Boolean(errorText) ? "true" : undefined}

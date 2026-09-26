@@ -227,8 +227,24 @@ export function NotificationTray(): JSX.Element {
 
             <ul className="max-h-80 overflow-y-auto">
               {notifications.length === 0 ? (
-                <li className="px-4 py-6 text-center text-xs text-zinc-500">
-                  No notifications yet.
+                <li className="flex flex-col items-center gap-2 px-4 py-8 text-center">
+                  <svg
+                    className="h-8 w-8 text-zinc-600"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={1.5}
+                    viewBox="0 0 24 24"
+                    aria-hidden="true"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                    />
+                  </svg>
+                  <p className="text-xs font-medium text-zinc-400 dark:text-zinc-500">
+                    You&#39;re all caught up &mdash; no new notifications.
+                  </p>
                 </li>
               ) : (
                 notifications.map((n) => (
