@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getToken } from "../lib/auth";
 import { CurrencyInput } from "../../components/CurrencyInput";
+import { Spinner } from "../../components/ui/Spinner";
 
 // ---------------------------------------------------------------------------
 // Paystack inline checkout (Issue #25)
@@ -205,6 +206,11 @@ export default function DepositModal({
   const [amount, setAmount] = useState("");
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  // Synchronous guard: React state updates are async, so two rapid clicks in
+  // the same tick would both see `isSubmitting === false`. The ref flips
+  // immediately and blocks the second submit before the re-render lands.
+  const submittingRef = useRef(false);
 
   // Timers are cleared on unmount and on close so a dismissed modal cannot keep
   // polling in the background.
@@ -228,8 +234,41 @@ export default function DepositModal({
       setAmount("");
       setStatus("idle");
       setError(null);
+      submittingRef.current = false;
+      setIsSubmitting(false);
     }
   }, [isOpen, stopPolling]);
+
+  // True while the initialize request is in flight OR the Paystack flow is
+  // still active. `isSubmitting` covers the fetch; the status covers the
+  // popup/confirm window where a resubmit or dismiss would lose state.
+  const busy =
+    isSubmitting ||
+    status === "initializing" ||
+    status === "awaiting_payment" ||
+    status === "confirming";
+
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
+
+  const handleRequestClose = useCallback(() => {
+    if (busyRef.current) return;
+    onClose();
+  }, [onClose]);
+
+  // Escape closes the modal when idle, but is ignored while a request or the
+  // Paystack flow is pending so the in-flight state cannot be discarded.
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        handleRequestClose();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isOpen, handleRequestClose]);
 
   /**
    * Poll the wallet until the deposit lands.
@@ -256,6 +295,9 @@ export default function DepositModal({
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
+    // Block double submits: the ref catches rapid clicks in the same tick,
+    // the state keeps the button disabled across renders.
+    if (submittingRef.current || isSubmitting) return;
     setError(null);
 
     const invalid = validateDepositAmount(amount);
@@ -270,6 +312,8 @@ export default function DepositModal({
       return;
     }
 
+    submittingRef.current = true;
+    setIsSubmitting(true);
     setStatus("initializing");
 
     try {
@@ -293,6 +337,11 @@ export default function DepositModal({
         throw new Error("Could not load the Paystack checkout.");
       }
 
+      // Initialize request is done; the Paystack popup now owns the flow.
+      // Clear the submitting flag but keep the modal busy via status so the
+      // button stays disabled and close stays blocked.
+      submittingRef.current = false;
+      setIsSubmitting(false);
       setStatus("awaiting_payment");
 
       const popup = new window.PaystackPop();
@@ -301,15 +350,21 @@ export default function DepositModal({
         // Dismissal and failure both leave the modal open with an explanation:
         // closing it would lose the amount the user already typed.
         onCancel: () => {
+          submittingRef.current = false;
+          setIsSubmitting(false);
           setStatus("idle");
           setError("Payment cancelled. Your wallet has not been charged.");
         },
         onError: (err) => {
+          submittingRef.current = false;
+          setIsSubmitting(false);
           setStatus("idle");
           setError(err?.message ?? "The payment could not be completed. Please try again.");
         },
       });
     } catch (err) {
+      submittingRef.current = false;
+      setIsSubmitting(false);
       setStatus("idle");
       setError(err instanceof Error ? err.message : "Something went wrong. Please try again.");
     }
@@ -317,14 +372,16 @@ export default function DepositModal({
 
   if (!isOpen) return null;
 
-  const busy = status === "initializing" || status === "awaiting_payment" || status === "confirming";
-
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
       role="dialog"
       aria-modal="true"
       aria-labelledby="deposit-modal-title"
+      onMouseDown={(event) => {
+        // Overlay click closes only when idle; ignored while submitting/busy.
+        if (event.target === event.currentTarget) handleRequestClose();
+      }}
     >
       <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl dark:bg-gray-800">
         <div className="mb-4 flex items-start justify-between">
@@ -336,9 +393,10 @@ export default function DepositModal({
           </h2>
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleRequestClose}
+            disabled={busy}
             aria-label="Close deposit dialog"
-            className="text-gray-400 transition-colors hover:text-gray-600 dark:hover:text-gray-300"
+            className="text-gray-400 transition-colors hover:text-gray-600 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:text-gray-300"
           >
             ✕
           </button>
@@ -445,12 +503,21 @@ export default function DepositModal({
               <button
                 type="submit"
                 disabled={busy}
-                className="mt-6 inline-flex w-full items-center justify-center rounded-xl bg-violet-600 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-60"
+                className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-violet-600 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {status === "initializing" && "Starting…"}
-                {status === "awaiting_payment" && "Waiting for payment…"}
-                {status === "confirming" && "Confirming…"}
-                {status === "idle" && "Continue to Payment"}
+                {isSubmitting ? (
+                  <span className="inline-flex items-center gap-2">
+                    <Spinner size="sm" label="Starting deposit…" className="text-white" />
+                    Starting…
+                  </span>
+                ) : (
+                  <>
+                    {status === "awaiting_payment" && "Waiting for payment…"}
+                    {status === "confirming" && "Confirming…"}
+                    {(status === "idle" || status === "initializing") &&
+                      "Continue to Payment"}
+                  </>
+                )}
               </button>
             </form>
           </>

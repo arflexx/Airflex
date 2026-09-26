@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useTranslations } from "next-intl";
 import { getToken } from "../lib/auth";
 import { CurrencyInput } from "../../components/CurrencyInput";
@@ -59,6 +59,41 @@ export default function WithdrawModal({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  // Synchronous double-submit guard: state updates are async, so two rapid
+  // submits in the same tick would both see `isSubmitting === false`.
+  const submittingRef = useRef(false);
+  const successTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const isSubmittingRef = useRef(isSubmitting);
+  isSubmittingRef.current = isSubmitting;
+
+  const handleRequestClose = useCallback(() => {
+    if (submittingRef.current || isSubmittingRef.current) return;
+    onClose();
+  }, [onClose]);
+
+  // Escape closes the modal when idle, but is ignored while the withdrawal
+  // request is pending so the in-flight record cannot be duplicated.
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        handleRequestClose();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isOpen, handleRequestClose]);
+
+  // Clear a pending success redirect if the modal unmounts first.
+  useEffect(
+    () => () => {
+      if (successTimer.current) clearTimeout(successTimer.current);
+    },
+    []
+  );
 
   // Fetch banks on mount
   useEffect(() => {
@@ -127,6 +162,10 @@ export default function WithdrawModal({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
 
+    // Block double submits: the ref catches rapid clicks in the same tick,
+    // the state keeps the button disabled across renders.
+    if (submittingRef.current || isSubmitting) return;
+
     if (!accountConfirmed) {
       setError(t("confirmFirst"));
       return;
@@ -144,6 +183,7 @@ export default function WithdrawModal({
       return;
     }
 
+    submittingRef.current = true;
     setIsSubmitting(true);
     setError(null);
     setSuccessMessage(null);
@@ -168,27 +208,41 @@ export default function WithdrawModal({
 
       if (data.success) {
         setSuccessMessage(t("success"));
-        setTimeout(() => {
+        // Keep the form locked while the success message shows so a second
+        // submit cannot create a duplicate withdrawal. handleClose clears it.
+        if (successTimer.current) clearTimeout(successTimer.current);
+        successTimer.current = setTimeout(() => {
           onWithdrawSuccess();
           handleClose();
         }, 2000);
       } else {
+        submittingRef.current = false;
+        setIsSubmitting(false);
         setError(data.error || t("submitFailed"));
       }
     } catch (err) {
-      setError(t("networkError"));
-    } finally {
+      submittingRef.current = false;
       setIsSubmitting(false);
+      setError(t("networkError"));
     }
   }
 
   function handleClose() {
+    // The modal cannot be dismissed while the withdrawal request is pending.
+    if (submittingRef.current || isSubmitting) return;
+    if (successTimer.current) {
+      clearTimeout(successTimer.current);
+      successTimer.current = null;
+    }
+    submittingRef.current = false;
+    setIsSubmitting(false);
     setAmount("");
     setSelectedBank(null);
     setAccountNumber("");
     setAccountName("");
     setAccountConfirmed(false);
     setBankSearch("");
+    setShowBankDropdown(false);
     setError(null);
     setSuccessMessage(null);
     onClose();
@@ -206,6 +260,10 @@ export default function WithdrawModal({
       role="dialog"
       aria-modal="true"
       aria-labelledby="withdraw-modal-title"
+      onMouseDown={(event) => {
+        // Overlay click closes only when idle; ignored while submitting.
+        if (event.target === event.currentTarget) handleRequestClose();
+      }}
     >
       <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl dark:bg-gray-800">
         <div className="mb-6 flex items-center justify-between">
@@ -218,7 +276,8 @@ export default function WithdrawModal({
           <button
             type="button"
             onClick={handleClose}
-            className="rounded-lg p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
+            disabled={isSubmitting}
+            className="rounded-lg p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-gray-700 dark:hover:text-gray-300"
             aria-label={t("close")}
           >
             <svg
@@ -281,9 +340,10 @@ export default function WithdrawModal({
               id="amount"
               name="amount"
               value={amount}
-max={parseFloat(currentBalance) || undefined}
+              max={parseFloat(currentBalance) || undefined}
               onChange={(val) => setAmount(val ? String(val) : "")}
               placeholder={t("enterAmount")}
+              disabled={isSubmitting}
             />
           </div>
 
@@ -307,16 +367,18 @@ max={parseFloat(currentBalance) || undefined}
                 onFocus={() => setShowBankDropdown(true)}
                 placeholder={t("searchBank")}
                 required
-                className="w-full rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm text-gray-900 placeholder:text-gray-400 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 dark:placeholder:text-gray-500"
+                disabled={isSubmitting}
+                className="w-full rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm text-gray-900 placeholder:text-gray-400 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 dark:placeholder:text-gray-500"
               />
               {selectedBank && (
                 <button
                   type="button"
+                  disabled={isSubmitting}
                   onClick={() => {
                     setSelectedBank(null);
                     setBankSearch("");
                   }}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:text-gray-300"
                   aria-label={t("clearBank")}
                 >
                   <svg
@@ -337,18 +399,19 @@ max={parseFloat(currentBalance) || undefined}
             </div>
 
             {/* Bank dropdown */}
-            {showBankDropdown && filteredBanks.length > 0 && (
+            {showBankDropdown && !isSubmitting && filteredBanks.length > 0 && (
               <div className="absolute z-10 mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-lg dark:border-gray-600 dark:bg-gray-700">
                 {filteredBanks.map((bank) => (
                   <button
                     key={bank.code}
                     type="button"
+                    disabled={isSubmitting}
                     onClick={() => {
                       setSelectedBank(bank);
                       setBankSearch(bank.name);
                       setShowBankDropdown(false);
                     }}
-                    className="w-full px-4 py-2.5 text-left text-sm text-gray-900 hover:bg-gray-50 dark:text-gray-100 dark:hover:bg-gray-600"
+                    className="w-full px-4 py-2.5 text-left text-sm text-gray-900 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-gray-100 dark:hover:bg-gray-600"
                   >
                     {bank.name}
                   </button>
@@ -376,7 +439,8 @@ max={parseFloat(currentBalance) || undefined}
               placeholder={t("accountNumberPlaceholder")}
               maxLength={10}
               required
-              className="w-full rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm text-gray-900 placeholder:text-gray-400 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 dark:placeholder:text-gray-500"
+              disabled={isSubmitting}
+              className="w-full rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm text-gray-900 placeholder:text-gray-400 focus:border-violet-500 focus:outline-none focus:ring-2 focus:ring-violet-500/20 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 dark:placeholder:text-gray-500"
             />
             {isResolving && (
               <p className="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
@@ -398,8 +462,9 @@ max={parseFloat(currentBalance) || undefined}
                 <input
                   type="checkbox"
                   checked={accountConfirmed}
+                  disabled={isSubmitting}
                   onChange={(e) => setAccountConfirmed(e.target.checked)}
-                  className="mt-0.5 h-4 w-4 rounded border-gray-300 text-violet-600 focus:ring-violet-500"
+                  className="mt-0.5 h-4 w-4 rounded border-gray-300 text-violet-600 focus:ring-violet-500 disabled:cursor-not-allowed disabled:opacity-60"
                 />
                 <span className="text-sm text-gray-600 dark:text-gray-400">
                   {t("confirmAccount")}
@@ -426,6 +491,8 @@ max={parseFloat(currentBalance) || undefined}
                   className="h-4 w-4 animate-spin"
                   fill="none"
                   viewBox="0 0 24 24"
+                  role="status"
+                  aria-label={t("processing")}
                 >
                   <circle
                     className="opacity-25"
