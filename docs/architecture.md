@@ -25,7 +25,7 @@
 │  │             │  │              │  │                     │ │
 │  │  helmet     │  │  GET /health │  │  stellar.ts         │ │
 │  │  cors       │  │  GET  /trades│  │  ├─ createListing   │ │
-│  │  morgan     │  │  POST /trades│  │  └─ depositToEscrow │ │
+│  │  morgan     │  │  POST /trades│  │  └─ buildEscrowXdr  │ │
 │  │  express.   │  │  GET  /:id   │  │                     │ │
 │  │    json()   │  │  POST /:buy  │  │                     │ │
 │  │  authenticate│ │              │  │                     │ │
@@ -103,25 +103,34 @@ Response 201 { data: TradeOffer }
 ```
 Client
   │
-  │  POST /api/v1/trades/:id/buy
-  │  Authorization: Bearer <jwt>
-  │  { buyerSecretKey }
+  │  POST /api/v1/trades/:id/buy/prepare
+  │  Authorization: Bearer <jwt>          (no body — no secret key)
   │
   ▼
-authenticate middleware
-  │  verify JWT → extract { sub, stellarPublicKey }
+trades router (POST /:id/buy/prepare)
+  │  fetch trade, guard status/seller
+  │
+  ▼
+stellar.buildEscrowDepositXdr()
+  │  build + simulate deposit_to_escrow
+  │  return unsigned XDR
+  │
+  ▼
+Client signs the XDR locally
+  │  key read from in-memory session store
+  │  (frontend/app/lib/stellarSession.ts)
+  │
+  │  POST /api/v1/trades/:id/buy
+  │  { signedXdr }
   │
   ▼
 trades router (POST /:id/buy)
-  │  fetch trade from PostgreSQL
-  │  guard: status === 'Active'
-  │  guard: buyer !== seller
+  │  re-run trade guards (it may have been locked meanwhile)
   │
   ▼
-stellar.depositToEscrow()
-  │  build Soroban transaction calling deposit_to_escrow
-  │  simulate → sign → submit
-  │  poll until confirmed
+stellar.submitSignedTransaction()
+  │  verify source account matches the authenticated buyer
+  │  submit → poll until confirmed
   │  return escrow tx hash
   │
   ▼
@@ -152,7 +161,9 @@ Validates `Authorization: Bearer <jwt>` headers. Decodes the token and attaches
 ### `server/src/services/stellar.ts`
 Wraps `@stellar/stellar-sdk`. Builds, simulates, signs, and submits Soroban
 transactions. Polls Soroban RPC until transactions reach a terminal state.
-Two exported functions: `createListing` and `depositToEscrow`.
+Exported functions: `createListing`, `buildEscrowDepositXdr` and
+`submitSignedTransaction`. The escrow deposit is split in two so the buyer's
+secret key never reaches the server (Issue #342).
 
 ### `server/src/db.ts`
 Shared `pg.Pool` (max 10 connections). All DB queries go through this pool.

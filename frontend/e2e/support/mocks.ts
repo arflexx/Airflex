@@ -13,6 +13,7 @@ export const API_URL = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:3
 export const TEST_TRADE = {
   id: "trade_e2e_001",
   seller_id: "seller_1",
+  seller_handle: "@airflex_2f9a",
   buyer_id: null,
   asset_type: "MTN",
   amount: 5000,

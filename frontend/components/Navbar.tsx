@@ -24,6 +24,7 @@ import { usePathname } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { getToken, getUser, clearToken, isAuthenticated } from "../app/lib/auth";
 import LanguageSwitcher from "./LanguageSwitcher";
+import ThemeToggle from "./ThemeToggle";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -42,7 +43,7 @@ interface WalletResponse {
 const NAV_LINKS = [
   { href: "/",         labelKey: "marketplace" },
   { href: "/sell",     labelKey: "sell"        },
-  { href: "/profile",  labelKey: "wallet"      },
+  { href: "/wallet",   labelKey: "wallet"      },
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -108,57 +109,6 @@ function WalletIcon() {
       <path d="M3 5v14a2 2 0 0 0 2 2h16v-5" />
       <path d="M18 12a2 2 0 0 0 0 4h4v-4Z" />
     </svg>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// ThemeToggle — inlined so Navbar has no sibling component dependency.
-// When the dark-mode branch is merged this can be replaced with the import.
-// ---------------------------------------------------------------------------
-
-function ThemeToggle() {
-  const [mounted, setMounted] = useState(false);
-  const [isDark, setIsDark] = useState(false);
-
-  useEffect(() => {
-    setMounted(true);
-    setIsDark(document.documentElement.classList.contains("dark"));
-  }, []);
-
-  function toggle() {
-    const next = !isDark;
-    setIsDark(next);
-    if (next) {
-      document.documentElement.classList.add("dark");
-      localStorage.setItem("theme", "dark");
-    } else {
-      document.documentElement.classList.remove("dark");
-      localStorage.setItem("theme", "light");
-    }
-  }
-
-  if (!mounted) return <span className="h-9 w-9 inline-block" aria-hidden="true" />;
-
-  return (
-    <button
-      type="button"
-      onClick={toggle}
-      aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
-      className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
-    >
-      {isDark ? (
-        /* Sun — switch to light */
-        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <circle cx="12" cy="12" r="4" />
-          <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
-        </svg>
-      ) : (
-        /* Moon — switch to dark */
-        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-        </svg>
-      )}
-    </button>
   );
 }
 
@@ -277,13 +227,13 @@ export default function Navbar() {
 
   // ---- shared link classes ------------------------------------------------
   const desktopLinkBase =
-    "text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 rounded-lg px-2 py-1";
-  const desktopLinkActive  = "text-violet-700 dark:text-violet-400";
-  const desktopLinkDefault = "text-gray-600 hover:text-violet-700 dark:text-gray-400 dark:hover:text-violet-400";
+    "text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 rounded-lg px-2.5 py-1.5";
+  const desktopLinkActive  = "bg-violet-50 text-violet-700 font-semibold dark:bg-violet-900/40 dark:text-violet-300";
+  const desktopLinkDefault = "text-gray-600 hover:bg-gray-50 hover:text-violet-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-violet-400";
 
   const drawerLinkBase =
     "flex items-center rounded-xl px-4 py-3 text-base font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500";
-  const drawerLinkActive  = "bg-violet-50 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300";
+  const drawerLinkActive  = "bg-violet-50 text-violet-700 font-semibold dark:bg-violet-900/30 dark:text-violet-300";
   const drawerLinkDefault = "text-gray-700 hover:bg-gray-50 hover:text-violet-700 dark:text-gray-300 dark:hover:bg-gray-800 dark:hover:text-violet-400";
 
   // -------------------------------------------------------------------------
@@ -348,7 +298,12 @@ export default function Navbar() {
                   {/* Masked phone — links to profile */}
                   <a
                     href="/profile"
-                    className="hidden lg:flex items-center rounded-lg px-2 py-1.5 text-xs font-medium text-gray-500 transition-colors hover:text-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 dark:text-gray-400 dark:hover:text-violet-400"
+                    aria-current={isActive("/profile") ? "page" : undefined}
+                    className={`hidden lg:flex items-center rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 ${
+                      isActive("/profile")
+                        ? "bg-violet-50 text-violet-700 font-semibold dark:bg-violet-900/40 dark:text-violet-300"
+                        : "text-gray-500 hover:bg-gray-50 hover:text-violet-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-violet-400"
+                    }`}
                     aria-label={t("viewProfile")}
                   >
                     {maskedPhone}
@@ -471,7 +426,12 @@ export default function Navbar() {
                 {/* Masked phone */}
                 <a
                   href="/profile"
-                  className="flex items-center gap-2 rounded-xl border border-gray-100 bg-gray-50 px-4 py-3 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700"
+                  aria-current={isActive("/profile") ? "page" : undefined}
+                  className={`flex items-center gap-2 rounded-xl border border-gray-100 bg-gray-50 px-4 py-3 text-sm font-medium transition-colors hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 dark:border-gray-700 dark:bg-gray-800 ${
+                    isActive("/profile")
+                      ? "border-violet-500 text-violet-700 font-semibold dark:border-violet-500 dark:text-violet-300"
+                      : "text-gray-600 dark:text-gray-400 dark:hover:bg-gray-700"
+                  }`}
                 >
                   <span aria-hidden="true">👤</span>
                   {maskedPhone}

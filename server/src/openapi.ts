@@ -216,7 +216,6 @@ export const openApiDocument = {
         type: "object",
         required: [
           "id",
-          "seller_id",
           "asset_type",
           "amount",
           "status",
@@ -226,7 +225,22 @@ export const openApiDocument = {
         ],
         properties: {
           id: { type: "string", format: "uuid" },
-          seller_id: { type: "string", format: "uuid" },
+          seller_id: {
+            type: "string",
+            format: "uuid",
+            nullable: true,
+            description:
+              "Seller UUID. Present on detail/create responses but omitted " +
+              "from the public listing feed, which exposes `seller_handle` instead (issue #330).",
+          },
+          seller_handle: {
+            type: "string",
+            nullable: true,
+            example: "@airflex_2f9a",
+            description:
+              "Opaque, deterministic seller label derived from the user id. " +
+              "Included on the public listing feed instead of `seller_id` (issue #330).",
+          },
           buyer_id: {
             type: ["string", "null"],
             format: "uuid",
@@ -275,16 +289,48 @@ export const openApiDocument = {
       },
       BuyTradeBody: {
         type: "object",
-        required: ["buyerSecretKey"],
+        required: ["signedXdr"],
         properties: {
-          buyerSecretKey: {
+          signedXdr: {
             type: "string",
-            minLength: 56,
-            maxLength: 56,
             description:
-              "Stellar secret key (S...). 56 characters. " +
-              "NOTE: client-side XDR signing is preferred in production.",
-            example: "SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+              "The escrow deposit envelope returned by " +
+              "`POST /api/v1/trades/{id}/buy/prepare`, signed by the buyer in " +
+              "their own browser. Base64 XDR. The buyer's secret key is never " +
+              "sent to this API.",
+            example: "AAAAAgAAAAD...",
+          },
+        },
+      },
+      DisputeBody: {
+        type: "object",
+        required: ["reason"],
+        properties: {
+          reason: {
+            type: "string",
+            minLength: 1,
+            maxLength: 500,
+            description: "Why the trade is being disputed.",
+            example: "Seller did not deliver the airtime after payment was locked.",
+          },
+        },
+      },
+      PrepareBuyResponse: {
+        type: "object",
+        required: ["xdr", "networkPassphrase", "publicKey"],
+        properties: {
+          xdr: {
+            type: "string",
+            description: "Unsigned, already-simulated transaction envelope (base64 XDR).",
+          },
+          networkPassphrase: {
+            type: "string",
+            description: "Network the envelope must be signed against.",
+            example: "Test SDF Network ; September 2015",
+          },
+          publicKey: {
+            type: "string",
+            description: "Buyer's Stellar account — the envelope's source account.",
           },
         },
       },
@@ -384,6 +430,15 @@ export const openApiDocument = {
               kycStatus: { type: "string", enum: ["unverified", "pending", "verified"] },
               virtualAccountNumber: { type: "string", example: "0123456789" },
               stellarPublicKey: { type: "string", example: "GABC1234..." },
+              kycStatus: {
+                type: "string",
+                enum: ["unverified", "pending", "verified", "rejected"],
+                example: "verified",
+              },
+              referralCode: {
+                type: "string",
+                example: "ABC12345",
+              },
             },
           },
         },
@@ -975,13 +1030,59 @@ export const openApiDocument = {
         },
       },
     },
+    "/api/v1/trades/{id}/buy/prepare": {
+      post: {
+        tags: ["Trades"],
+        summary: "Build the unsigned escrow deposit for a buy",
+        description:
+          "Returns the simulated but unsigned `deposit_to_escrow` envelope for the " +
+          "authenticated buyer to sign locally. Takes no request body. " +
+          "Sign the returned XDR client-side, then POST it to " +
+          "`/api/v1/trades/{id}/buy`.",
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: "id",
+            in: "path",
+            required: true,
+            schema: { type: "string", format: "uuid" },
+          },
+        ],
+        responses: {
+          "200": {
+            description: "Unsigned envelope ready for client-side signing.",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    data: { $ref: "#/components/schemas/PrepareBuyResponse" },
+                  },
+                },
+              },
+            },
+          },
+          "400": {
+            description: "Trade not available, already locked, or buyer is the seller.",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/ErrorResponse" },
+              },
+            },
+          },
+          "401": { $ref: "#/components/responses/Unauthorized" },
+          "404": { $ref: "#/components/responses/NotFound" },
+          "500": { $ref: "#/components/responses/InternalError" },
+        },
+      },
+    },
     "/api/v1/trades/{id}/buy": {
       post: {
         tags: ["Trades"],
-        summary: "Buy a trade offer",
+        summary: "Submit a signed escrow deposit for a trade",
         description:
-          "Locks the buyer's funds in the Soroban escrow contract via `deposit_to_escrow`. " +
-          "Trade status transitions to Locked.",
+          "Submits the buyer-signed `deposit_to_escrow` envelope from " +
+          "`/buy/prepare` to the network. Trade status transitions to Locked.",
         security: [{ bearerAuth: [] }],
         parameters: [
           {
@@ -1071,6 +1172,77 @@ export const openApiDocument = {
           "401": { $ref: "#/components/responses/Unauthorized" },
           "403": { $ref: "#/components/responses/Forbidden" },
           "404": { $ref: "#/components/responses/NotFound" },
+          "500": { $ref: "#/components/responses/InternalError" },
+        },
+      },
+    },
+    "/api/v1/trades/{id}/dispute": {
+      post: {
+        tags: ["Trades"],
+        summary: "Dispute a locked trade",
+        description:
+          "Escalates a Locked trade to Disputed. Either the buyer or the seller " +
+          "of the trade may call this. An admin resolves the dispute via " +
+          "POST /api/v1/admin/trades/{id}/resolve.",
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: "id",
+            in: "path",
+            required: true,
+            schema: { type: "string", format: "uuid" },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/DisputeBody" },
+            },
+          },
+        },
+        responses: {
+          "200": {
+            description: "Trade successfully disputed.",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    message: { type: "string" },
+                    data: { $ref: "#/components/schemas/TradeOffer" },
+                  },
+                },
+              },
+            },
+          },
+          "400": {
+            description: "Trade is not in a state that can be disputed.",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/ErrorResponse" },
+              },
+            },
+          },
+          "401": { $ref: "#/components/responses/Unauthorized" },
+          "403": {
+            description: "Caller is neither the buyer nor the seller of this trade.",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/ErrorResponse" },
+              },
+            },
+          },
+          "404": { $ref: "#/components/responses/NotFound" },
+          "409": {
+            description: "Trade is already disputed or is no longer Locked.",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/ErrorResponse" },
+              },
+            },
+          },
+          "422": { $ref: "#/components/responses/UnprocessableEntity" },
           "500": { $ref: "#/components/responses/InternalError" },
         },
       },
@@ -1401,13 +1573,40 @@ export const openApiDocument = {
     },
 
     // ------------------------------------------------------------------ Events
-    "/api/events": {
+    //
+    // eventsRouter is mounted at both /api/v1/events (current) and /api/events
+    // (legacy alias — see routes/index.ts). Both paths are documented here so
+    // the versioned endpoint clients are told to use isn't missing from the
+    // spec (issue: the SSE endpoint was undocumented under its /api/v1 path).
+    "/api/v1/events": {
       get: {
         tags: ["Events"],
         summary: "Server-Sent Events stream",
         description:
           "Persistent SSE connection for real-time trade status updates. " +
-          "Event types: `connected`, `trade_completed`, `trade_disputed`, `admin_alert`.",
+          "Event types: `connected`, `trade_completed`, `trade_disputed`, `admin_alert`. " +
+          "Also available, unversioned, at `/api/events` for backwards compatibility.",
+        security: [{ bearerAuth: [] }],
+        responses: {
+          "200": {
+            description: "SSE stream opened.",
+            content: {
+              "text/event-stream": {
+                schema: { type: "string" },
+              },
+            },
+          },
+          "401": { $ref: "#/components/responses/Unauthorized" },
+        },
+      },
+    },
+    "/api/events": {
+      get: {
+        tags: ["Events"],
+        summary: "Server-Sent Events stream (legacy alias)",
+        description:
+          "Unversioned alias for `/api/v1/events`, kept for backwards " +
+          "compatibility. Prefer `/api/v1/events` for new integrations.",
         security: [{ bearerAuth: [] }],
         responses: {
           "200": {

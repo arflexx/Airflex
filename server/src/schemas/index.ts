@@ -20,9 +20,11 @@ export {
   createTradeSchema,
   buyTradeSchema,
   paginationSchema,
+  disputeSchema,
   type CreateTradeInput,
   type BuyTradeInput,
   type PaginationInput,
+  type DisputeInput,
 } from "./trade.schemas";
 
 export {
@@ -35,3 +37,9 @@ export {
   ANALYTICS_DEFAULT_WINDOW_DAYS,
   type AnalyticsDateRangeInput,
 } from "./analytics.schemas";
+
+export {
+  createRatingSchema,
+  userRatingsPaginationSchema,
+  type CreateRatingInput,
+} from "./ratings.schemas";

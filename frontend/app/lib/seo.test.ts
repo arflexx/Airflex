@@ -86,20 +86,34 @@ describe("sitemap", () => {
 describe("robots", () => {
   it("allows crawling the public site", () => {
     const rules = robots().rules as { allow?: string | string[] };
-    expect(rules.allow).toBe("/");
+    expect(rules.allow).toEqual(expect.arrayContaining(["/", "/trades", "/sell"]));
   });
 
   it("disallows every private route", () => {
     const rules = robots().rules as { disallow?: string[] };
 
     for (const priv of PRIVATE_ROUTES) {
-      expect(rules.disallow).toContain(`${priv}/`);
+      expect(rules.disallow).toEqual(
+        expect.arrayContaining([priv, `${priv}/`]),
+      );
     }
   });
 
-  it("keeps /admin out", () => {
+  it("keeps /admin, /api/*, /wallet, /kyc, and /profile out", () => {
     const rules = robots().rules as { disallow?: string[] };
-    expect(rules.disallow).toContain("/admin/");
+    expect(rules.disallow).toEqual(
+      expect.arrayContaining([
+        "/admin",
+        "/admin/",
+        "/api/",
+        "/wallet",
+        "/wallet/",
+        "/kyc",
+        "/kyc/",
+        "/profile",
+        "/profile/",
+      ]),
+    );
   });
 
   it("points at the sitemap with an absolute URL", () => {

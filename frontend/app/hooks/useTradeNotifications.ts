@@ -22,7 +22,7 @@
  * a server outage that means every client hammering it at the same cadence,
  * which is precisely when it can least afford the load. The native retry is
  * therefore disabled (by closing the stream on error) and replaced with capped
- * exponential backoff plus jitter.
+ * exponential backoff plus jitter, and a bounded number of attempts.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -49,9 +49,19 @@ export interface UseTradeNotificationsResult {
   clearAll: () => void;
 }
 
-const MAX_RETRIES = 5;
-const BASE_DELAY_MS = 1_000;
-const MAX_DELAY_MS = 30_000;
+/** Reconnection attempts made after an error before the stream is given up on. */
+export const MAX_RETRIES = 10;
+export const BASE_DELAY_MS = 1_000;
+export const MAX_DELAY_MS = 30_000;
+
+/**
+ * Share of the delay that jitter may add on top of the schedule.
+ *
+ * Kept small deliberately: the schedule below is the contract (1s, 2s, 4s …
+ * capped at 30s) and jitter only smears the arrival times of clients that were
+ * all disconnected by the same event.
+ */
+const JITTER_RATIO = 0.1;
 
 /** Cap on the retained tray, so a long session cannot grow without bound. */
 const MAX_TRAY_ENTRIES = 50;
@@ -61,13 +71,18 @@ const STORAGE_KEY = "airflex.notifications";
 /**
  * Exponential backoff with jitter.
  *
- * The jitter matters more than the exponent: without it, every client
+ * The schedule doubles from `BASE_DELAY_MS` and is capped at `MAX_DELAY_MS`:
+ * 1s, 2s, 4s, 8s, 16s, then 30s for every attempt after that.
+ *
+ * On top of that sits a small amount of jitter. Without it, every client
  * disconnected by the same server restart retries in lockstep and arrives as a
- * synchronised thundering herd. Randomising spreads the reconnection out.
+ * synchronised thundering herd; randomising spreads the reconnection out. It is
+ * additive and capped so it never pushes a delay past `MAX_DELAY_MS`.
  */
-function backoffDelay(attempt: number): number {
+export function backoffDelay(attempt: number): number {
   const exponential = Math.min(BASE_DELAY_MS * 2 ** attempt, MAX_DELAY_MS);
-  return exponential / 2 + Math.random() * (exponential / 2);
+  const jitter = Math.random() * exponential * JITTER_RATIO;
+  return Math.min(exponential + jitter, MAX_DELAY_MS);
 }
 
 function loadPersisted(): TradeNotification[] {
@@ -137,13 +152,17 @@ export function useTradeNotifications(
 
   useEffect(() => {
     // No token means no stream to authenticate against; stay idle rather than
-    // opening a connection that will be rejected and retried five times.
+    // opening a connection that will be rejected and retried ten times.
     if (!token) {
       setConnectionState("idle");
       return;
     }
 
     let cancelled = false;
+
+    // A fresh token is a fresh stream: start its budget at zero so a session
+    // that previously exhausted its attempts is not stuck in "failed".
+    retryRef.current = 0;
 
     const connect = (): void => {
       if (cancelled) return;

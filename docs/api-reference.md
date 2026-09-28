@@ -221,22 +221,42 @@ Soroban contract. Updates the trade status to `Locked`.
 |-----------|------|-------------|
 | `id` | UUID string | Trade offer ID to purchase |
 
+This is the second half of a two-step flow. Call
+`POST /api/v1/trades/{id}/buy/prepare` first to get the unsigned envelope, sign
+it in the client, then submit it here.
+
 **Request body**
 
 ```json
 {
-  "buyerSecretKey": "SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+  "signedXdr": "AAAAAgAAAAD..."
 }
 ```
 
 | Field | Type | Constraints | Description |
 |-------|------|-------------|-------------|
-| `buyerSecretKey` | string | exactly 56 chars | Buyer's Stellar secret key for signing the escrow transaction |
+| `signedXdr` | string | base64 XDR | The prepared escrow deposit envelope, signed by the buyer |
 
-> **Security note:** Passing a raw secret key to the server is a placeholder
-> for the initial implementation. The production pattern is client-side signing —
-> the client signs the XDR transaction and submits the signed envelope to the
-> server instead.
+> **Security note:** the buyer's secret key is never sent to this API. It is
+> held in the client's memory for the session only and used to sign locally —
+> see Issue #342.
+
+### `POST /api/v1/trades/:id/buy/prepare`
+
+Builds and simulates the `deposit_to_escrow` transaction for the authenticated
+buyer and returns it unsigned. Takes no request body.
+
+**Response `200`**
+
+```json
+{
+  "data": {
+    "xdr": "AAAAAgAAAAD...",
+    "networkPassphrase": "Test SDF Network ; September 2015",
+    "publicKey": "GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+  }
+}
+```
 
 **Response `200`**
 

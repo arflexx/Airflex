@@ -127,34 +127,52 @@ describe("createTradeSchema", () => {
 // ---------------------------------------------------------------------------
 
 describe("buyTradeSchema", () => {
-  const validKey = "S" + "A".repeat(55); // 56 chars starting with S
+  // A real Soroban invoke envelope is several hundred base64 chars; this
+  // stands in for one.
+  const validXdr = "AAAAAgAAAAD" + "A".repeat(200) + "=";
 
-  it("accepts a 56-character secret key", () => {
-    expect(buyTradeSchema.safeParse({ buyerSecretKey: validKey }).success).toBe(true);
+  it("accepts a base64 transaction envelope", () => {
+    expect(buyTradeSchema.safeParse({ signedXdr: validXdr }).success).toBe(true);
   });
 
-  it("rejects a key shorter than 56 characters", () => {
-    const result = buyTradeSchema.safeParse({ buyerSecretKey: "S" + "A".repeat(54) });
+  it("rejects a Stellar secret key pasted in place of an envelope", () => {
+    // The whole point of Issue #342: a secret key must never be accepted here.
+    // It is base64-shaped but far too short to be an envelope.
+    const secretKey = "S" + "A".repeat(55);
+    const result = buyTradeSchema.safeParse({ signedXdr: secretKey });
     expect(result.success).toBe(false);
     if (!result.success) {
-      expect(result.error.issues[0]!.path[0]).toBe("buyerSecretKey");
+      expect(result.error.issues[0]!.path[0]).toBe("signedXdr");
     }
   });
 
-  it("rejects a key longer than 56 characters", () => {
-    const result = buyTradeSchema.safeParse({ buyerSecretKey: "S" + "A".repeat(56) });
+  it("rejects a non-base64 payload", () => {
+    const result = buyTradeSchema.safeParse({ signedXdr: "not xdr!" + "x".repeat(120) });
     expect(result.success).toBe(false);
     if (!result.success) {
-      expect(result.error.issues[0]!.path[0]).toBe("buyerSecretKey");
+      expect(result.error.issues[0]!.path[0]).toBe("signedXdr");
     }
   });
 
-  it("rejects a missing buyerSecretKey", () => {
+  it("rejects an empty envelope", () => {
+    const result = buyTradeSchema.safeParse({ signedXdr: "" });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]!.path[0]).toBe("signedXdr");
+    }
+  });
+
+  it("rejects a missing signedXdr", () => {
     const result = buyTradeSchema.safeParse({});
     expect(result.success).toBe(false);
     if (!result.success) {
-      expect(result.error.issues[0]!.path[0]).toBe("buyerSecretKey");
+      expect(result.error.issues[0]!.path[0]).toBe("signedXdr");
     }
+  });
+
+  it("rejects a buyerSecretKey field outright", () => {
+    const result = buyTradeSchema.safeParse({ buyerSecretKey: "S" + "A".repeat(55) });
+    expect(result.success).toBe(false);
   });
 });
 

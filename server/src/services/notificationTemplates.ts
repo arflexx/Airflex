@@ -38,6 +38,11 @@ export const NOTIFICATION_TEMPLATES = {
   WITHDRAWAL_PROCESSED:
     "AirFlex: Your withdrawal of {amount} has been processed and will arrive " +
     "in your bank account shortly.",
+
+  /** Sent to admins when a Paystack webhook permanently fails processing (#118). */
+  WEBHOOK_FAILED:
+    "AirFlex admin: Paystack webhook {eventId} ({eventType}) failed after retries. " +
+    "Inspect /api/admin/webhooks and replay if needed.",
 } as const;
 
 export type NotificationTemplateKey = keyof typeof NOTIFICATION_TEMPLATES;

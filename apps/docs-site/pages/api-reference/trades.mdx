@@ -189,9 +189,13 @@ Locks the buyer's escrow funds on-chain by calling `deposit_to_escrow` on the So
 
 ```json
 {
-  "buyerSecretKey": "string"
+  "signedXdr": "string"
 }
 ```
+
+Call `POST /api/trades/{id}/buy/prepare` first to obtain the unsigned envelope,
+sign it client-side, then submit it here. The buyer's secret key is never sent
+to the API.
 
 **Responses**
 

@@ -10,6 +10,8 @@ import docsRouter from './docs';
 import referralsRouter from './referrals';
 import kycRouter from './kyc';
 import analyticsRouter from './analytics';
+import usersRouter from './users';
+import ratesRouter from './rates';
 
 export function registerRoutes(app: Express): void {
   app.use('/api/v1/auth', authRouter);
@@ -18,6 +20,7 @@ export function registerRoutes(app: Express): void {
   app.use('/api/v1/profile', profileRouter);
   app.use('/api/v1/webhooks', webhooksRouter);
   app.use('/api/v1/admin', adminRouter);
+  app.use('/api/admin', adminRouter);
   app.use('/api/v1/events', eventsRouter);
   app.use('/api/events', eventsRouter);
   app.use('/api', docsRouter);

@@ -48,6 +48,9 @@ importers:
       '@airflex/shared':
         specifier: workspace:*
         version: link:../packages/shared
+      '@stellar/stellar-sdk':
+        specifier: 12.3.0
+        version: 12.3.0
       next:
         specifier: 14.2.5
         version: 14.2.5(@babel/core@7.29.7)(@opentelemetry/api@1.9.1)(@playwright/test@1.62.1)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
@@ -97,6 +100,9 @@ importers:
       '@types/jest':
         specifier: 29.5.12
         version: 29.5.12
+      '@types/jest-axe':
+        specifier: ^3.5.9
+        version: 3.5.9
       '@types/node':
         specifier: 20.14.9
         version: 20.14.9
@@ -115,6 +121,9 @@ importers:
       jest:
         specifier: 29.7.0
         version: 29.7.0(@types/node@20.14.9)(ts-node@10.9.2(@swc/core@1.16.1)(@types/node@20.14.9)(typescript@5.5.3))
+      jest-axe:
+        specifier: ^9.0.0
+        version: 9.0.0
       jest-environment-jsdom:
         specifier: 29.7.0
         version: 29.7.0
@@ -11863,6 +11872,11 @@ we  '@types/estree-jsx@1.0.5':
     dependencies:
       '@types/istanbul-lib-report': 3.0.3
 
+  '@types/jest-axe@3.5.9':
+    dependencies:
+      '@types/jest': 29.5.12
+      axe-core: 3.5.6
+
   '@types/jest@29.5.12':
     dependencies:
       expect: 29.7.0
@@ -12164,6 +12178,10 @@ we  '@types/estree-jsx@1.0.5':
   available-typed-arrays@1.0.7:
     dependencies:
       possible-typed-array-names: 1.1.0
+
+  axe-core@3.5.6: {}
+
+  axe-core@4.9.1: {}
 
   axios@1.19.0:
     dependencies:
@@ -14238,6 +14256,13 @@ we  '@types/estree-jsx@1.0.5':
       filelist: 1.0.6
       picocolors: 1.1.1
 
+  jest-axe@9.0.0:
+    dependencies:
+      axe-core: 4.9.1
+      chalk: 4.1.2
+      jest-matcher-utils: 29.2.2
+      lodash.merge: 4.6.2
+
   jest-changed-files@29.7.0:
     dependencies:
       execa: 5.1.1
@@ -14464,6 +14489,13 @@ we  '@types/estree-jsx@1.0.5':
 
   jest-leak-detector@29.7.0:
     dependencies:
+      jest-get-type: 29.6.3
+      pretty-format: 29.7.0
+
+  jest-matcher-utils@29.2.2:
+    dependencies:
+      chalk: 4.1.2
+      jest-diff: 29.7.0
       jest-get-type: 29.6.3
       pretty-format: 29.7.0
 

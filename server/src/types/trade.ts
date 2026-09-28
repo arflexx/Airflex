@@ -16,4 +16,10 @@ export interface TradeOffer {
   expires_at: string; // ISO timestamp
   created_at: string;
   updated_at: string;
+  /**
+   * Opaque, human-readable seller label derived from `seller_id` (issue #330).
+   * Present whenever the seller row is joined — always on the public listing
+   * feed, which never exposes `seller_id` itself.
+   */
+  seller_handle?: string | null;
 }

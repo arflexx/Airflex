@@ -100,31 +100,29 @@ CREATE INDEX idx_transactions_trade ON transactions(trade_id);
 
 ## 3. Configure the Server
 
+The server requires configuration variables to run. Copy the template file [`server/.env.example`](file:///server/.env.example) to `server/.env`:
+
 ```bash
 cd server
 cp .env.example .env
 ```
 
-Open `server/.env` and fill in your values:
+Open `server/.env` and configure your local settings:
 
-```env
-PORT=3001
-NODE_ENV=development
+- **`DATABASE_URL`**: PostgreSQL connection string (e.g. `postgresql://postgres:password@localhost:5432/airflex`).
+- **`JWT_SECRET`**: Random secret key for signing auth tokens (min 32 characters).
+- **`ENCRYPTION_KEY`**: 64-character hex string for AES-256-GCM encryption (`openssl rand -hex 32`).
+- **`STELLAR_SERVER_SECRET`**: Stellar admin signing key for escrow release operations (`stellar keys generate --network testnet server-admin`).
+- **`PLATFORM_TREASURY_USER_ID`**: Treasury UUID receiving platform fee splits.
+- **`PAYSTACK_SECRET_KEY`**: Paystack test secret key (`sk_test_...`) for fiat transactions.
+- **`TERMII_API_KEY`**: Termii API key for SMS OTP delivery.
+- **`REDIS_URL`**: Redis connection URL for background jobs and caching (`redis://localhost:6379`).
+- **`STELLAR_NETWORK` / `HORIZON_URL` / `SOROBAN_RPC_URL`**: Stellar testnet endpoints.
+- **`MAX_TRADES_PER_HOUR` / `MAX_DEPOSITS_PER_DAY` / `MAX_WITHDRAWALS_PER_DAY`**: Anti-fraud velocity limits.
 
-DATABASE_URL=postgresql://postgres:password@localhost:5432/airflex
+The server validates these environment variables on boot via `src/config/validateEnv.ts` and will report any missing or invalid values.
 
-STELLAR_NETWORK=testnet
-HORIZON_URL=https://horizon-testnet.stellar.org
-SOROBAN_RPC_URL=https://soroban-testnet.stellar.org
-ESCROW_CONTRACT_ADDRESS=CCBJ235OCBFZXBFSUUUT4PMG7RRCAXZXMUEB2L7CTTQ5NRSNO4P2SLNP
-
-PAYSTACK_SECRET_KEY=sk_test_your_key_here
-TERMII_API_KEY=your_termii_key_here
-
-JWT_SECRET=a_long_random_string_at_least_32_characters
-```
-
-See [Environment Variables](./environment.md) for full documentation of each variable.
+See [Environment Variables Reference](./environment.md) for full documentation of every variable.
 
 ---
 

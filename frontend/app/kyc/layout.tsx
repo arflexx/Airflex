@@ -5,6 +5,8 @@ export const metadata: Metadata = {
   title: "Seller Verification",
   description:
     "Complete KYC verification to sell airtime and mobile data on AirFlex.",
+  // Private to the signed-in user: useful to them, useless in an index.
+  robots: { index: false, follow: false },
 };
 
 export default function KycLayout({ children }: { children: ReactNode }) {

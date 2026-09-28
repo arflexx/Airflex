@@ -38,6 +38,23 @@ const ALLOWED_TRADE_STATUSES = [
   "Disputed",
 ] as const;
 
+/**
+ * Columns admins are allowed to sort GET /admin/trades by (issue: sorting
+ * previously only supported created_at DESC). Whitelisted rather than taking
+ * the column name straight from the query string, since that string is
+ * interpolated into the ORDER BY clause and cannot be parameterised.
+ */
+const ALLOWED_SORT_FIELDS = [
+  "created_at",
+  "updated_at",
+  "amount",
+  "status",
+  "expires_at",
+] as const;
+type SortField = (typeof ALLOWED_SORT_FIELDS)[number];
+
+const ALLOWED_SORT_ORDERS = ["asc", "desc"] as const;
+
 // ---------------------------------------------------------------------------
 // GET /api/v1/admin/queues  (admin only)
 // ---------------------------------------------------------------------------
@@ -205,5 +222,58 @@ router.patch("/users/:id/kyc", authenticate, authorize("admin"), async (req, res
   }
   res.status(200).json({ data: rows[0] });
 });
+
+// ---------------------------------------------------------------------------
+// Webhook dead-letter inspection (#118)
+// ---------------------------------------------------------------------------
+
+router.get(
+  "/webhooks",
+  authenticate,
+  authorize("admin"),
+  async (_req, res) => {
+    const { rows } = await pool.query(
+      `SELECT id, provider, event_type, payload, status, processed_at, created_at
+       FROM webhook_events
+       WHERE status = 'failed'
+       ORDER BY created_at DESC
+       LIMIT 100`
+    );
+    res.status(200).json({ events: rows });
+  }
+);
+
+router.post(
+  "/webhooks/:id/replay",
+  authenticate,
+  authorize("admin"),
+  async (req, res) => {
+    const id = req.params["id"];
+
+    const { rows } = await pool.query<{ id: string; status: string }>(
+      `SELECT id, status FROM webhook_events WHERE id = $1 LIMIT 1`,
+      [id]
+    );
+
+    if (!rows.length) {
+      res.status(404).json({ error: "Webhook event not found" });
+      return;
+    }
+
+    if (rows[0]!.status !== "failed") {
+      res.status(409).json({ error: "Only failed webhook events can be replayed" });
+      return;
+    }
+
+    await pool.query(
+      `UPDATE webhook_events SET status = 'pending', processed_at = NULL WHERE id = $1`,
+      [id]
+    );
+
+    await QueueService.enqueue("process-paystack-webhook", { webhookEventId: id });
+
+    res.status(202).json({ message: "Webhook re-enqueued for processing" });
+  }
+);
 
 export default router;

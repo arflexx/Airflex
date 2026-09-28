@@ -34,13 +34,18 @@ export type CreateTradeInput = z.infer<typeof createTradeSchema>;
 /**
  * Schema for POST /api/v1/trades/:id/buy
  *
- * NOTE: The buyerSecretKey field is a placeholder for the initial
- * implementation. Production flow should use client-side XDR signing.
+ * The buyer signs the escrow deposit in their own browser and sends only the
+ * signed envelope. The secret key is never accepted here — see Issue #342.
+ * Use POST /api/v1/trades/:id/buy/prepare to obtain the unsigned XDR first.
  */
 export const buyTradeSchema = z.object({
-  buyerSecretKey: z
-    .string({ required_error: "buyerSecretKey is required" })
-    .length(56, "buyerSecretKey must be exactly 56 characters (Stellar secret key format)"),
+  signedXdr: z
+    .string({ required_error: "signedXdr is required" })
+    .min(1, "signedXdr must not be empty")
+    // Envelopes are base64; a Soroban invoke envelope is comfortably larger
+    // than a raw secret key, so this also rejects a key pasted in by mistake.
+    .regex(/^[A-Za-z0-9+/=]+$/, "signedXdr must be base64-encoded XDR")
+    .min(100, "signedXdr does not look like a transaction envelope"),
 });
 
 export type BuyTradeInput = z.infer<typeof buyTradeSchema>;
@@ -71,6 +76,40 @@ export const paginationSchema = z.object({
         .min(1, "limit must be at least 1")
         .max(100, "limit must be 100 or fewer")
     ),
+
+  assetType: z.string().optional(),
+  carrier: z.string().optional(),
+  minAmount: z
+    .string()
+    .optional()
+    .transform((v) => (v ? parseFloat(v) : undefined))
+    .pipe(z.number().min(0).optional()),
+  maxAmount: z
+    .string()
+    .optional()
+    .transform((v) => (v ? parseFloat(v) : undefined))
+    .pipe(z.number().min(0).optional()),
 });
 
 export type PaginationInput = z.infer<typeof paginationSchema>;
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Schema for POST /api/v1/trades/:id/dispute
+ *
+ * Previously this validation (required, non-empty, <= 500 chars) lived
+ * inline in the route handler instead of as a Zod schema like every other
+ * validated endpoint, which meant it wasn't discoverable from src/schemas/
+ * and couldn't be reused for OpenAPI documentation the way the other request
+ * bodies are.
+ */
+export const disputeSchema = z.object({
+  reason: z
+    .string({ required_error: "Dispute reason is required" })
+    .trim()
+    .min(1, "Dispute reason is required")
+    .max(500, "Dispute reason cannot exceed 500 characters"),
+});
+
+export type DisputeInput = z.infer<typeof disputeSchema>;

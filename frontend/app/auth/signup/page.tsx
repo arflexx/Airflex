@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import { readReturnTo } from "../../lib/returnTo";
 import { useTranslations } from "next-intl";
 
 // ---------------------------------------------------------------------------
@@ -59,8 +60,13 @@ export default function SignupPage() {
         return;
       }
 
-      const encoded = encodeURIComponent(phone.trim());
-      window.location.href = `/auth/verify?phone=${encoded}`;
+      const params = new URLSearchParams({ phone: phone.trim() });
+      // Forward the path the middleware bounced us from, so the OTP step can
+      // finish the journey the user actually started (Issue #340).
+      const returnTo = readReturnTo();
+      if (returnTo) params.set("returnTo", returnTo);
+
+      window.location.href = `/auth/verify?${params.toString()}`;
     } catch {
       setServerError(t("networkError"));
     } finally {

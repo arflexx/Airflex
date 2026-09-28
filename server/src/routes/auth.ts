@@ -30,6 +30,8 @@ import {
   countRemainingRecoveryCodes,
   redeemRecoveryCode,
 } from "../services/recoveryCodes";
+import { provisionVirtualAccountForUser } from "../services/virtualAccount";
+import { generateDisplayHandle } from "../utils/displayHandle";
 
 const router = Router();
 
@@ -124,12 +126,15 @@ router.post(
   async (req, res) => {
     const { phone, referralCode } = req.body as RequestOtpInput;
 
-    // Upsert user row — create if first time, leave existing data untouched
+    // Upsert user row — create if first time, leave existing data untouched.
+    // The display handle is derived from the generated id, so it is stable for
+    // the user and hides the UUID on public trade listings (issue #330).
+    const userId = uuidv4();
     await pool.query(
-      `INSERT INTO users (id, phone, referral_code)
-       VALUES ($1, $2, $3)
+      `INSERT INTO users (id, phone, referral_code, display_handle)
+       VALUES ($1, $2, $3, $4)
        ON CONFLICT (phone) DO NOTHING`,
-      [uuidv4(), phone, newReferralCode()]
+      [userId, phone, newReferralCode(), generateDisplayHandle(userId)]
     );
 
     if (referralCode) {
@@ -170,8 +175,9 @@ router.post(
       otp_pin_id: string | null;
       otp_expires_at: string | null;
       stellar_public_key: string | null;
+      token_version: number;
     }>(
-      `SELECT u.id, u.otp_pin_id, u.otp_expires_at, w.stellar_public_key
+      `SELECT u.id, u.otp_pin_id, u.otp_expires_at, u.token_version, w.stellar_public_key
        FROM users u
        LEFT JOIN wallets w ON w.user_id = u.id
        WHERE u.phone = $1
@@ -273,10 +279,25 @@ router.post(
       );
     }
 
-    // Issue JWT — same payload shape the authenticate middleware expects
+    // Provision a Paystack dedicated virtual account (non-fatal).
+    // Uses the phone number as display name until KYC provides a legal name.
+    // If inline creation fails the service enqueues a background retry job.
+    void provisionVirtualAccountForUser(user.id, phone).catch((err) => {
+      console.error(
+        "[auth] Virtual account provisioning error for user",
+        user.id,
+        "–",
+        (err as Error).message
+      );
+    });
+
+    // Issue JWT — same payload shape the authenticate middleware expects.
+    // `tokenVersion` lets this token be revoked before its 7-day expiry via
+    // POST /api/v1/auth/revoke (issue: previously there was no revocation
+    // mechanism at all).
     const secret = process.env["JWT_SECRET"]!;
     const token = jwt.sign(
-      { sub: user.id, stellarPublicKey },
+      { sub: user.id, stellarPublicKey, tokenVersion: user.token_version },
       secret,
       { expiresIn: "7d" }
     );
@@ -419,14 +440,18 @@ router.post(
     );
 
     // Issue a normal session JWT so the user is signed in immediately.
-    const { rows: keyRows } = await pool.query<{ stellar_public_key: string | null }>(
-      `SELECT stellar_public_key FROM users WHERE id = $1 LIMIT 1`,
+    const { rows: keyRows } = await pool.query<{
+      stellar_public_key: string | null;
+      token_version: number;
+    }>(
+      `SELECT stellar_public_key, token_version FROM users WHERE id = $1 LIMIT 1`,
       [userId]
     );
     const stellarPublicKey = keyRows[0]?.stellar_public_key ?? "";
+    const tokenVersion = keyRows[0]?.token_version ?? 1;
 
     const sessionToken = jwt.sign(
-      { sub: userId, stellarPublicKey },
+      { sub: userId, stellarPublicKey, tokenVersion },
       secret,
       { expiresIn: "7d" }
     );

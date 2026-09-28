@@ -15,8 +15,21 @@ export default function robots(): MetadataRoute.Robots {
   return {
     rules: {
       userAgent: "*",
-      allow: "/",
-      disallow: PRIVATE_ROUTES.map((route) => `${route}/`),
+      allow: ["/", "/trades", "/sell"],
+      disallow: [
+        "/admin",
+        "/admin/",
+        "/api",
+        "/api/",
+        "/wallet",
+        "/wallet/",
+        "/kyc",
+        "/kyc/",
+        "/profile",
+        "/profile/",
+        "/auth",
+        "/auth/",
+      ],
     },
     sitemap: `${siteUrl()}/sitemap.xml`,
   };

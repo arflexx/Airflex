@@ -1,6 +1,7 @@
 import React from "react";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom";
+import { axe, toHaveNoViolations } from "jest-axe";
 import { Button } from "./Button";
 import { Input } from "./Input";
 import { Select } from "./Select";
@@ -8,6 +9,8 @@ import { Badge } from "./Badge";
 import { Modal } from "./Modal";
 import { Spinner } from "./Spinner";
 import { DisputeModal } from "../../app/trades/[id]/dispute/DisputeModal";
+
+expect.extend(toHaveNoViolations);
 
 describe("UI Primitives", () => {
   describe("Button", () => {
@@ -52,6 +55,21 @@ describe("UI Primitives", () => {
       const input = screen.getByLabelText("Username");
       expect(input).toHaveAttribute("aria-invalid", "true");
       expect(screen.getByRole("alert")).toHaveTextContent("Username already taken");
+    });
+
+    it("forwards ref to the underlying native input element", () => {
+      const ref = React.createRef<HTMLInputElement>();
+      render(<Input ref={ref} id="ref-input" placeholder="Ref target" />);
+      expect(ref.current).toBeInstanceOf(HTMLInputElement);
+      expect(ref.current).toBe(screen.getByPlaceholderText("Ref target"));
+    });
+
+    it("allows focusing and interacting via forwarded ref", () => {
+      const ref = React.createRef<HTMLInputElement>();
+      render(<Input ref={ref} id="focus-input" defaultValue="Initial text" />);
+      expect(ref.current?.value).toBe("Initial text");
+      ref.current?.focus();
+      expect(document.activeElement).toBe(ref.current);
     });
   });
 
@@ -123,10 +141,24 @@ describe("UI Primitives", () => {
   });
 
   describe("Spinner", () => {
+    it("uses Loading… as the default accessible label", () => {
+      render(<Spinner />);
+      expect(screen.getByRole("status")).toHaveAttribute("aria-label", "Loading…");
+    });
+
     it("renders with role status and accessible label", () => {
       render(<Spinner label="Processing trade…" />);
       const spinner = screen.getByRole("status");
       expect(spinner).toHaveAttribute("aria-label", "Processing trade…");
+    });
+
+    it("has no axe accessibility violations", async () => {
+      const { container } = render(
+        <main aria-label="Trade status">
+          <Spinner label="Loading trade details" />
+        </main>
+      );
+      expect(await axe(container)).toHaveNoViolations();
     });
   });
 

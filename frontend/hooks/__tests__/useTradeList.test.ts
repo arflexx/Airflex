@@ -114,4 +114,35 @@ describe("useTradeList Hook", () => {
 
     expect(mockedApiFetch).toHaveBeenCalledTimes(1);
   });
+
+  it("includes carrier, minAmount, and maxAmount in the query parameters", async () => {
+    mockedApiFetch.mockResolvedValueOnce({
+      data: [],
+      total: 0,
+    });
+
+    renderHook(() =>
+      useTradeList({
+        page: 1,
+        limit: 10,
+        assetType: "AIRTIME",
+        carrier: "MTN",
+        minAmount: 500,
+        maxAmount: 5000,
+      })
+    );
+
+    expect(mockedApiFetch).toHaveBeenCalledWith(
+      expect.stringContaining("carrier=MTN")
+    );
+    expect(mockedApiFetch).toHaveBeenCalledWith(
+      expect.stringContaining("assetType=AIRTIME")
+    );
+    expect(mockedApiFetch).toHaveBeenCalledWith(
+      expect.stringContaining("minAmount=500")
+    );
+    expect(mockedApiFetch).toHaveBeenCalledWith(
+      expect.stringContaining("maxAmount=5000")
+    );
+  });
 });

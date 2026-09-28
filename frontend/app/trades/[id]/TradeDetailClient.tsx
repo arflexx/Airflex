@@ -4,12 +4,24 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslations } from "next-intl";
 import type { TradeOffer } from "../../../../server/src/types/trade";
 import { getToken, getUser, isAuthenticated } from "../../lib/auth";
+import {
+  AccountMismatchError,
+  SessionKeyMissingError,
+  UnlockFailedError,
+  ensureSessionKey,
+  signTransactionXdr,
+} from "../../lib/signing";
+import { clearSessionKey } from "../../lib/stellarSession";
 import { Button } from "../../../components/ui/Button";
 import { Badge } from "../../../components/ui/Badge";
 import { Spinner } from "../../../components/ui/Spinner";
 import { Card } from "../../../components/ui/Card";
 import { Toast } from "../../../components/ui/Toast";
 import { StellarExplorerLink } from "../../../components/StellarExplorerLink";
+import {
+  EscrowTransactionLink,
+  shouldShowEscrowLink,
+} from "../../../components/EscrowTransactionLink";
 import { DisputeModal } from "./dispute/DisputeModal";
 
 // ---------------------------------------------------------------------------
@@ -131,7 +143,7 @@ function ConfirmationPanel({ trade, txHash }: { trade: TradeOffer; txHash: strin
         </DetailRow>
         {txHash && (
           <DetailRow label={t("escrowTx")}>
-            <StellarExplorerLink type="transaction" value={txHash} />
+            <EscrowTransactionLink status="Locked" escrowTxHash={txHash} />
           </DetailRow>
         )}
       </dl>
@@ -152,6 +164,11 @@ function ConfirmationPanel({ trade, txHash }: { trade: TradeOffer; txHash: strin
 
 interface BuyResponse {
   data?: TradeOffer & { escrow_tx_hash?: string };
+  error?: string;
+}
+
+interface PrepareBuyResponse {
+  data?: { xdr: string; networkPassphrase: string; publicKey: string };
   error?: string;
 }
 
@@ -193,8 +210,31 @@ export default function TradeDetailClient({ trade }: Props) {
   const isLocked = status === "Locked";
   const canBuy   = authed && isActive && !countdown.expired && !isSeller;
 
-  const sellerAlias = `@seller_${trade.seller_id.slice(-8)}`;
+  const RATING_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+  const canRateSeller =
+    isBuyer &&
+    status === "Completed" &&
+    Date.now() - new Date(trade.updated_at).getTime() < RATING_WINDOW_MS;
 
+  // Render the opaque display handle — never the seller's UUID (issue #330).
+  const sellerAlias = trade.seller_handle ?? "@airflex";
+
+  /** Sends the user back through authentication, returning here afterwards. */
+  function reauthenticate() {
+    clearSessionKey();
+    const returnTo = encodeURIComponent(`/trades/${trade.id}`);
+    window.location.href = `/auth/signup?returnTo=${returnTo}`;
+  }
+
+  /**
+   * Buys the trade in three steps (Issue #342):
+   *
+   *   1. ask the server to build and simulate the escrow deposit
+   *   2. sign it here, in the browser, with the key held in session memory
+   *   3. send back only the signed envelope
+   *
+   * The secret key never enters a form field, a request body, or the DOM.
+   */
   async function handleBuy() {
     if (!canBuy) return;
 
@@ -203,26 +243,77 @@ export default function TradeDetailClient({ trade }: Props) {
 
     const token = getToken();
     if (!token) {
-      const returnTo = encodeURIComponent(`/trades/${trade.id}`);
-      window.location.href = `/auth/signup?returnTo=${returnTo}`;
+      reauthenticate();
       return;
     }
 
+    const authHeaders = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    };
+
     try {
+      // 1. Build + simulate, server-side.
+      const prepareRes = await fetch(
+        `${apiUrl}/api/v1/trades/${trade.id}/buy/prepare`,
+        { method: "POST", headers: authHeaders }
+      );
+
+      if (prepareRes.status === 401) {
+        reauthenticate();
+        return;
+      }
+
+      const prepared = (await prepareRes.json()) as PrepareBuyResponse;
+
+      if (!prepareRes.ok || !prepared.data) {
+        setBuyError(prepared.error ?? t("purchaseFailed"));
+        return;
+      }
+
+      // 2. Sign locally. The key lives in memory only, so it may need
+      //    unlocking first — after a reload there is nothing cached.
+      let signedXdr: string;
+      try {
+        await ensureSessionKey(apiUrl, token);
+        signedXdr = signTransactionXdr({
+          xdr: prepared.data.xdr,
+          networkPassphrase: prepared.data.networkPassphrase,
+        });
+      } catch (err) {
+        if (err instanceof SessionKeyMissingError) {
+          // The key lives in memory only, so a reload or a new tab lands here.
+          // Re-authenticating is the way back in — there is nothing cached to
+          // fall back on, by design.
+          reauthenticate();
+          return;
+        }
+        if (err instanceof UnlockFailedError) {
+          if (err.status === 401) {
+            reauthenticate();
+            return;
+          }
+          setBuyError(t("purchaseFailed"));
+          return;
+        }
+        if (err instanceof AccountMismatchError) {
+          setBuyError(t("purchaseFailed"));
+          return;
+        }
+        throw err;
+      }
+
+      // 3. Submit the signed envelope.
       const res = await fetch(`${apiUrl}/api/v1/trades/${trade.id}/buy`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({}),
+        headers: authHeaders,
+        body: JSON.stringify({ signedXdr }),
       });
 
       const data = (await res.json()) as BuyResponse;
 
       if (res.status === 401) {
-        const returnTo = encodeURIComponent(`/trades/${trade.id}`);
-        window.location.href = `/auth/signup?returnTo=${returnTo}`;
+        reauthenticate();
         return;
       }
 
@@ -352,13 +443,12 @@ export default function TradeDetailClient({ trade }: Props) {
             />
           </DetailRow>
 
-          {/* Escrow Tx Deep-Link if present */}
-          {trade.escrow_tx_hash && (
+          {/* Escrow Tx Deep-Link (Issue #332)
+              Uses the live `status`, not `trade.status`, so a buyer who has
+              just purchased sees the proof without a page reload. */}
+          {shouldShowEscrowLink(status, trade.escrow_tx_hash) && (
             <DetailRow label="Escrow Transaction">
-              <StellarExplorerLink
-                type="transaction"
-                value={trade.escrow_tx_hash}
-              />
+              <EscrowTransactionLink status={status} escrowTxHash={trade.escrow_tx_hash} />
             </DetailRow>
           )}
         </dl>
@@ -495,6 +585,15 @@ export default function TradeDetailClient({ trade }: Props) {
           >
             {t("offerHasExpired")}
           </p>
+        )}
+
+        {canRateSeller && (
+          <a
+            href={`/trades/${trade.id}/rate`}
+            className="inline-flex items-center justify-center rounded-xl bg-violet-600 px-6 py-3.5 text-base font-semibold text-white transition-colors hover:bg-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 focus-visible:ring-offset-2"
+          >
+            Rate this seller
+          </a>
         )}
 
         <Button

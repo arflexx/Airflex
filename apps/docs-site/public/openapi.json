@@ -250,13 +250,11 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["buyerSecretKey"],
+                "required": ["signedXdr"],
                 "properties": {
-                  "buyerSecretKey": {
+                  "signedXdr": {
                     "type": "string",
-                    "minLength": 56,
-                    "maxLength": 56,
-                    "description": "Buyer's Stellar secret key for signing the escrow transaction. Placeholder for the initial implementation — production should use client-side XDR signing instead of sending raw secret keys to the server."
+                    "description": "The escrow deposit envelope from POST /api/trades/{id}/buy/prepare, signed by the buyer in their own browser. Base64 XDR. The buyer's secret key is never sent to this API."
                   }
                 }
               }

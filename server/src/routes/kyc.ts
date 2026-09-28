@@ -5,6 +5,7 @@ import { randomUUID } from "crypto";
 import Busboy from "busboy";
 import pool from "../db";
 import { authenticate, AuthenticatedRequest } from "../middleware/authenticate";
+import { rateLimitKyc } from "../middleware/rateLimitKyc";
 import logger from "../utils/logger";
 
 const router = Router();
@@ -105,7 +106,7 @@ function validateFields(fields: KycFields, hasFile: boolean): string | null {
 }
 
 // POST /api/kyc/submit
-router.post("/submit", authenticate, async (req, res) => {
+router.post("/submit", authenticate, rateLimitKyc, async (req, res) => {
   const { sub: userId } = (req as AuthenticatedRequest).user;
 
   let parsed: Awaited<ReturnType<typeof parseMultipart>>;

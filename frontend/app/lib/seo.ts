@@ -26,7 +26,14 @@ export function siteUrl(): string {
 }
 
 /** Routes that must never be indexed, and never appear in the sitemap. */
-export const PRIVATE_ROUTES = ["/admin", "/profile", "/wallet", "/auth"] as const;
+export const PRIVATE_ROUTES = [
+  "/admin",
+  "/api",
+  "/wallet",
+  "/kyc",
+  "/profile",
+  "/auth",
+] as const;
 
 /** Public routes listed in the sitemap, with their relative crawl priority. */
 export const PUBLIC_ROUTES: { path: string; priority: number; changeFrequency: "daily" | "weekly" | "monthly" }[] = [

@@ -1,7 +1,7 @@
 import "dotenv/config";
 import "express-async-errors";
 // Load contract IDs early — emits startup warnings if addresses are missing
-import "@server/config/contracts";
+import "./config/contracts";
 import express, { Request, Response } from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -15,19 +15,7 @@ import { requestId } from "./middleware/requestId";
 import { pool, query } from "./db/pool";
 import { initJobQueue } from "./jobs";
 
-// ---------------------------------------------------------------------------
-// Environment validation
-// ---------------------------------------------------------------------------
-
-const REQUIRED_ENV_VARS = [
-  "JWT_SECRET",
-  "DATABASE_URL",
-  "ENCRYPTION_KEY",
-  "STELLAR_SERVER_SECRET",
-  "PLATFORM_TREASURY_USER_ID",
-  "PAYSTACK_SECRET_KEY",
-  "TERMII_API_KEY",
-] as const;
+import { assertEnvValid } from "./config/validateEnv";
 
 const isTest =
   process.env["NODE_ENV"] === "test" ||
