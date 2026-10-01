@@ -2,6 +2,11 @@ import { Suspense } from "react";
 import type { TradeOffer } from "../../server/src/types/trade";
 import { getTranslations } from "next-intl/server";
 import MarketplaceListings from "../components/MarketplaceListings";
+import { Card } from "../components/ui/Card";
+
+const escrowTradeTypes = ["buy", "sell"] as const;
+
+export type EscrowTradeType = (typeof escrowTradeTypes)[number];
 
 interface TradesResponse {
   data: TradeOffer[];
@@ -15,13 +20,17 @@ interface TradesResponse {
 
 async function getActiveListings(): Promise<TradesResponse> {
   const apiUrl = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:3001";
-  const res = await fetch(`${apiUrl}/api/v1/trades?page=1&limit=20`, {
-    next: { revalidate: 30 },
-  });
-  if (!res.ok) {
+  try {
+    const res = await fetch(`${apiUrl}/api/v1/trades?page=1&limit=20`, {
+      next: { revalidate: 30 },
+    });
+    if (!res.ok) {
+      return { data: [], pagination: { page: 1, limit: 20, total: 0, totalPages: 0 } };
+    }
+    return res.json() as Promise<TradesResponse>;
+  } catch {
     return { data: [], pagination: { page: 1, limit: 20, total: 0, totalPages: 0 } };
   }
-  return res.json() as Promise<TradesResponse>;
 }
 
 export default async function HomePage() {

@@ -1,9 +1,8 @@
-import type { ReactNode } from "react";
+"use client";
 
-/**
- * Composes app-wide providers. Kept as a simple passthrough so importing it
- * from tests and the component tree stays stable.
- */
+import type { ReactNode } from "react";
+import { AuthProvider } from "../context/AuthContext";
+
 export function Providers({ children }: { children: ReactNode }) {
-  return <>{children}</>;
+  return <AuthProvider>{children}</AuthProvider>;
 }
