@@ -28,6 +28,7 @@ export function buildContentSecurityPolicy(nonce: string): string {
     "frame-ancestors 'none'",
     "frame-src https://checkout.paystack.com https://js.paystack.co",
     "form-action 'self'",
+    "report-uri /api/csp-report",
   ].join("; ");
 }
 

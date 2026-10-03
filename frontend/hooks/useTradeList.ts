@@ -18,6 +18,12 @@ export interface UseTradeListReturn {
   trades: TradeOffer[];
   total: number;
   isLoading: boolean;
+  /**
+   * `true` only when the latest load **succeeded** and returned zero trades.
+   * Never `true` while loading or when `error` is set — so a caller can tell
+   * "no listings available" apart from "failed to load listings".
+   */
+  isEmpty: boolean;
   error: ApiError | Error | null;
   refetch: () => Promise<void>;
 }
@@ -47,6 +53,7 @@ export function useTradeList(options: UseTradeListOptions): UseTradeListReturn {
   const [trades, setTrades] = useState<TradeOffer[]>([]);
   const [total, setTotal] = useState<number>(0);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isEmpty, setIsEmpty] = useState<boolean>(false);
   const [error, setError] = useState<ApiError | Error | null>(null);
 
   const queryParams = new URLSearchParams();
@@ -69,6 +76,7 @@ export function useTradeList(options: UseTradeListOptions): UseTradeListReturn {
         setTotal(cached.data.total);
         setIsLoading(false);
         setError(null);
+        setIsEmpty(cached.data.trades.length === 0);
         return;
       }
     }
@@ -77,6 +85,7 @@ export function useTradeList(options: UseTradeListOptions): UseTradeListReturn {
       setIsLoading(true);
     }
     setError(null);
+    setIsEmpty(false);
 
     try {
       let promise = inFlightPromises.get(cacheKey);
@@ -98,12 +107,14 @@ export function useTradeList(options: UseTradeListOptions): UseTradeListReturn {
         setTrades(result.trades);
         setTotal(result.total);
         setIsLoading(false);
+        setIsEmpty(result.trades.length === 0);
       }
     } catch (err) {
       inFlightPromises.delete(cacheKey);
       if (isMounted.current) {
         const errorObj = err instanceof ApiError ? err : (err as Error);
         setError(errorObj);
+        setIsEmpty(false);
         setIsLoading(false);
       }
     }
@@ -127,6 +138,7 @@ export function useTradeList(options: UseTradeListOptions): UseTradeListReturn {
     trades,
     total,
     isLoading,
+    isEmpty,
     error,
     refetch: () => fetchData(true),
   };

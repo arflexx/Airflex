@@ -19,7 +19,8 @@ import {
 describe("createTradeSchema", () => {
   const valid = {
     assetType: "MTN_AIRTIME",
-    amount: 500,
+    // 500 naira expressed in stroops — the unit the API takes (issue #292).
+    amount: 500_000_000,
     expiresInHours: 24,
   };
 
@@ -27,8 +28,31 @@ describe("createTradeSchema", () => {
     expect(createTradeSchema.safeParse(valid).success).toBe(true);
   });
 
-  it("accepts minimum amount (>0)", () => {
-    expect(createTradeSchema.safeParse({ ...valid, amount: 0.01 }).success).toBe(true);
+  it("accepts the minimum amount (1 stroop)", () => {
+    expect(createTradeSchema.safeParse({ ...valid, amount: 1 }).success).toBe(true);
+  });
+
+  it("accepts the ₦1,000,000 listing cap expressed in stroops", () => {
+    expect(
+      createTradeSchema.safeParse({ ...valid, amount: 1_000_000_000_000 }).success
+    ).toBe(true);
+  });
+
+  it("rejects fractional stroops", () => {
+    const result = createTradeSchema.safeParse({ ...valid, amount: 500.5 });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]!.path[0]).toBe("amount");
+      expect(result.error.issues[0]!.message).toMatch(/whole number of stroops/i);
+    }
+  });
+
+  it("rejects amounts above the listing cap", () => {
+    const result = createTradeSchema.safeParse({ ...valid, amount: 1_000_000_000_001 });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]!.path[0]).toBe("amount");
+    }
   });
 
   it("accepts minimum expiresInHours (1)", () => {

@@ -275,9 +275,16 @@ export const openApiDocument = {
             example: "MTN_AIRTIME",
           },
           amount: {
-            type: "number",
-            exclusiveMinimum: 0,
-            example: 500,
+            type: "integer",
+            minimum: 1,
+            maximum: 1_000_000_000_000,
+            example: 500_000_000,
+            description:
+              "Listing amount **in stroops** (the escrow contract's unit, " +
+              "1 NGN = 1,000,000 stroops). The client converts exactly once " +
+              "with `toStroops()` from `@airflex/shared`; the server validates " +
+              "a positive integer and forwards it to the contract unchanged " +
+              "(issue #292).",
           },
           expiresInHours: {
             type: "integer",

@@ -7,6 +7,7 @@
  */
 import { Keypair, Transaction, TransactionBuilder } from "@stellar/stellar-sdk";
 
+import { ApiError, apiFetch } from "../../lib/apiFetch";
 import { getSessionKey, hasSessionKey, setSessionKey } from "./stellarSession";
 
 /** Thrown when there is no key in session and the user must re-authenticate. */
@@ -77,22 +78,22 @@ export class UnlockFailedError extends Error {
  *
  * @throws {UnlockFailedError} when the server refuses to release the key
  */
-export async function ensureSessionKey(apiUrl: string, token: string): Promise<void> {
+export async function ensureSessionKey(apiUrl: string): Promise<void> {
   if (hasSessionKey()) return;
 
-  const res = await fetch(`${apiUrl}/api/v1/wallet/unlock`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-  });
-
-  if (!res.ok) throw new UnlockFailedError(res.status);
-
-  const body = (await res.json()) as {
-    data?: { publicKey: string; secretKey: string };
-  };
+  let body: { data?: { publicKey: string; secretKey: string } };
+  try {
+    body = await apiFetch<{ data?: { publicKey: string; secretKey: string } }>(
+      `${apiUrl}/api/v1/wallet/unlock`,
+      { method: "POST" },
+    );
+  } catch (error) {
+    if (error instanceof ApiError) throw new UnlockFailedError(error.status);
+    throw error;
+  }
 
   if (!body.data?.secretKey || !body.data.publicKey) {
-    throw new UnlockFailedError(res.status);
+    throw new UnlockFailedError(200);
   }
 
   setSessionKey({

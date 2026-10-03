@@ -17,6 +17,8 @@ export {
 } from "./auth.schemas";
 
 export {
+  ASSET_TYPE_VALUES,
+  type AssetTypeValue,
   createTradeSchema,
   buyTradeSchema,
   paginationSchema,

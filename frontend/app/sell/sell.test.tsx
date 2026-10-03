@@ -92,4 +92,61 @@ describe("SellPage Real-Time Fiat to USDC Conversion Preview (Issue #326)", () =
     expect(screen.queryByTestId("conversion-preview")).not.toBeInTheDocument();
     expect(screen.queryByText(/≈.*USDC/)).not.toBeInTheDocument();
   });
+
+  it("converts the naira amount to stroops exactly once before POSTing (Issue #292)", async () => {
+    const fetchMock = jest.fn().mockImplementation((url: string) => {
+      if (url.includes("/api/v1/profile")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ data: { kycStatus: "verified" } }),
+        });
+      }
+      if (url.includes("/api/v1/rates")) {
+        return Promise.resolve({ ok: true, json: async () => ({ rate: 1600 }) });
+      }
+      if (url.includes("/api/v1/trades")) {
+        return Promise.resolve({
+          ok: true,
+          status: 201,
+          json: async () => ({
+            data: {
+              id: "trade-1",
+              asset_type: "MTN_AIRTIME",
+              amount: 5000,
+              status: "Active",
+              expires_at: new Date().toISOString(),
+            },
+          }),
+        });
+      }
+      return Promise.reject(new Error(`Unknown URL ${url}`));
+    });
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    render(<SellPage />);
+    await waitFor(() => {
+      expect(screen.getByLabelText(/Amount/i)).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByLabelText(/Asset type/i), {
+      target: { value: "MTN_AIRTIME" },
+    });
+    fireEvent.change(screen.getByLabelText(/Amount/i), { target: { value: "5000" } });
+    fireEvent.click(screen.getByRole("button", { name: /create listing/i }));
+
+    await waitFor(() => {
+      const post = fetchMock.mock.calls.find((call) => {
+        const [url, init] = call as [string, RequestInit | undefined];
+        return String(url).includes("/api/v1/trades") && init?.method === "POST";
+      });
+      expect(post).toBeDefined();
+      const body = JSON.parse(
+        ((post as [string, RequestInit])[1].body as string) ?? "{}"
+      );
+      // ₦5,000 is 5,000 × 1,000,000 stroops. The API takes stroops and the
+      // server forwards them untouched — a literal `* 1_000_000` on either
+      // side is exactly the double conversion issue #292 removes.
+      expect(body.amount).toBe(5_000_000_000);
+    });
+  });
 });

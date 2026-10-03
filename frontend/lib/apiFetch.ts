@@ -2,7 +2,7 @@
  * apiFetch.ts — Centralized API fetch wrapper and error type for frontend.
  */
 
-import { getToken } from "../app/lib/auth";
+import { clearToken, getToken } from "../app/lib/auth";
 
 export class ApiError extends Error {
   status: number;
@@ -61,6 +61,16 @@ export async function apiFetch<T>(
       }
     } catch {
       // response was not JSON
+    }
+
+    if (response.status === 401 && typeof window !== "undefined") {
+      clearToken();
+      window.dispatchEvent(new CustomEvent("airflex:session-expired"));
+
+      const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      if (!window.location.pathname.startsWith("/auth/signup")) {
+        window.location.assign(`/auth/signup?returnTo=${encodeURIComponent(returnTo)}`);
+      }
     }
 
     throw new ApiError(errorMessage, response.status, errorData);

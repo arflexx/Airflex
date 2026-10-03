@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslations } from "next-intl";
 import type { TradeOffer } from "../../../../server/src/types/trade";
 import { getToken, getUser, isAuthenticated } from "../../lib/auth";
+import { ApiError, apiFetch } from "../../lib/apiFetch";
 import {
   AccountMismatchError,
   SessionKeyMissingError,
@@ -247,26 +248,14 @@ export default function TradeDetailClient({ trade }: Props) {
       return;
     }
 
-    const authHeaders = {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    };
-
     try {
       // 1. Build + simulate, server-side.
-      const prepareRes = await fetch(
+      const prepared = await apiFetch<PrepareBuyResponse>(
         `${apiUrl}/api/v1/trades/${trade.id}/buy/prepare`,
-        { method: "POST", headers: authHeaders }
+        { method: "POST" }
       );
 
-      if (prepareRes.status === 401) {
-        reauthenticate();
-        return;
-      }
-
-      const prepared = (await prepareRes.json()) as PrepareBuyResponse;
-
-      if (!prepareRes.ok || !prepared.data) {
+      if (!prepared.data) {
         setBuyError(prepared.error ?? t("purchaseFailed"));
         return;
       }
@@ -275,7 +264,7 @@ export default function TradeDetailClient({ trade }: Props) {
       //    unlocking first — after a reload there is nothing cached.
       let signedXdr: string;
       try {
-        await ensureSessionKey(apiUrl, token);
+        await ensureSessionKey(apiUrl);
         signedXdr = signTransactionXdr({
           xdr: prepared.data.xdr,
           networkPassphrase: prepared.data.networkPassphrase,
@@ -304,29 +293,23 @@ export default function TradeDetailClient({ trade }: Props) {
       }
 
       // 3. Submit the signed envelope.
-      const res = await fetch(`${apiUrl}/api/v1/trades/${trade.id}/buy`, {
+      const data = await apiFetch<BuyResponse>(`${apiUrl}/api/v1/trades/${trade.id}/buy`, {
         method: "POST",
-        headers: authHeaders,
         body: JSON.stringify({ signedXdr }),
       });
-
-      const data = (await res.json()) as BuyResponse;
-
-      if (res.status === 401) {
-        reauthenticate();
-        return;
-      }
-
-      if (!res.ok) {
-        setBuyError(data.error ?? t("purchaseFailed"));
-        return;
-      }
 
       setStatus("Locked");
       setTxHash(data.data?.escrow_tx_hash ?? "");
       setConfirmed(true);
-    } catch {
-      setBuyError(t("networkError"));
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        reauthenticate();
+      } else if (error instanceof ApiError) {
+        const data = error.data as { error?: string } | undefined;
+        setBuyError(data?.error ?? t("purchaseFailed"));
+      } else {
+        setBuyError(t("networkError"));
+      }
     } finally {
       setBuying(false);
     }

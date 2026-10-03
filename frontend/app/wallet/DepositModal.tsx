@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getToken } from "../lib/auth";
+import { apiFetch } from "../../lib/apiFetch";
 import { CurrencyInput } from "../../components/CurrencyInput";
 import { Spinner } from "../../components/ui/Spinner";
 
@@ -201,8 +202,6 @@ export default function DepositModal({
   onDepositSuccess,
   virtualAccount = null,
 }: DepositModalProps) {
-  const apiUrl = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:3001";
-
   const [amount, setAmount] = useState("");
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -317,18 +316,11 @@ export default function DepositModal({
     setStatus("initializing");
 
     try {
-      const response = await fetch(`${apiUrl}/api/wallet/deposit/initialize`, {
+      const data = await apiFetch<InitializeResponse>("/api/wallet/deposit/initialize", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
         body: JSON.stringify({ amount: Number(amount) }),
       });
-
-      const data = (await response.json()) as InitializeResponse;
-
-      if (!response.ok || !data.access_code) {
+      if (!data.access_code) {
         throw new Error(data.error ?? "Could not start the deposit. Please try again.");
       }
 

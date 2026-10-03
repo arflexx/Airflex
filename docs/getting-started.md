@@ -69,6 +69,8 @@ CREATE TABLE trade_offers (
   seller_id UUID REFERENCES users(id),
   buyer_id UUID REFERENCES users(id),
   asset_type VARCHAR(50) NOT NULL,
+  -- Naira: the platform ledger's unit. The API takes the amount in stroops
+  -- (the escrow contract's unit) and stores the naira equivalent here.
   amount NUMERIC NOT NULL,
   fee_amount NUMERIC,
   seller_net_amount NUMERIC,

@@ -122,7 +122,7 @@ and stores the record in PostgreSQL.
 ```json
 {
   "assetType": "MTN_AIRTIME",
-  "amount": 500,
+  "amount": 500000000,
   "expiresInHours": 24
 }
 ```
@@ -130,8 +130,13 @@ and stores the record in PostgreSQL.
 | Field | Type | Constraints | Description |
 |-------|------|-------------|-------------|
 | `assetType` | string | 1–50 chars, alphanumeric + `_-` | The telecom asset being sold |
-| `amount` | number | positive | Token amount the buyer must pay |
+| `amount` | integer | positive, ≤ 1,000,000,000,000 | Listing amount **in stroops** — the escrow contract's unit (1 NGN = 1,000,000 stroops), so `500000000` is ₦500. Convert client-side exactly once with `toStroops()` from `@airflex/shared`; the server validates the value as a positive integer and forwards it to the contract unchanged (issue #292). |
 | `expiresInHours` | integer | 1–168 | Hours until the listing expires |
+
+> Responses keep reporting `amount` in **naira** (the platform ledger's unit),
+> so the same field carries stroops on the way in and naira on the way out.
+> Convert back for display with `fromStroops()` where the raw contract value is
+> needed.
 
 **Response `201`**
 
@@ -153,14 +158,16 @@ and stores the record in PostgreSQL.
 }
 ```
 
-**Response `400`** — validation error or wallet not found
+**Response `422`** — validation error
 
 ```json
 {
-  "error": "Validation failed",
-  "details": {
-    "amount": ["Number must be greater than 0"]
-  }
+  "errors": [
+    {
+      "field": "amount",
+      "message": "amount must be a whole number of stroops"
+    }
+  ]
 }
 ```
 

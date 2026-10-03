@@ -49,15 +49,21 @@ describe("CopyAccountNumberButton", () => {
   });
 
   it("confirms the copy for two seconds, then reverts", async () => {
+    // Fake timers must be installed *before* the click: the reset timeout is
+    // scheduled when the copy resolves, and a timeout created under real timers
+    // cannot be advanced by the fake clock afterwards.
+    jest.useFakeTimers();
+
     render(<CopyAccountNumberButton accountNumber={ACCOUNT_NUMBER} />);
     expect(copyButton()).toHaveTextContent("Copy");
 
-    fireEvent.click(copyButton());
-    await screen.findByText("Copied!");
-
-    // Switch to fake timers only once the async copy has settled, so the
-    // promise above is not waiting on a clock that no longer advances.
-    jest.useFakeTimers();
+    await act(async () => {
+      fireEvent.click(copyButton());
+      // Flush the mocked clipboard promise so the reset timer is scheduled.
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(copyButton()).toHaveTextContent("Copied!");
 
     act(() => {
       jest.advanceTimersByTime(COPIED_FEEDBACK_MS - 1);

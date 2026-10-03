@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { getToken } from "../../../lib/auth";
+import { ApiError, apiFetch } from "../../../../lib/apiFetch";
 import { Modal } from "../../../../components/ui/Modal";
 import { Button } from "../../../../components/ui/Button";
 
@@ -45,8 +45,6 @@ export function DisputeModal({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
 
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
-
   const handleReasonChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.target.value;
     if (val.length <= MAX_REASON_CHARS) {
@@ -79,60 +77,42 @@ export function DisputeModal({
     setIsSubmitting(true);
     setValidationError(null);
 
-    const token = getToken();
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
-    if (token) {
-      headers["Authorization"] = `Bearer ${token}`;
-    }
-
     try {
       // Primary: POST /api/trades/:id/dispute as specified in criteria.
-      // Fallback: `${apiUrl}/api/v1/trades/:id/dispute` if running against standalone backend.
-      let res: Response;
+      // Fallback to the configured API host when the internal route is unavailable.
       try {
-        res = await fetch(`/api/trades/${encodeURIComponent(tradeId)}/dispute`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ reason: trimmed }),
-        });
-        if (res.status === 404) {
-          // If Next.js internal route isn't hit, try the backend API url
-          res = await fetch(`${apiUrl}/api/v1/trades/${encodeURIComponent(tradeId)}/dispute`, {
+        await apiFetch(
+          `${window.location.origin}/api/trades/${encodeURIComponent(tradeId)}/dispute`,
+          {
             method: "POST",
-            headers,
             body: JSON.stringify({ reason: trimmed }),
-          });
-        }
-      } catch {
-        res = await fetch(`${apiUrl}/api/v1/trades/${encodeURIComponent(tradeId)}/dispute`, {
+          },
+        );
+      } catch (error) {
+        if (error instanceof ApiError && error.status !== 404) throw error;
+        await apiFetch(`/api/v1/trades/${encodeURIComponent(tradeId)}/dispute`, {
           method: "POST",
-          headers,
           body: JSON.stringify({ reason: trimmed }),
         });
-      }
-
-      const data = await res.json().catch(() => ({}));
-
-      if (!res.ok) {
-        const errorMsg =
-          data.error ||
-          (res.status === 409
-            ? "This trade has already been disputed."
-            : "Failed to submit dispute. Please try again.");
-        setValidationError(errorMsg);
-        onError?.(errorMsg);
-        return;
       }
 
       setReason("");
       onDisputeSuccess();
       onClose();
-    } catch {
-      const networkMsg = "Network error. Please check your connection and try again.";
-      setValidationError(networkMsg);
-      onError?.(networkMsg);
+    } catch (error) {
+      const data =
+        error instanceof ApiError
+          ? (error.data as { error?: string } | undefined)
+          : undefined;
+      const errorMsg =
+        data?.error ||
+        (error instanceof ApiError && error.status === 409
+          ? "This trade has already been disputed."
+          : error instanceof ApiError
+            ? "Failed to submit dispute. Please try again."
+            : "Network error. Please check your connection and try again.");
+      setValidationError(errorMsg);
+      onError?.(errorMsg);
     } finally {
       setIsSubmitting(false);
     }

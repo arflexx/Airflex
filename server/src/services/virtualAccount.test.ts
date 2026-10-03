@@ -89,7 +89,9 @@ describe("virtualAccount Paystack timeout", () => {
     installHangingFetch();
 
     const promise = createDedicatedVirtualAccount("user-1", "cus_123");
-    const assertion = promise.catch((err: unknown) => err as PaystackTimeoutError);
+    // `.catch()` unions the reject handler's return type with the fulfilled
+    // type, so annotate the resulting promise to keep the error typed.
+    const assertion = promise.catch((err: unknown) => err) as Promise<PaystackTimeoutError>;
 
     jest.advanceTimersByTime(PAYSTACK_TIMEOUT_MS);
 
@@ -110,7 +112,10 @@ describe("virtualAccount Paystack timeout", () => {
     const promise = ensurePaystackCustomer("user-1", "Ada Lovelace");
     const assertion = expect(promise).rejects.toBeInstanceOf(PaystackTimeoutError);
 
-    jest.advanceTimersByTime(PAYSTACK_TIMEOUT_MS);
+    // Async advance: the mocked DB lookups have to settle (and the hanging
+    // fetch's abort timer be installed) before the clock moves, otherwise the
+    // timeout fires before the request is ever in flight.
+    await jest.advanceTimersByTimeAsync(PAYSTACK_TIMEOUT_MS);
 
     await assertion;
   });
@@ -120,7 +125,7 @@ describe("virtualAccount Paystack timeout", () => {
     installHangingFetch();
 
     const promise = createDedicatedVirtualAccount("user-1", "cus_123");
-    const assertion = promise.catch((err: unknown) => err as PaystackTimeoutError);
+    const assertion = promise.catch((err: unknown) => err) as Promise<PaystackTimeoutError>;
 
     jest.advanceTimersByTime(1000);
 
@@ -138,7 +143,9 @@ describe("virtualAccount Paystack timeout", () => {
     const promise = createDedicatedVirtualAccount("user-1", "cus_123");
     const assertion = promise.catch((err: unknown) => err);
 
-    jest.advanceTimersByTime(PAYSTACK_TIMEOUT_MS);
+    // Async advance so the already-rejected fetch is processed first; a
+    // synchronous advance would let the timeout fire and mask the real error.
+    await jest.advanceTimersByTimeAsync(PAYSTACK_TIMEOUT_MS);
 
     await expect(assertion).resolves.toBe(networkErr);
   });

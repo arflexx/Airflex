@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import createIntlMiddleware from "next-intl/middleware";
 import { routing } from "./i18n/routing";
+import { buildContentSecurityPolicy, STATIC_SECURITY_HEADERS } from "./lib/csp";
 
 // Locale prefixes other than the default (`en`) that may appear in the URL.
 const NON_DEFAULT_LOCALES = routing.locales.filter(
@@ -71,6 +72,16 @@ function matchesPrefix(pathname: string, prefix: string): boolean {
 }
 
 export function middleware(request: NextRequest) {
+  const nonceBytes = new Uint8Array(16);
+  crypto.getRandomValues(nonceBytes);
+  const nonce = btoa(String.fromCharCode(...nonceBytes));
+  const secureHeaders = (response: NextResponse) => {
+    response.headers.set("Content-Security-Policy", buildContentSecurityPolicy(nonce));
+    for (const header of STATIC_SECURITY_HEADERS) {
+      response.headers.set(header.key, header.value);
+    }
+    return response;
+  };
   const { pathname } = request.nextUrl;
 
   const unprefixed = stripLocalePrefix(pathname);
@@ -92,7 +103,7 @@ export function middleware(request: NextRequest) {
       // `returnTo` carries the locale-prefixed path so the post-signup bounce
       // lands the user back on the page in the language they were reading.
       redirectUrl.searchParams.set("returnTo", pathname);
-      return NextResponse.redirect(redirectUrl);
+      return secureHeaders(NextResponse.redirect(redirectUrl));
     }
 
     const payload = verified.payload!;
@@ -103,7 +114,7 @@ export function middleware(request: NextRequest) {
   }
 
   // Handle locale detection, prefixing, redirects, and cookie sync.
-  return intlMiddleware(request);
+  return secureHeaders(intlMiddleware(request));
 }
 
 export const config = {

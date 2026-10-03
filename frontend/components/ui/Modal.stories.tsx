@@ -31,6 +31,11 @@ export default meta;
 type Story = StoryObj<typeof Modal>;
 
 export const Interactive: Story = {
+  /**
+   * Keyboard users return to the Open Modal trigger after closing. The
+   * component captures document.activeElement on open and restores it on
+   * every close path (Escape, backdrop, close button, and footer actions).
+   */
   render: () => {
     const [open, setOpen] = useState(false);
 

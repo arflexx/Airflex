@@ -22,7 +22,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { usePathname } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { getToken, getUser, clearToken, isAuthenticated } from "../app/lib/auth";
+import { getUser, clearToken, isAuthenticated } from "../app/lib/auth";
+import { apiFetch } from "../lib/apiFetch";
 import LanguageSwitcher from "./LanguageSwitcher";
 import ThemeToggle from "./ThemeToggle";
 
@@ -145,8 +146,6 @@ export default function Navbar() {
   const drawerRef                     = useRef<HTMLDivElement>(null);
   const hamburgerRef                  = useRef<HTMLButtonElement>(null);
 
-  const apiUrl = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:3001";
-
   // ---- resolve auth on mount ----------------------------------------------
   useEffect(() => {
     setMounted(true);
@@ -159,14 +158,8 @@ export default function Navbar() {
 
   // ---- fetch wallet balance when authenticated ----------------------------
   const fetchBalance = useCallback(() => {
-    const token = getToken();
-    if (!token) return;
-
     setBalanceLoading(true);
-    fetch(`${apiUrl}/api/v1/wallet`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then((r) => r.json() as Promise<WalletResponse>)
+    apiFetch<WalletResponse>("/api/v1/wallet")
       .then((data) => {
         if (data.balance) {
           // Format to 2 dp and append asset symbol
@@ -176,7 +169,7 @@ export default function Navbar() {
       })
       .catch(() => {/* silent — balance is non-critical */})
       .finally(() => setBalanceLoading(false));
-  }, [apiUrl]);
+  }, []);
 
   useEffect(() => {
     if (mounted && authed) fetchBalance();

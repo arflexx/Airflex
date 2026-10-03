@@ -44,7 +44,9 @@ describe("WithdrawModal Available Balance and Max button", () => {
 
     fireEvent.click(maxButton);
 
-    const amountInput = screen.getByLabelText(/amount/i) as HTMLInputElement;
+    // Exact match: /amount/i would also match the "Max amount" button's
+    // aria-label, making the query ambiguous.
+    const amountInput = screen.getByLabelText("amount") as HTMLInputElement;
     expect(amountInput.value).toBe("10,000");
   });
 });

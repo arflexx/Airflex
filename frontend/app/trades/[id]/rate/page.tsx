@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { getToken } from "../../../lib/auth";
+import { ApiError, apiFetch } from "../../../lib/apiFetch";
 import { Button } from "../../../../components/ui/Button";
 
 export default function RateSellerPage() {
@@ -14,8 +15,6 @@ export default function RateSellerPage() {
   const [comment, setComment] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -29,30 +28,19 @@ export default function RateSellerPage() {
     }
 
     try {
-      const res = await fetch(`${apiUrl}/api/trades/${tradeId}/rate`, {
+      await apiFetch(`/api/trades/${tradeId}/rate`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
         body: JSON.stringify({ stars, comment: comment.trim() || undefined }),
       });
-
-      const data = (await res.json()) as { error?: string };
-
-      if (res.status === 409) {
-        setError("You have already rated this trade.");
-        return;
-      }
-
-      if (!res.ok) {
-        setError(data.error ?? "Could not submit rating.");
-        return;
-      }
-
       router.push(`/trades/${tradeId}`);
-    } catch {
-      setError("Network error. Please try again.");
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        setError("You have already rated this trade.");
+      } else if (error instanceof ApiError) {
+        setError(error.message ?? "Could not submit rating.");
+      } else {
+        setError("Network error. Please try again.");
+      }
     } finally {
       setSubmitting(false);
     }

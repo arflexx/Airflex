@@ -29,17 +29,43 @@ const TOKEN_KEY = "airflex:token";
  */
 const SESSION_COOKIE = "session";
 
-/** Reads `exp` out of a JWT payload without verifying the signature. */
-function readExpiry(token: string): number | null {
+/** Account roles recognised by the client. */
+export type UserRole = "user" | "admin";
+
+/** Decodes a JWT payload segment (base64url) without verifying the signature. */
+function readPayload(token: string): Record<string, unknown> | null {
   const payload = token.split(".")[1];
   if (!payload) return null;
   try {
     const json = atob(payload.replace(/-/g, "+").replace(/_/g, "/"));
-    const exp = (JSON.parse(json) as { exp?: number }).exp;
-    return typeof exp === "number" ? exp : null;
+    const parsed: unknown = JSON.parse(json);
+    if (parsed === null || typeof parsed !== "object") return null;
+    return parsed as Record<string, unknown>;
   } catch {
     return null;
   }
+}
+
+/** Reads `exp` out of a JWT payload without verifying the signature. */
+function readExpiry(token: string): number | null {
+  const payload = readPayload(token);
+  const exp = payload?.exp;
+  return typeof exp === "number" ? exp : null;
+}
+
+/**
+ * Reads the account `role` out of a JWT payload without verifying the
+ * signature.
+ *
+ * This is a **rendering hint, not a security boundary**: the token is
+ * readable and editable by whoever holds it, so every admin endpoint
+ * re-checks the role server-side. Absent, malformed, or unrecognised
+ * values are treated as non-admin (`null`).
+ */
+export function readRole(token: string | null | undefined): UserRole | null {
+  if (!token) return null;
+  const role = readPayload(token)?.role;
+  return role === "admin" || role === "user" ? role : null;
 }
 
 function writeSessionCookie(token: string): void {

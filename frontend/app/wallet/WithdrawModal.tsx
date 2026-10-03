@@ -494,6 +494,10 @@ export default function WithdrawModal({
           {/* Submit button */}
           <button
             type="submit"
+            // Explicit label while submitting: the spinner SVG carries
+            // aria-label="processing", and without this the button's accessible
+            // name would be read twice ("processing processing").
+            aria-label={isSubmitting ? t("processing") : undefined}
             disabled={
               isSubmitting ||
               !accountConfirmed ||

@@ -114,6 +114,30 @@ describe("UI Primitives", () => {
   });
 
   describe("Modal", () => {
+    it("restores focus to the trigger after closing", () => {
+      function ModalHarness() {
+        const [open, setOpen] = React.useState(false);
+        return (
+          <>
+            <button type="button" onClick={() => setOpen(true)}>
+              Open focus test
+            </button>
+            <Modal isOpen={open} onClose={() => setOpen(false)} title="Focus test">
+              <p>Dialog content</p>
+            </Modal>
+          </>
+        );
+      }
+
+      render(<ModalHarness />);
+      const trigger = screen.getByRole("button", { name: "Open focus test" });
+      trigger.focus();
+      fireEvent.click(trigger);
+      fireEvent.click(screen.getByRole("button", { name: "Close dialog" }));
+
+      expect(document.activeElement).toBe(trigger);
+    });
+
     it("renders accessible modal with title and trap and closes on ESC", () => {
       const handleClose = jest.fn();
       render(

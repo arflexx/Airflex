@@ -5,6 +5,7 @@ import { useSearchParams, useRouter, usePathname } from "next/navigation";
 import { useTranslations } from "next-intl";
 import type { TradeOffer } from "../../server/src/types/trade";
 import { Card } from "./ui/Card";
+import ErrorBoundary from "./ErrorBoundary";
 
 interface TradesResponse {
   data: TradeOffer[];
@@ -155,6 +156,7 @@ export default function MarketplaceListings({
   const [trades, setTrades] = useState<TradeOffer[]>(initialTrades);
   const [pagination, setPagination] = useState(initialPagination);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const apiUrl = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:3001";
 
@@ -180,6 +182,7 @@ export default function MarketplaceListings({
   const fetchListings = useCallback(
     async (filters: { assetType?: string; carrier?: string; minAmount?: string; maxAmount?: string }) => {
       setLoading(true);
+      setError(null);
       try {
         const params = new URLSearchParams();
         params.set("page", "1");
@@ -190,13 +193,15 @@ export default function MarketplaceListings({
         if (filters.maxAmount) params.set("maxAmount", filters.maxAmount);
 
         const res = await fetch(`${apiUrl}/api/v1/trades?${params.toString()}`);
-        if (res.ok) {
-          const data = (await res.json()) as TradesResponse;
-          setTrades(data.data ?? []);
-          setPagination(data.pagination ?? { page: 1, limit: 20, total: 0, totalPages: 0 });
+        if (!res.ok) {
+          throw new Error(`Request failed with status ${res.status}`);
         }
+        const data = (await res.json()) as TradesResponse;
+        setTrades(data.data ?? []);
+        setPagination(data.pagination ?? { page: 1, limit: 20, total: 0, totalPages: 0 });
       } catch (err) {
         console.error("Failed to fetch filtered trades:", err);
+        setError("Could not load listings. Please try again.");
       } finally {
         setLoading(false);
       }
@@ -247,6 +252,10 @@ export default function MarketplaceListings({
   };
 
   const hasActiveFilters = Boolean(assetType || carrier || minAmount || maxAmount);
+
+  // "No results" is only shown for a *successful* empty response — never while
+  // loading, and never when the fetch failed (that renders the error banner).
+  const isEmpty = !loading && error === null && trades.length === 0;
 
   return (
     <div>
@@ -355,17 +364,19 @@ export default function MarketplaceListings({
       </div>
 
       {/* Grid */}
-      <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-        {loading ? (
-          <div className="col-span-full py-16 text-center text-gray-500">
-            Updating listings…
-          </div>
-        ) : trades.length === 0 ? (
-          <EmptyState t={t} hasActiveFilters={hasActiveFilters} onClear={handleClearFilters} />
-        ) : (
-          trades.map((trade) => <TradeCard key={trade.id} trade={trade} t={t} />)
-        )}
-      </div>
+      <ErrorBoundary context={{ section: "MarketplaceListings.grid" }}>
+        <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          {loading ? (
+            <div className="col-span-full py-16 text-center text-gray-500">
+              Updating listings…
+            </div>
+          ) : trades.length === 0 ? (
+            <EmptyState t={t} hasActiveFilters={hasActiveFilters} onClear={handleClearFilters} />
+          ) : (
+            trades.map((trade) => <TradeCard key={trade.id} trade={trade} t={t} />)
+          )}
+        </div>
+      </ErrorBoundary>
 
       {pagination.totalPages > 1 && (
         <p className="mt-10 text-center text-sm text-gray-400 dark:text-gray-500">

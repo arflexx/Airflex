@@ -4,6 +4,7 @@ import { useState, useEffect, type FormEvent, type ChangeEvent } from "react";
 import { getToken, isAuthenticated } from "../lib/auth";
 import type { TradeOffer } from "../../../server/src/types/trade";
 import { CurrencyInput } from "../../components/CurrencyInput";
+import { toStroops } from "@airflex/shared/units";
 import { getCachedConversionRate, setCachedConversionRate } from "./ratesCache";
 
 // ---------------------------------------------------------------------------
@@ -338,8 +339,12 @@ export default function SellPage() {
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
-          assetType:      fields.assetType,
-          amount:         parseFloat(fields.amount),
+          assetType: fields.assetType,
+          // The API speaks the escrow contract's unit: the naira the seller
+          // typed is converted to stroops exactly once, here, with the shared
+          // helper (issue #292). `Number(...)` is what JSON can carry — the
+          // value is a safe integer well under 2^53 (capped at ₦1,000,000).
+          amount: Number(toStroops(parseFloat(fields.amount))),
           expiresInHours: fields.expiresInHours,
         }),
       });

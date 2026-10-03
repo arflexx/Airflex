@@ -23,7 +23,7 @@ test.describe("Signup", () => {
     await expect(page.locator("#otp, #phone-error").first()).toBeVisible({ timeout: 10_000 });
   });
 
-  test("rejects a malformed phone number without calling the API", async ({ page }) => {
+  test("rejects a malformed phone number inline without calling the API", async ({ page }) => {
     let called = false;
     await page.route("**/api/v1/auth/**", (route) => {
       called = true;
@@ -31,10 +31,17 @@ test.describe("Signup", () => {
     });
 
     await page.goto("/auth/signup");
-    await page.locator("#phone").fill("12");
-    await page.locator('button[type="submit"]').click();
 
+    // Submit stays disabled while the number is invalid (issue #283).
+    const submit = page.locator('button[type="submit"]');
+    await expect(submit).toBeDisabled();
+
+    await page.locator("#phone").fill("12");
+    await expect(submit).toBeDisabled();
+
+    await page.locator("#phone").blur();
     await expect(page.locator("#phone-error")).toBeVisible();
+
     expect(called, "a client-side rejection must not hit the network").toBe(false);
   });
 

@@ -97,13 +97,16 @@ describe("POST /api/v1/trades/:id/rate — issue #362: ratings survive account a
 
   // -------------------------------------------------------------------------
   // Helper: wire up mockQuery for a successful rating flow
-  // The mock receives calls in this order from the route handler:
+  // The mock receives calls in this order:
+  //   0. SELECT token_version FROM users ...      → authenticate() revocation check
   //   1. SELECT trade_offers WHERE id = $1       → completed trade row
   //   2. SELECT phone FROM users WHERE id = $1   → seller's phone / anon hash
   //   3. INSERT INTO ratings ...                 → new rating row
   // -------------------------------------------------------------------------
   function wireSuccessfulRating(sellerPhone: string) {
     mockQuery
+      // call 0 — authenticate() token-revocation check
+      .mockResolvedValueOnce({ rows: [{ token_version: 1 }] })
       // call 1 — load the trade
       .mockResolvedValueOnce({
         rows: [

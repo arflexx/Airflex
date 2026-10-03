@@ -145,4 +145,53 @@ describe("useTradeList Hook", () => {
       expect.stringContaining("maxAmount=5000")
     );
   });
+
+  it("exposes isEmpty=true only on a successful empty response", async () => {
+    mockedApiFetch.mockResolvedValueOnce({ data: [], total: 0 });
+
+    const { result } = renderHook(() => useTradeList({ page: 1, limit: 10 }));
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    expect(result.current.error).toBeNull();
+    expect(result.current.isEmpty).toBe(true);
+  });
+
+  it("keeps isEmpty=false (and sets error) when the fetch fails", async () => {
+    const apiError = new ApiError("marketplace unavailable", 500);
+    mockedApiFetch.mockRejectedValueOnce(apiError);
+
+    const { result } = renderHook(() => useTradeList({ page: 1, limit: 10 }));
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    expect(result.current.error).toBe(apiError);
+    expect(result.current.isEmpty).toBe(false);
+  });
+
+  it("keeps isEmpty=false on a successful non-empty response", async () => {
+    mockedApiFetch.mockResolvedValueOnce({
+      data: [
+        {
+          id: "trade-1",
+          sellerId: "user-1",
+          assetCode: "MTN_AIRTIME",
+          amount: 5000,
+          price: 5000,
+          currency: "NGN",
+          status: TradeStatus.ACTIVE,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ],
+      total: 1,
+    });
+
+    const { result } = renderHook(() => useTradeList({ page: 1, limit: 10 }));
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    expect(result.current.error).toBeNull();
+    expect(result.current.isEmpty).toBe(false);
+  });
 });

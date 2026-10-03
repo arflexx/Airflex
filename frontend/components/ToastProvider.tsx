@@ -27,7 +27,12 @@ import {
 import { createPortal } from "react-dom";
 import { Toast, type ToastType } from "./ui/Toast";
 
-const DEFAULT_DURATION_MS = 4_000;
+/** Auto-dismiss delay applied when a caller doesn't pass an explicit
+ * duration. A toast stays visible for this long, then fades out. */
+const DEFAULT_DURATION_MS = 5_000;
+/** Hard cap on simultaneously visible toasts. When a new toast arrives at
+ * the limit, the oldest (FIFO) is dropped so the newest ones remain. */
+const MAX_TOASTS = 3;
 const EXIT_TRANSITION_MS = 200;
 
 interface ActiveToast {
@@ -103,10 +108,19 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const push = useCallback(
     (type: ToastType, message: string, duration = DEFAULT_DURATION_MS) => {
       const id = `toast-${nextId.current++}`;
-      setToasts((prev) => [...prev, { id, type, message, duration }]);
+      setToasts((prev) =>
+        [...prev, { id, type, message, duration }].slice(-MAX_TOASTS),
+      );
     },
     [],
   );
+
+  useEffect(() => {
+    const onSessionExpired = () =>
+      push("error", "Your session has expired — please log in again", 0);
+    window.addEventListener("airflex:session-expired", onSessionExpired);
+    return () => window.removeEventListener("airflex:session-expired", onSessionExpired);
+  }, [push]);
 
   const value = useMemo<ToastContextValue>(
     () => ({
@@ -124,6 +138,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {mounted &&
         createPortal(
           <div
+            role="status"
             aria-live="polite"
             className="fixed top-4 right-4 z-50 flex w-full max-w-sm flex-col gap-2"
           >

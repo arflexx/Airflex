@@ -1,9 +1,14 @@
 /**
  * stellar-keypair.test.ts
  *
- * Fail-fast coverage for issue #313: the server signing key is validated
- * once at module load, so a missing/invalid STELLAR_SERVER_SECRET refuses
- * to boot instead of failing queued release jobs at runtime.
+ * Fail-fast coverage for issue #313: the server signing key is parsed and
+ * validated exactly once, so a missing/invalid STELLAR_SERVER_SECRET throws
+ * a clear error instead of failing queued release jobs at runtime.
+ *
+ * The key is resolved lazily (on first use) rather than as a module-load side
+ * effect: boot-time validation is owned by index.ts / config/validateEnv.ts
+ * (issue #383), and importing this module must not crash route tests that run
+ * without a real signing key configured.
  */
 
 describe('server keypair module load (#313)', () => {
@@ -34,20 +39,26 @@ describe('server keypair module load (#313)', () => {
     expect(mod.getServerKeypair().publicKey()).toBe(VALID_THROWAY_PUBLIC);
   });
 
-  it('refuses to load when the secret is missing', () => {
+  it('refuses to resolve the keypair when the secret is missing', () => {
     delete process.env[ENV_KEY];
-    expect(() => {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      require('./stellar');
-    }).toThrow('STELLAR_SERVER_SECRET environment variable is not set');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require('./stellar') as {
+      getServerKeypair: () => unknown;
+    };
+    expect(() => mod.getServerKeypair()).toThrow(
+      'STELLAR_SERVER_SECRET environment variable is not set'
+    );
   });
 
-  it('refuses to load when the secret is invalid', () => {
+  it('refuses to resolve the keypair when the secret is invalid', () => {
     process.env[ENV_KEY] =
       'SBXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX';
-    expect(() => {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      require('./stellar');
-    }).toThrow('STELLAR_SERVER_SECRET is invalid');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require('./stellar') as {
+      getServerKeypair: () => unknown;
+    };
+    expect(() => mod.getServerKeypair()).toThrow(
+      'STELLAR_SERVER_SECRET is invalid'
+    );
   });
 });

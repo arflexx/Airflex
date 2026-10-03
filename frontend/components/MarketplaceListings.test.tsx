@@ -149,4 +149,25 @@ describe("MarketplaceListings Filter Panel (Issue #328)", () => {
       expect(global.fetch).toHaveBeenLastCalledWith(expect.not.stringContaining("assetType="));
     });
   });
+
+  // Issue #282 — an empty response and a network error must not look the same.
+  it("shows an error banner (not the empty state) when a filtered fetch fails", async () => {
+    global.fetch = jest.fn().mockRejectedValue(new Error("network down"));
+
+    render(<MarketplaceListings initialTrades={[]} />);
+
+    fireEvent.change(screen.getByLabelText("Carrier"), { target: { value: "MTN" } });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/could not load listings/i);
+    // The "no listings" empty state must NOT be shown while in an error state.
+    expect(screen.queryByText("No active listings right now")).not.toBeInTheDocument();
+  });
+
+  it("shows the empty state only when there are no trades and no error", () => {
+    render(<MarketplaceListings initialTrades={[]} />);
+
+    expect(screen.getByText("No active listings right now")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
 });

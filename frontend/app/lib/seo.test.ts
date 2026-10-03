@@ -52,17 +52,38 @@ describe("isPrivateRoute", () => {
   });
 });
 
+/** A fetch response stub returning the given trades page. */
+function tradesResponse(data: unknown[], totalPages = 1) {
+  return {
+    ok: true,
+    json: async () => ({ data, pagination: { page: 1, totalPages } }),
+  };
+}
+
+function mockFetch(response: unknown) {
+  global.fetch = jest.fn().mockResolvedValue(response) as unknown as typeof fetch;
+}
+
 describe("sitemap", () => {
-  it("lists every public route", () => {
-    const urls = sitemap().map((entry) => entry.url);
+  beforeEach(() => {
+    // Default: no trades, so the static-route assertions below are isolated.
+    mockFetch(tradesResponse([]));
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it("lists every public route", async () => {
+    const urls = (await sitemap()).map((entry) => entry.url);
 
     for (const route of PUBLIC_ROUTES) {
       expect(urls.some((url) => url.endsWith(route.path))).toBe(true);
     }
   });
 
-  it("excludes every private route, /admin included", () => {
-    const urls = sitemap().map((entry) => new URL(entry.url).pathname);
+  it("excludes every private route, /admin included", async () => {
+    const urls = (await sitemap()).map((entry) => new URL(entry.url).pathname);
 
     for (const priv of PRIVATE_ROUTES) {
       expect(urls).not.toContain(priv);
@@ -70,16 +91,68 @@ describe("sitemap", () => {
     expect(urls).not.toContain("/admin");
   });
 
-  it("emits absolute URLs, which the sitemap spec requires", () => {
-    for (const entry of sitemap()) {
+  it("emits absolute URLs, which the sitemap spec requires", async () => {
+    for (const entry of await sitemap()) {
       expect(() => new URL(entry.url)).not.toThrow();
       expect(entry.url).toMatch(/^https?:\/\//);
     }
   });
 
-  it("gives the home page the highest priority", () => {
-    const home = sitemap().find((entry) => new URL(entry.url).pathname === "/");
+  it("gives the home page the highest priority", async () => {
+    const home = (await sitemap()).find(
+      (entry) => new URL(entry.url).pathname === "/",
+    );
     expect(home?.priority).toBe(1);
+  });
+});
+
+describe("sitemap trade listings (Issue #381)", () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it("includes active trade URLs with lastmod from updated_at", async () => {
+    mockFetch(
+      tradesResponse([
+        {
+          id: "trade-1",
+          status: "Active",
+          updated_at: "2026-09-01T10:00:00.000Z",
+        },
+        {
+          id: "trade-2",
+          status: "Completed",
+          updated_at: "2026-09-02T10:00:00.000Z",
+        },
+      ]),
+    );
+
+    const entries = await sitemap();
+    const tradePaths = entries
+      .map((entry) => new URL(entry.url).pathname)
+      .filter((path) => path.startsWith("/trades/"));
+
+    expect(tradePaths).toContain("/trades/trade-1");
+    // Only Active trades are advertised.
+    expect(tradePaths).not.toContain("/trades/trade-2");
+
+    const active = entries.find(
+      (entry) => new URL(entry.url).pathname === "/trades/trade-1",
+    );
+    expect(new Date(active!.lastModified as Date).toISOString()).toBe(
+      "2026-09-01T10:00:00.000Z",
+    );
+  });
+
+  it("degrades to static routes when the listing API fails", async () => {
+    global.fetch = jest
+      .fn()
+      .mockRejectedValue(new Error("boom")) as unknown as typeof fetch;
+
+    const paths = (await sitemap()).map((entry) => new URL(entry.url).pathname);
+
+    expect(paths.some((path) => path.startsWith("/trades/"))).toBe(false);
+    expect(paths).toContain("/");
   });
 });
 
