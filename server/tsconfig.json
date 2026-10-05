@@ -14,8 +14,8 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
-    "declaration": true,
-    "declarationMap": true,
+    "declaration": false,
+    "declarationMap": false,
     "sourceMap": true,
     "incremental": true,
     "tsBuildInfoFile": "tsconfig.tsbuildinfo"
