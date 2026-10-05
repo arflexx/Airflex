@@ -46,4 +46,5 @@ export function registerRoutes(app: Express): void {
   // GET /api/docs.json  — always available
   // GET /api/docs       — Swagger UI (disabled in production unless ENABLE_API_DOCS=true)
   app.use('/api', docsRouter);
+  app.use('/api/v1', docsRouter);
 }

@@ -1,7 +1,9 @@
 /**
  * profile.test.ts
  *
- * Tests for GET /api/v1/profile endpoint including referralCode verification.
+ * Tests for GET /api/v1/profile including referralCode verification,
+ * plus the PATCH /api/v1/profile update and trade-history query validation
+ * added in issue #74.
  */
 
 import request from "supertest";
@@ -52,7 +54,9 @@ describe("GET /api/v1/profile", () => {
           phone: "+2348012345678",
           created_at: "2026-01-01T00:00:00.000Z",
           stellar_public_key: "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H",
+          role: "user",
           kyc_status: "verified",
+          virtual_account_number: "0123456789",
           referral_code: "AIR77REF",
         },
       ],
@@ -74,6 +78,9 @@ describe("GET /api/v1/profile", () => {
     expect(typeof res.body.data.referralCode).toBe("string");
     expect(res.body.data.referralCode.length).toBeGreaterThan(0);
     expect(res.body.data.totalTradesCompleted).toBe(12);
+    expect(res.body.data.role).toBe("user");
+    expect(res.body.data.kycStatus).toBe("verified");
+    expect(res.body.data.virtualAccountNumber).toBe("0123456789");
   });
 
   it("returns 404 when user is not found in database", async () => {
@@ -89,5 +96,116 @@ describe("GET /api/v1/profile", () => {
 
     expect(res.status).toBe(404);
     expect(res.body.error).toBe("User not found");
+  });
+});
+
+describe("PATCH /api/v1/profile", () => {
+  const userId = "11111111-1111-4111-8111-111111111111";
+  const token = jwt.sign(
+    { sub: userId, stellarPublicKey: "GTEST" },
+    JWT_SECRET,
+    { expiresIn: "1h" }
+  );
+
+  beforeEach(() => {
+    mockQuery.mockReset();
+  });
+
+  it("returns 401 when unauthenticated", async () => {
+    const res = await request(app).patch("/api/v1/profile");
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects invalid profile updates", async () => {
+    // 0th query: authenticate's token-revocation check (token_version lookup).
+    mockQuery.mockResolvedValueOnce({ rows: [{ token_version: 1 }] });
+
+    const res = await request(app)
+      .patch("/api/v1/profile")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ alias: "not valid!" });
+
+    expect(res.status).toBe(422);
+  });
+
+  it("updates only supplied profile fields", async () => {
+    // 0th query: authenticate's token-revocation check (token_version lookup).
+    mockQuery.mockResolvedValueOnce({ rows: [{ token_version: 1 }] });
+
+    // 1st query: the profile UPDATE itself.
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ id: userId, alias: "Alice", notifications_enabled: false }],
+    });
+
+    const res = await request(app)
+      .patch("/api/v1/profile")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ alias: "Alice", notificationsEnabled: false });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.alias).toBe("Alice");
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining("UPDATE users SET"),
+      ["Alice", false, userId]
+    );
+  });
+
+  it("returns 400 when no profile field is supplied", async () => {
+    // 0th query: authenticate's token-revocation check (token_version lookup).
+    mockQuery.mockResolvedValueOnce({ rows: [{ token_version: 1 }] });
+
+    const res = await request(app)
+      .patch("/api/v1/profile")
+      .set("Authorization", `Bearer ${token}`)
+      .send({});
+
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("GET /api/v1/profile/trades", () => {
+  const userId = "11111111-1111-4111-8111-111111111111";
+  const token = jwt.sign(
+    { sub: userId, stellarPublicKey: "GTEST" },
+    JWT_SECRET,
+    { expiresIn: "1h" }
+  );
+
+  beforeEach(() => {
+    mockQuery.mockReset();
+  });
+
+  it("rejects an invalid trade-history status filter", async () => {
+    // 0th query: authenticate's token-revocation check (token_version lookup).
+    mockQuery.mockResolvedValueOnce({ rows: [{ token_version: 1 }] });
+
+    const res = await request(app)
+      .get("/api/v1/profile/trades?status=unknown")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid query parameters");
+  });
+
+  it("returns paginated trade history", async () => {
+    // 0th query: authenticate's token-revocation check (token_version lookup).
+    mockQuery.mockResolvedValueOnce({ rows: [{ token_version: 1 }] });
+
+    // 1st query: trades, 2nd query: total count.
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: "trade-1", status: "Active" }] });
+    mockQuery.mockResolvedValueOnce({ rows: [{ count: "1" }] });
+
+    const res = await request(app)
+      .get("/api/v1/profile/trades?page=1&limit=10&status=Active")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.pagination).toEqual({
+      page: 1,
+      limit: 10,
+      total: 1,
+      totalPages: 1,
+    });
   });
 });

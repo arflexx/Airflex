@@ -9,6 +9,10 @@
     "./phone": {
       "types": "./phone.d.ts",
       "default": "./phone.js"
+    },
+    "./units": {
+      "types": "./units.d.ts",
+      "default": "./units.js"
     }
   },
   "scripts": {

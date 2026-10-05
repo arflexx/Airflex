@@ -19,6 +19,7 @@ import { authorize } from "../middleware/authorize";
 import { validate } from "../middleware/validate";
 import { QueueService } from "../jobs";
 import { SseEmitter } from "../services/sseEmitter";
+import { z } from "zod";
 import pool from "../db";
 import { resolveDispute } from "../services/stellar";
 import {
@@ -490,6 +491,43 @@ router.post(
     await QueueService.enqueue("process-paystack-webhook", { webhookEventId: id });
 
     res.status(202).json({ message: "Webhook re-enqueued for processing" });
+  }
+);
+
+// ---------------------------------------------------------------------------
+// PATCH /api/v1/admin/users/:id/kyc  (admin only)
+// ---------------------------------------------------------------------------
+
+const kycSchema = z.object({
+  status: z.enum(["unverified", "pending", "verified"]),
+});
+
+router.patch(
+  "/users/:id/kyc",
+  authenticate,
+  authorize("admin"),
+  async (req, res) => {
+    const parsed = kycSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(422).json({
+        error: "Invalid KYC status",
+        details: parsed.error.flatten(),
+      });
+      return;
+    }
+
+    const { rows } = await pool.query(
+      `UPDATE users SET kyc_status = $1, updated_at = NOW()
+       WHERE id = $2
+       RETURNING id, kyc_status`,
+      [parsed.data.status, req.params.id]
+    );
+
+    if (!rows.length) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+    res.status(200).json({ data: rows[0] });
   }
 );
 

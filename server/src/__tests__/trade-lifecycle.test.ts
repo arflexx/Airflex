@@ -12,7 +12,7 @@ import request from "supertest";
 import jwt from "jsonwebtoken";
 import { v4 as uuidv4 } from "uuid";
 import app from "../index";
-import pool from "../db/pool";
+import { pool } from "../db/pool";
 
 // Mock the entire stellar service
 jest.mock("../services/stellar", () => {
