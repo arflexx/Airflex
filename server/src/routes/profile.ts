@@ -2,6 +2,7 @@ import { Router } from "express";
 import { createHash } from "crypto";
 import pool from "../db";
 import { authenticate, AuthenticatedRequest } from "../middleware/authenticate";
+import { QueueService } from "../jobs";
 import type { TradeOffer, TradeStatus } from "../types/trade";
 import logger from "../utils/logger";
 
@@ -105,8 +106,9 @@ router.get(
       created_at: string;
       stellar_public_key: string | null;
       kyc_status: string | null;
+      referral_code: string | null;
     }>(
-      `SELECT id, phone, created_at, stellar_public_key, kyc_status
+      `SELECT id, phone, created_at, stellar_public_key, kyc_status, referral_code
        FROM users
        WHERE id = $1
        LIMIT 1`,
@@ -137,6 +139,7 @@ router.get(
         totalTradesCompleted,
         stellarPublicKey:     user.stellar_public_key ?? "",
         kycStatus:            user.kyc_status ?? "unverified",
+        referralCode:         user.referral_code ?? "",
       },
     });
   }
@@ -196,8 +199,27 @@ router.get(
     const limitIdx  = dataParams.length - 1;
     const offsetIdx = dataParams.length;
 
+    // Explicitly listed (rather than `SELECT *`) so contract_listing_id and
+    // escrow_tx_hash are guaranteed present in the response — the frontend
+    // trade-history view links out to a Stellar explorer using exactly these
+    // two columns, and an explicit column list makes that contract visible
+    // here instead of depending on trade_offers' column set matching
+    // whatever `TradeOffer` happens to declare.
     const { rows: trades } = await pool.query<TradeOffer>(
-      `SELECT * FROM trade_offers
+      `SELECT id,
+              seller_id,
+              buyer_id,
+              asset_type,
+              amount,
+              fee_amount,
+              seller_net_amount,
+              status,
+              contract_listing_id,
+              escrow_tx_hash,
+              expires_at,
+              created_at,
+              updated_at
+       FROM trade_offers
        WHERE ${fullWhere}
        ORDER BY created_at DESC
        LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
@@ -326,6 +348,16 @@ router.delete(
     // Scheduled hard-anonymisation date — 30 days from now
     const scheduledDeletionAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
 
+    // Populated inside the transaction below with any trades that were
+    // Locked (and therefore have real funds in escrow) at the moment they
+    // were cancelled — read outside the try block, after COMMIT, to enqueue
+    // on-chain refunds.
+    let tradesNeedingRefund: Array<{
+      id: string;
+      buyer_id: string | null;
+      contract_listing_id: string | null;
+    }> = [];
+
     // Run all DB mutations in a single transaction for atomicity
     const client = await pool.connect();
     try {
@@ -341,16 +373,35 @@ router.delete(
         [scheduledDeletionAt, userId]
       );
 
-      // 2. Cancel all Active and Locked trades where user is the seller or buyer
-      //    We return the rows so we can log them; the escrow refund for Locked
-      //    trades is handled by the admin/oracle out-of-band.
-      const { rows: cancelledTrades } = await client.query<{ id: string; status: string }>(
+      // 2. Cancel all Active and Locked trades where user is the seller or buyer.
+      //
+      //    A Locked trade has real funds sitting in the escrow contract, so
+      //    before flipping it to Cancelled we capture its pre-update state
+      //    (status, buyer_id, contract_listing_id) — RETURNING on the UPDATE
+      //    itself only ever reflects the *new* row, so it can't tell us which
+      //    rows used to be Locked. `FOR UPDATE` holds the rows so nothing else
+      //    changes their status between this read and the write just below.
+      const { rows: tradesToCancel } = await client.query<{
+        id: string;
+        status: string;
+        buyer_id: string | null;
+        contract_listing_id: string | null;
+      }>(
+        `SELECT id, status, buyer_id, contract_listing_id
+         FROM trade_offers
+         WHERE (seller_id = $1 OR buyer_id = $1)
+           AND status IN ('Active', 'Locked')
+         FOR UPDATE`,
+        [userId]
+      );
+
+      const { rows: cancelledTrades } = await client.query<{ id: string }>(
         `UPDATE trade_offers
          SET status     = 'Cancelled',
              updated_at = NOW()
          WHERE (seller_id = $1 OR buyer_id = $1)
            AND status IN ('Active', 'Locked')
-         RETURNING id, status`,
+         RETURNING id`,
         [userId]
       );
 
@@ -360,6 +411,17 @@ router.delete(
           "[profile] Cancelled pending trades for deletion request"
         );
       }
+
+      // Trades that were Locked (not just Active) have buyer funds already
+      // deposited into the escrow contract. Cancelling them in the database
+      // alone doesn't move anything on-chain — previously nothing did, so a
+      // buyer's money could stay locked in escrow indefinitely after their
+      // trade was marked Cancelled. Queue an on-chain refund for each one;
+      // the job itself (jobs/processors/refund-cancelled-trade.ts) is
+      // enqueued after COMMIT below, once the cancellation is durable.
+      tradesNeedingRefund = tradesToCancel.filter(
+        (t) => t.status === "Locked" && t.buyer_id && t.contract_listing_id
+      );
 
       // 3. Replace user references in the transactions table with the sentinel
       //    "[deleted]" so audit rows are preserved without PII linkage.
@@ -394,7 +456,22 @@ router.delete(
       client.release();
     }
 
-    // 4. Send confirmation SMS (non-fatal — fire after DB commit)
+    // 4. Enqueue on-chain refunds for any Locked trades cancelled above
+    //    (fire after DB commit — the cancellation must be durable first).
+    for (const trade of tradesNeedingRefund) {
+      QueueService.enqueue("refund-cancelled-trade", {
+        tradeId: trade.id,
+        contractTradeId: trade.contract_listing_id!,
+        buyerId: trade.buyer_id!,
+      }).catch((err) => {
+        logger.error(
+          { err: (err as Error).message, tradeId: trade.id },
+          "[profile] Failed to enqueue on-chain refund for cancelled trade"
+        );
+      });
+    }
+
+    // 5. Send confirmation SMS (non-fatal — fire after DB commit)
     void sendDeletionConfirmationSms(user.phone, scheduledDeletionAt);
 
     logger.info(

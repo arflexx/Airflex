@@ -64,7 +64,10 @@ jobs:
           NODE_ENV: test
           DOTENV_CONFIG_PATH: .env.test
           NODE_OPTIONS: --require=dotenv/config
-        run: pnpm test -- --run --json --outputFile=test-results.json
+        # `--run` is a Vitest flag; Jest 29 aborts with "Unrecognized option
+        # \"run\"" before running a single suite, so no test-results.json was
+        # written and the JUnit conversion below failed on the missing file.
+        run: pnpm test -- --json --outputFile=test-results.json
 
       - name: Convert Jest results to JUnit XML
         if: always()

@@ -27,9 +27,13 @@
  *   create-virtual-account  — create a Paystack virtual account for a user
  *   send-notification       — dispatch an SMS/email notification via Termii
  *   verify-trade-delivery   — async delivery verification with Soroban oracle
+ *   process-paystack-webhook — async Paystack webhook processing (#118)
+ *   refund-cancelled-trade  — async on-chain escrow refund for a buyer whose
+ *                             Locked trade was cancelled (e.g. by account
+ *                             deletion — see routes/profile.ts)
  */
 
-import { createHash, randomBytes } from "crypto";
+import { randomBytes } from "crypto";
 import logger from "../utils/logger";
 
 // ---------------------------------------------------------------------------
@@ -41,6 +45,8 @@ export const JOB_QUEUES = [
   "create-virtual-account",
   "send-notification",
   "verify-trade-delivery",
+  "process-paystack-webhook",
+  "refund-cancelled-trade",
 ] as const;
 
 export type QueueName = (typeof JOB_QUEUES)[number];

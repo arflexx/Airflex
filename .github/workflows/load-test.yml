@@ -1,0 +1,73 @@
+name: Load tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Staging API base URL (no trailing slash)
+        required: true
+        type: string
+      auth_token:
+        description: Bearer JWT for trade creation scenario (optional)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  k6:
+    name: k6 stress tests
+    runs-on: ubuntu-latest
+    env:
+      LOAD_TEST_BASE_URL: ${{ github.event.inputs.base_url }}
+      LOAD_TEST_AUTH_TOKEN: ${{ github.event.inputs.auth_token }}
+      LOAD_TEST_OUTPUT_DIR: load-results
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install -y k6
+
+      - name: Run load test suite
+        run: bash tests/load/run-all.sh
+
+      - name: Upload k6 summaries
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-load-results
+          path: load-results/*.json
+
+      - name: Compare against baseline and check regressions
+        run: node tests/load/compare-baseline.mjs >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment on PR (when triggered from a PR branch)
+        if: always() && github.event_name == 'workflow_dispatch'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const { execSync } = require('child_process');
+            const body = execSync('node tests/load/format-summary.mjs', { encoding: 'utf8' });
+            const prs = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head: `${context.repo.owner}:${context.ref.replace('refs/heads/', '')}`,
+              state: 'open',
+            });
+            if (prs.data.length === 0) return;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prs.data[0].number,
+              body: `## k6 load test results\n\n${body}`,
+            });

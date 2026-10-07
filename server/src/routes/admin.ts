@@ -39,6 +39,23 @@ const ALLOWED_TRADE_STATUSES = [
   "Disputed",
 ] as const;
 
+/**
+ * Columns admins are allowed to sort GET /admin/trades by (issue: sorting
+ * previously only supported created_at DESC). Whitelisted rather than taking
+ * the column name straight from the query string, since that string is
+ * interpolated into the ORDER BY clause and cannot be parameterised.
+ */
+const ALLOWED_SORT_FIELDS = [
+  "created_at",
+  "updated_at",
+  "amount",
+  "status",
+  "expires_at",
+] as const;
+type SortField = (typeof ALLOWED_SORT_FIELDS)[number];
+
+const ALLOWED_SORT_ORDERS = ["asc", "desc"] as const;
+
 // ---------------------------------------------------------------------------
 // GET /api/v1/admin/queues  (admin only)
 // ---------------------------------------------------------------------------
@@ -61,7 +78,12 @@ router.get(
 // ---------------------------------------------------------------------------
 
 /**
- * Returns all trades with optional `?status=Disputed` filtering and pagination.
+ * Returns all trades with optional `?status=Disputed` filtering, pagination,
+ * and sorting.
+ *
+ * Sorting: `?sortBy=<field>&sortOrder=<asc|desc>`. `sortBy` defaults to
+ * `created_at` and `sortOrder` defaults to `desc` (the previous, hard-coded
+ * behaviour), but any field in ALLOWED_SORT_FIELDS may now be requested.
  */
 router.get(
   "/trades",
@@ -94,6 +116,28 @@ router.get(
       return;
     }
 
+    const rawSortBy =
+      typeof req.query.sortBy === "string" ? req.query.sortBy : "created_at";
+    if (!(ALLOWED_SORT_FIELDS as readonly string[]).includes(rawSortBy)) {
+      res.status(400).json({
+        error: `sortBy must be one of: ${ALLOWED_SORT_FIELDS.join(", ")}`,
+      });
+      return;
+    }
+    const sortBy = rawSortBy as SortField;
+
+    const rawSortOrder =
+      typeof req.query.sortOrder === "string"
+        ? req.query.sortOrder.toLowerCase()
+        : "desc";
+    if (!(ALLOWED_SORT_ORDERS as readonly string[]).includes(rawSortOrder)) {
+      res.status(400).json({
+        error: `sortOrder must be one of: ${ALLOWED_SORT_ORDERS.join(", ")}`,
+      });
+      return;
+    }
+    const sortOrder = rawSortOrder.toUpperCase() as "ASC" | "DESC";
+
     const where = filterByStatus ? "WHERE status = $1" : "";
     const dataParams: (string | number)[] = filterByStatus
       ? [rawStatus!, limit, offset]
@@ -102,10 +146,12 @@ router.get(
     const limitIdx = dataParams.length - 1;
     const offsetIdx = dataParams.length;
 
+    // sortBy/sortOrder come from a closed whitelist above, never from the raw
+    // query string, so interpolating them into ORDER BY is safe here.
     const { rows: trades } = await pool.query<TradeOffer>(
       `SELECT * FROM trade_offers
        ${where}
-       ORDER BY created_at DESC
+       ORDER BY ${sortBy} ${sortOrder}, created_at DESC
        LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
       dataParams
     );
@@ -391,6 +437,59 @@ router.get(
   async (_req, res) => {
     const flagged = await FraudDetectionService.getFlaggedAccounts();
     res.status(200).json({ flaggedAccounts: flagged });
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Webhook dead-letter inspection (#118)
+// ---------------------------------------------------------------------------
+
+router.get(
+  "/webhooks",
+  authenticate,
+  authorize("admin"),
+  async (_req, res) => {
+    const { rows } = await pool.query(
+      `SELECT id, provider, event_type, payload, status, processed_at, created_at
+       FROM webhook_events
+       WHERE status = 'failed'
+       ORDER BY created_at DESC
+       LIMIT 100`
+    );
+    res.status(200).json({ events: rows });
+  }
+);
+
+router.post(
+  "/webhooks/:id/replay",
+  authenticate,
+  authorize("admin"),
+  async (req, res) => {
+    const id = req.params["id"];
+
+    const { rows } = await pool.query<{ id: string; status: string }>(
+      `SELECT id, status FROM webhook_events WHERE id = $1 LIMIT 1`,
+      [id]
+    );
+
+    if (!rows.length) {
+      res.status(404).json({ error: "Webhook event not found" });
+      return;
+    }
+
+    if (rows[0]!.status !== "failed") {
+      res.status(409).json({ error: "Only failed webhook events can be replayed" });
+      return;
+    }
+
+    await pool.query(
+      `UPDATE webhook_events SET status = 'pending', processed_at = NULL WHERE id = $1`,
+      [id]
+    );
+
+    await QueueService.enqueue("process-paystack-webhook", { webhookEventId: id });
+
+    res.status(202).json({ message: "Webhook re-enqueued for processing" });
   }
 );
 

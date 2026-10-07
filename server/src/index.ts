@@ -1,7 +1,7 @@
 import "dotenv/config";
 import "express-async-errors";
 // Load contract IDs early — emits startup warnings if addresses are missing
-import "@server/config/contracts";
+import "./config/contracts";
 import express, { Request, Response } from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -14,42 +14,16 @@ import { apiVersion } from "./middleware/apiVersion";
 import { requestId } from "./middleware/requestId";
 import { pool, query } from "./db/pool";
 
-// ---------------------------------------------------------------------------
-// Environment validation
-// ---------------------------------------------------------------------------
-
-const REQUIRED_ENV_VARS = [
-  "JWT_SECRET",
-  "DATABASE_URL",
-  "ENCRYPTION_KEY",
-  "STELLAR_SERVER_SECRET",
-  "PLATFORM_TREASURY_USER_ID",
-  "PAYSTACK_SECRET_KEY",
-  "TERMII_API_KEY",
-] as const;
+import { assertEnvValid } from "./config/validateEnv";
 
 const isTest =
   process.env["NODE_ENV"] === "test" ||
   process.env["JEST_WORKER_ID"] !== undefined;
 
-const missingVars = REQUIRED_ENV_VARS.filter((key) => !process.env[key]);
-
-if (!isTest && missingVars.length > 0) {
-  logger.error(
-    `[startup] Missing required environment variables: ${missingVars.join(", ")}\n` +
-      `Copy server/.env.example to server/.env and fill in the values.`
-  );
-  if (process.env["NODE_ENV"] !== "test") {
-    process.exit(1);
-  }
-}
-
-const encryptionKey = process.env["ENCRYPTION_KEY"];
-if (!isTest && encryptionKey && !/^[0-9a-fA-F]{64}$/.test(encryptionKey)) {
-  logger.error(
-    "[startup] ENCRYPTION_KEY must be a 64-character hex string"
-  );
-  if (process.env["NODE_ENV"] !== "test") {
+try {
+  assertEnvValid();
+} catch (envErr) {
+  if (!isTest) {
     process.exit(1);
   }
 }

@@ -12,7 +12,75 @@
  * same origin.
  */
 
+import { clearSessionKey } from "./stellarSession";
+
 const TOKEN_KEY = "airflex:token";
+
+/**
+ * Cookie mirror of the JWT, read by `middleware.ts` so unauthenticated
+ * requests to protected routes are turned away at the edge instead of after
+ * the page has already been server-rendered (Issue #340).
+ *
+ * This is deliberately *not* httpOnly: the same token already lives in
+ * localStorage, so making the cookie script-invisible would buy nothing while
+ * breaking sign-out. It is not a security boundary — every API route still
+ * verifies the bearer token server-side. Its only job is to let the edge see
+ * "there is a session" before rendering.
+ */
+const SESSION_COOKIE = "session";
+
+/** Account roles recognised by the client. */
+export type UserRole = "user" | "admin";
+
+/** Decodes a JWT payload segment (base64url) without verifying the signature. */
+function readPayload(token: string): Record<string, unknown> | null {
+  const payload = token.split(".")[1];
+  if (!payload) return null;
+  try {
+    const json = atob(payload.replace(/-/g, "+").replace(/_/g, "/"));
+    const parsed: unknown = JSON.parse(json);
+    if (parsed === null || typeof parsed !== "object") return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/** Reads `exp` out of a JWT payload without verifying the signature. */
+function readExpiry(token: string): number | null {
+  const payload = readPayload(token);
+  const exp = payload?.exp;
+  return typeof exp === "number" ? exp : null;
+}
+
+/**
+ * Reads the account `role` out of a JWT payload without verifying the
+ * signature.
+ *
+ * This is a **rendering hint, not a security boundary**: the token is
+ * readable and editable by whoever holds it, so every admin endpoint
+ * re-checks the role server-side. Absent, malformed, or unrecognised
+ * values are treated as non-admin (`null`).
+ */
+export function readRole(token: string | null | undefined): UserRole | null {
+  if (!token) return null;
+  const role = readPayload(token)?.role;
+  return role === "admin" || role === "user" ? role : null;
+}
+
+function writeSessionCookie(token: string): void {
+  const exp = readExpiry(token);
+  const maxAge = exp
+    ? Math.max(0, Math.floor(exp - Date.now() / 1000))
+    : 60 * 60 * 24; // fall back to a day for tokens without `exp`
+
+  const secure = window.location.protocol === "https:" ? "; Secure" : "";
+  document.cookie = `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; Max-Age=${maxAge}; SameSite=Lax${secure}`;
+}
+
+function clearSessionCookie(): void {
+  document.cookie = `${SESSION_COOKIE}=; Path=/; Max-Age=0; SameSite=Lax`;
+}
 
 export interface StoredUser {
   id: string;
@@ -40,6 +108,7 @@ const USER_KEY = "airflex:user";
 export function saveToken(token: string): void {
   if (typeof window === "undefined") return;
   localStorage.setItem(TOKEN_KEY, token);
+  writeSessionCookie(token);
 }
 
 /** Retrieve the stored JWT, or null if not signed in. */
@@ -53,6 +122,7 @@ export function clearToken(): void {
   if (typeof window === "undefined") return;
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
+  clearSessionCookie();
 }
 
 /** True when a token is present (does not validate expiry client-side). */

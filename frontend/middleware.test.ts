@@ -56,7 +56,7 @@ describe('Middleware JWT Validation', () => {
     expect(result.status).toBe(307);
     const location = result.headers.get('location');
     expect(location).toContain('/auth/signup');
-    expect(location).toContain('redirect=%2Fwallet');
+    expect(location).toContain('returnTo=%2Fwallet');
   });
 
   it('should redirect to signup when token is invalid', () => {
@@ -148,6 +148,8 @@ describe('Middleware JWT Validation', () => {
     expect(result.status).toBe(307);
     const location = result.headers.get('location');
     expect(location).toContain('/auth/signup');
-    expect(location).toContain('redirect=%2Fwallet');
+    // The locale prefix is kept so the post-signup bounce returns the user to
+    // the page in the language they were reading it in.
+    expect(location).toContain('returnTo=%2Fyo%2Fwallet');
   });
 });

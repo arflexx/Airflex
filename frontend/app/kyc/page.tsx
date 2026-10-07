@@ -91,6 +91,115 @@ function validateDocument(file: File | null): FieldErrors {
 }
 
 // ---------------------------------------------------------------------------
+// Upload with progress
+// ---------------------------------------------------------------------------
+
+interface UploadResult {
+  status: number;
+  body: { error?: string; message?: string };
+}
+
+/**
+ * POSTs `formData` and reports upload progress as a 0–100 percentage.
+ *
+ * `fetch` cannot do this: it exposes no hook on the request body as it drains,
+ * so a 5 MB document on a slow connection is a silent 10–30 second wait
+ * (Issue #339). XMLHttpRequest's `upload.progress` event is still the only
+ * broadly supported way to observe it, so this one call stays on XHR.
+ *
+ * `onProgress` is called with `null` when the server reports no total length
+ * (`lengthComputable === false`), which the caller renders as an
+ * indeterminate bar rather than a fake percentage.
+ */
+function uploadWithProgress(
+  url: string,
+  formData: FormData,
+  token: string,
+  onProgress: (percent: number | null) => void
+): Promise<UploadResult> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+
+    xhr.upload.addEventListener("progress", (event) => {
+      if (!event.lengthComputable) {
+        onProgress(null);
+        return;
+      }
+      onProgress(Math.round((event.loaded / event.total) * 100));
+    });
+
+    // The bytes are gone; anything after this is the server thinking. Pin the
+    // bar at 100% so it doesn't sit at 97% while the response is awaited.
+    xhr.upload.addEventListener("load", () => onProgress(100));
+
+    xhr.addEventListener("load", () => {
+      let body: UploadResult["body"] = {};
+      try {
+        body = JSON.parse(xhr.responseText) as UploadResult["body"];
+      } catch {
+        // Non-JSON error page (proxy timeout, 502) — leave body empty and let
+        // the caller fall back to its generic message.
+      }
+      resolve({ status: xhr.status, body });
+    });
+
+    xhr.addEventListener("error", () => reject(new Error("Network error")));
+    xhr.addEventListener("abort", () => reject(new Error("Upload aborted")));
+    xhr.addEventListener("timeout", () => reject(new Error("Upload timed out")));
+
+    xhr.send(formData);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Upload progress bar
+// ---------------------------------------------------------------------------
+
+function UploadProgress({
+  percent,
+  done,
+}: {
+  percent: number | null;
+  done: boolean;
+}) {
+  const indeterminate = percent === null && !done;
+  const value = done ? 100 : (percent ?? 0);
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center justify-between text-xs font-medium">
+        <span className={done ? "text-green-700 dark:text-green-400" : "text-gray-600 dark:text-gray-300"}>
+          {done ? "Upload complete" : "Uploading document…"}
+        </span>
+        <span
+          className={done ? "text-green-700 dark:text-green-400" : "text-gray-500 dark:text-gray-400"}
+        >
+          {done ? "100%" : indeterminate ? "…" : `${value}%`}
+        </span>
+      </div>
+      <div
+        role="progressbar"
+        aria-label="Document upload progress"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        {...(indeterminate ? {} : { "aria-valuenow": value })}
+        aria-valuetext={done ? "Upload complete" : indeterminate ? "Uploading" : `${value}%`}
+        className="h-2 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700"
+      >
+        <div
+          className={`h-full rounded-full transition-[width] duration-200 ease-out ${
+            done ? "bg-green-500" : "bg-violet-600"
+          } ${indeterminate ? "animate-pulse" : ""}`}
+          style={{ width: `${indeterminate ? 100 : value}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Step indicator
 // ---------------------------------------------------------------------------
 
@@ -159,6 +268,9 @@ export default function KycPage() {
   const [errors, setErrors] = useState<FieldErrors>({});
   const [serverError, setServerError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  /** 0–100 while uploading, `null` for an indeterminate upload, `undefined` when idle. */
+  const [uploadPercent, setUploadPercent] = useState<number | null | undefined>(undefined);
+  const [uploadDone, setUploadDone] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -183,6 +295,8 @@ export default function KycPage() {
     setDocument(file);
     setErrors((prev) => ({ ...prev, document: undefined }));
     setServerError(null);
+    setUploadPercent(undefined);
+    setUploadDone(false);
 
     if (previewUrl) URL.revokeObjectURL(previewUrl);
 
@@ -233,6 +347,8 @@ export default function KycPage() {
     }
 
     setLoading(true);
+    setUploadDone(false);
+    setUploadPercent(0);
 
     try {
       const formData = new FormData();
@@ -243,26 +359,32 @@ export default function KycPage() {
         formData.append("document", document);
       }
 
-      const res = await fetch(`${apiUrl}/api/kyc/submit`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-        body: formData,
-      });
+      const { status, body: data } = await uploadWithProgress(
+        `${apiUrl}/api/kyc/submit`,
+        formData,
+        token,
+        setUploadPercent
+      );
 
-      const data = (await res.json()) as { error?: string; message?: string };
-
-      if (res.status === 401) {
+      if (status === 401) {
         window.location.href = "/auth/signup?returnTo=" + encodeURIComponent("/kyc");
         return;
       }
 
-      if (!res.ok) {
+      if (status < 200 || status >= 300) {
+        setUploadPercent(undefined);
         setServerError(data.error ?? "Submission failed. Please try again.");
         return;
       }
 
+      // Let the bar land on its success state before the form is swapped for
+      // the "pending review" screen — otherwise the 100%/green transition is
+      // painted and unmounted in the same frame and the user never sees it.
+      setUploadDone(true);
+      await new Promise((r) => setTimeout(r, 600));
       setSubmitted(true);
     } catch {
+      setUploadPercent(undefined);
       setServerError("Network error. Check your connection and try again.");
     } finally {
       setLoading(false);
@@ -438,6 +560,10 @@ export default function KycPage() {
                 className="mx-auto max-h-48 rounded-lg object-contain"
               />
             </div>
+          )}
+
+          {uploadPercent !== undefined && (
+            <UploadProgress percent={uploadPercent} done={uploadDone} />
           )}
 
           {serverError && (

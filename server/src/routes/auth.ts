@@ -31,6 +31,7 @@ import {
   redeemRecoveryCode,
 } from "../services/recoveryCodes";
 import { provisionVirtualAccountForUser } from "../services/virtualAccount";
+import { generateDisplayHandle } from "../utils/displayHandle";
 
 const router = Router();
 
@@ -125,12 +126,15 @@ router.post(
   async (req, res) => {
     const { phone, referralCode } = req.body as RequestOtpInput;
 
-    // Upsert user row — create if first time, leave existing data untouched
+    // Upsert user row — create if first time, leave existing data untouched.
+    // The display handle is derived from the generated id, so it is stable for
+    // the user and hides the UUID on public trade listings (issue #330).
+    const userId = uuidv4();
     await pool.query(
-      `INSERT INTO users (id, phone, referral_code)
-       VALUES ($1, $2, $3)
+      `INSERT INTO users (id, phone, referral_code, display_handle)
+       VALUES ($1, $2, $3, $4)
        ON CONFLICT (phone) DO NOTHING`,
-      [uuidv4(), phone, newReferralCode()]
+      [userId, phone, newReferralCode(), generateDisplayHandle(userId)]
     );
 
     if (referralCode) {
@@ -171,8 +175,9 @@ router.post(
       otp_pin_id: string | null;
       otp_expires_at: string | null;
       stellar_public_key: string | null;
+      token_version: number;
     }>(
-      `SELECT u.id, u.otp_pin_id, u.otp_expires_at, w.stellar_public_key
+      `SELECT u.id, u.otp_pin_id, u.otp_expires_at, u.token_version, w.stellar_public_key
        FROM users u
        LEFT JOIN wallets w ON w.user_id = u.id
        WHERE u.phone = $1
@@ -286,10 +291,13 @@ router.post(
       );
     });
 
-    // Issue JWT — same payload shape the authenticate middleware expects
+    // Issue JWT — same payload shape the authenticate middleware expects.
+    // `tokenVersion` lets this token be revoked before its 7-day expiry via
+    // POST /api/v1/auth/revoke (issue: previously there was no revocation
+    // mechanism at all).
     const secret = process.env["JWT_SECRET"]!;
     const token = jwt.sign(
-      { sub: user.id, stellarPublicKey },
+      { sub: user.id, stellarPublicKey, tokenVersion: user.token_version },
       secret,
       { expiresIn: "7d" }
     );
@@ -432,14 +440,18 @@ router.post(
     );
 
     // Issue a normal session JWT so the user is signed in immediately.
-    const { rows: keyRows } = await pool.query<{ stellar_public_key: string | null }>(
-      `SELECT stellar_public_key FROM users WHERE id = $1 LIMIT 1`,
+    const { rows: keyRows } = await pool.query<{
+      stellar_public_key: string | null;
+      token_version: number;
+    }>(
+      `SELECT stellar_public_key, token_version FROM users WHERE id = $1 LIMIT 1`,
       [userId]
     );
     const stellarPublicKey = keyRows[0]?.stellar_public_key ?? "";
+    const tokenVersion = keyRows[0]?.token_version ?? 1;
 
     const sessionToken = jwt.sign(
-      { sub: userId, stellarPublicKey },
+      { sub: userId, stellarPublicKey, tokenVersion },
       secret,
       { expiresIn: "7d" }
     );
@@ -468,6 +480,48 @@ router.get(
     const remaining = await countRemainingRecoveryCodes(userId);
 
     res.status(200).json({ data: { remaining } });
+  }
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/auth/revoke
+// ---------------------------------------------------------------------------
+
+/**
+ * Revokes every session JWT currently outstanding for the authenticated
+ * user by bumping `users.token_version`. The token used to call this
+ * endpoint stops working immediately afterwards too, along with every other
+ * token issued before the bump — this is a "sign out everywhere" operation,
+ * not a way to revoke a single device.
+ *
+ * Previously there was no way to invalidate a session token before its
+ * natural 7-day expiry (e.g. after a lost phone or a suspected leak); this
+ * closes that gap. See middleware/authenticate.ts for the version check
+ * every authenticated request now performs.
+ */
+router.post(
+  "/revoke",
+  authenticate,
+  async (req, res) => {
+    const { sub: userId } = (req as AuthenticatedRequest).user;
+
+    const { rows } = await pool.query<{ token_version: number }>(
+      `UPDATE users
+       SET token_version = token_version + 1, updated_at = NOW()
+       WHERE id = $1
+       RETURNING token_version`,
+      [userId]
+    );
+
+    if (!rows.length) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+
+    res.status(200).json({
+      message:
+        "All sessions have been revoked. You will need to sign in again on every device.",
+    });
   }
 );
 

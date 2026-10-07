@@ -5,23 +5,23 @@
  *
  * # On the client-side role check
  *
- * The `role !== "admin"` guard below renders a 403 instead of the dashboard.
- * That is a **UX affordance, not a security control** — the JWT lives in the
- * browser and its payload is readable and editable by whoever holds it, so a
- * determined user can always make this component render.
+ * The dashboard is wrapped in `<AuthGuard role="admin">`, which redirects a
+ * non-admin to `/`. That is a **UX affordance, not a security control** — the
+ * JWT lives in the browser and its payload is readable and editable by whoever
+ * holds it, so a determined user can always make this component render.
  *
  * What actually protects the data is that every endpoint behind it runs
- * `authenticate` + `requireAdmin` server-side. A forged client-side role gets
- * a dashboard full of 403s and no data. The check here exists so a normal
- * non-admin sees a clear message rather than a broken page.
+ * `authenticate` + `requireAdmin` server-side, and the Next.js middleware
+ * rejects a non-admin session at the edge. A forged client-side role gets a
+ * dashboard full of 403s and no data. The guard here exists so a normal
+ * non-admin is bounced cleanly rather than shown a broken page.
  */
 
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "../hooks/useAuth";
+import { ApiError, apiFetch } from "../../lib/apiFetch";
 import { Button } from "../../components/ui/Button";
-import { Badge } from "../../components/ui/Badge";
 import { Card } from "../../components/ui/Card";
-import { Spinner } from "../../components/ui/Spinner";
 import { Modal } from "../../components/ui/Modal";
 import { StellarExplorerLink } from "../../components/StellarExplorerLink";
 
@@ -64,7 +64,7 @@ interface FlaggedAccount {
 type Resolution = "release_to_seller" | "refund_to_buyer";
 
 export default function AdminDashboardPage(): JSX.Element {
-  const { user, token, isLoading } = useAuth();
+  const { token } = useAuth();
 
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [disputed, setDisputed] = useState<DisputedTrade[]>([]);
@@ -80,45 +80,44 @@ export default function AdminDashboardPage(): JSX.Element {
   const [lookup, setLookup] = useState<UserLookup | null>(null);
   const [lookupError, setLookupError] = useState<string | null>(null);
 
-  const authHeaders = useCallback(
-    (): HeadersInit => ({
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token ?? ""}`,
-    }),
-    [token]
-  );
-
   const loadDashboard = useCallback(async () => {
     if (!token) return;
     setLoadError(null);
 
     try {
-      const [metricsRes, tradesRes, flaggedRes] = await Promise.all([
-        fetch("/api/v1/admin/metrics", { headers: authHeaders() }),
-        fetch("/api/v1/admin/trades?status=disputed", { headers: authHeaders() }),
-        fetch("/api/v1/admin/flagged-accounts", { headers: authHeaders() }),
+      const [metricsResult, tradesResult, flaggedResult] = await Promise.allSettled([
+        apiFetch<Metrics>("/api/v1/admin/metrics"),
+        apiFetch<{ trades?: DisputedTrade[] }>("/api/v1/admin/trades?status=disputed"),
+        apiFetch<{ flaggedAccounts?: FlaggedAccount[] }>("/api/v1/admin/flagged-accounts"),
       ]);
 
-      if (metricsRes.status === 403 || tradesRes.status === 403) {
+      if ([metricsResult, tradesResult].some(
+        (result) => result.status === "rejected" &&
+          result.reason instanceof ApiError && result.reason.status === 403
+      )) {
         setLoadError("Your account does not have admin access.");
         return;
       }
 
-      if (metricsRes.ok) {
-        setMetrics((await metricsRes.json()) as Metrics);
+      if (metricsResult.status === "fulfilled") {
+        setMetrics(metricsResult.value);
+      } else if (!(metricsResult.reason instanceof ApiError)) {
+        setLoadError("Could not reach the server.");
       }
-      if (tradesRes.ok) {
-        const body = (await tradesRes.json()) as { trades?: DisputedTrade[] };
-        setDisputed(body.trades || []);
+      if (tradesResult.status === "fulfilled") {
+        setDisputed(tradesResult.value.trades || []);
+      } else if (!(tradesResult.reason instanceof ApiError)) {
+        setLoadError("Could not reach the server.");
       }
-      if (flaggedRes.ok) {
-        const body = (await flaggedRes.json()) as { flaggedAccounts?: FlaggedAccount[] };
-        setFlaggedAccounts(body.flaggedAccounts || []);
+      if (flaggedResult.status === "fulfilled") {
+        setFlaggedAccounts(flaggedResult.value.flaggedAccounts || []);
+      } else if (!(flaggedResult.reason instanceof ApiError)) {
+        setLoadError("Could not reach the server.");
       }
     } catch {
       setLoadError("Could not reach the server.");
     }
-  }, [token, authHeaders]);
+  }, [token]);
 
   useEffect(() => {
     void loadDashboard();
@@ -130,29 +129,23 @@ export default function AdminDashboardPage(): JSX.Element {
     setResolveError(null);
 
     try {
-      const res = await fetch(`/api/v1/admin/trades/${resolving.id}/resolve`, {
+      await apiFetch(`/api/v1/admin/trades/${resolving.id}/resolve`, {
         method: "POST",
-        headers: authHeaders(),
         body: JSON.stringify({ resolution }),
       });
 
-      if (res.status === 409) {
-        // Another admin got there first. Reload rather than leaving a stale
-        // row on screen that would invite a second attempt.
-        setResolveError("This trade is no longer disputed — someone else resolved it.");
-        await loadDashboard();
-        return;
-      }
-      if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as { error?: string };
-        setResolveError(body.error ?? "Failed to resolve the trade.");
-        return;
-      }
-
       setResolving(null);
       await loadDashboard();
-    } catch {
-      setResolveError("Could not reach the server.");
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        setResolveError("This trade is no longer disputed — someone else resolved it.");
+        await loadDashboard();
+      } else if (error instanceof ApiError) {
+        const data = error.data as { error?: string } | undefined;
+        setResolveError(data?.error ?? "Failed to resolve the trade.");
+      } else {
+        setResolveError("Could not reach the server.");
+      }
     } finally {
       setSubmitting(false);
     }
@@ -164,47 +157,24 @@ export default function AdminDashboardPage(): JSX.Element {
     setLookup(null);
 
     try {
-      const res = await fetch(
-        `/api/v1/admin/users?phone=${encodeURIComponent(phoneQuery.trim())}`,
-        { headers: authHeaders() }
+      const data = await apiFetch<UserLookup>(
+        `/api/v1/admin/users?phone=${encodeURIComponent(phoneQuery.trim())}`
       );
-
-      if (res.status === 404) {
+      setLookup(data);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) {
         setLookupError("No user with that phone number.");
-        return;
-      }
-      if (!res.ok) {
+      } else if (error instanceof ApiError) {
         setLookupError("Lookup failed.");
-        return;
+      } else {
+        setLookupError("Could not reach the server.");
       }
-
-      setLookup((await res.json()) as UserLookup);
-    } catch {
-      setLookupError("Could not reach the server.");
     }
   }
 
-  if (isLoading) {
-    return (
-      <main className="flex justify-center p-16">
-        <Spinner size="lg" label="Loading admin dashboard…" />
-      </main>
-    );
-  }
-
-  if (!user || user.role !== "admin") {
-    return (
-      <main className="flex min-h-[60vh] flex-col items-center justify-center gap-3 p-10 text-center">
-        <h1 className="text-2xl font-bold text-white">403 — Forbidden</h1>
-        <p className="max-w-sm text-sm text-zinc-400">
-          This area is restricted to administrator accounts.
-        </p>
-      </main>
-    );
-  }
-
   return (
-    <main className="mx-auto max-w-6xl px-4 py-10">
+    <AuthGuard role="admin">
+      <main className="mx-auto max-w-6xl px-4 py-10">
       <header className="mb-8">
         <h1 className="text-3xl font-bold text-white">Admin Dashboard</h1>
         <p className="mt-1 text-sm text-zinc-400">
@@ -480,6 +450,7 @@ export default function AdminDashboardPage(): JSX.Element {
           </div>
         </div>
       )}
-    </main>
+      </main>
+    </AuthGuard>
   );
 }

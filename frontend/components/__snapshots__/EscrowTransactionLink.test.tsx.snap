@@ -1,0 +1,31 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`EscrowTransactionLink matches the snapshot for a sample hash 1`] = `
+<a
+  class="inline-flex items-center gap-1 text-violet-600 hover:text-violet-700 hover:underline dark:text-violet-400 dark:hover:text-violet-300 font-mono text-xs "
+  href="https://stellar.expert/explorer/testnet/tx/3389e9f0f1a54f7b1d5b2a0c9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c"
+  rel="noopener noreferrer"
+  target="_blank"
+  title="View transaction on Stellar Expert"
+>
+  <span>
+    View escrow on Stellar Explorer
+  </span>
+  <svg
+    aria-hidden="true"
+    class="h-3.5 w-3.5 shrink-0 opacity-70 transition-opacity hover:opacity-100"
+    data-testid="external-link-icon"
+    fill="none"
+    role="img"
+    stroke="currentColor"
+    viewBox="0 0 24 24"
+  >
+    <path
+      d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      stroke-width="2"
+    />
+  </svg>
+</a>
+`;

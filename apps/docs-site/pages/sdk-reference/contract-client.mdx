@@ -68,10 +68,9 @@ for the full submit-and-poll flow, and [`SOROBAN_DEPLOY_GUIDE.md`](https://githu
 for how the contract itself is built and deployed.
 
 <Callout type="warning">
-  Never send a raw Stellar secret key to a server you don't control. The
-  [`POST /api/trades/:id/buy`](/api-reference/trades) endpoint's
-  `buyerSecretKey` field is explicitly called out in the API Reference as a
-  placeholder for the initial implementation — the production pattern is
-  client-side signing, where the client signs the transaction XDR locally
-  and only submits the signed envelope.
+  Never send a raw Stellar secret key to a server you don't control. The buy
+  flow follows that rule: [`POST /api/trades/:id/buy/prepare`](/api-reference/trades)
+  returns an unsigned XDR envelope, the client signs it locally, and
+  [`POST /api/trades/:id/buy`](/api-reference/trades) accepts only the signed
+  envelope in its `signedXdr` field.
 </Callout>

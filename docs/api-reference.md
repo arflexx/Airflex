@@ -122,7 +122,7 @@ and stores the record in PostgreSQL.
 ```json
 {
   "assetType": "MTN_AIRTIME",
-  "amount": 500,
+  "amount": 500000000,
   "expiresInHours": 24
 }
 ```
@@ -130,8 +130,13 @@ and stores the record in PostgreSQL.
 | Field | Type | Constraints | Description |
 |-------|------|-------------|-------------|
 | `assetType` | string | 1–50 chars, alphanumeric + `_-` | The telecom asset being sold |
-| `amount` | number | positive | Token amount the buyer must pay |
+| `amount` | integer | positive, ≤ 1,000,000,000,000 | Listing amount **in stroops** — the escrow contract's unit (1 NGN = 1,000,000 stroops), so `500000000` is ₦500. Convert client-side exactly once with `toStroops()` from `@airflex/shared`; the server validates the value as a positive integer and forwards it to the contract unchanged (issue #292). |
 | `expiresInHours` | integer | 1–168 | Hours until the listing expires |
+
+> Responses keep reporting `amount` in **naira** (the platform ledger's unit),
+> so the same field carries stroops on the way in and naira on the way out.
+> Convert back for display with `fromStroops()` where the raw contract value is
+> needed.
 
 **Response `201`**
 
@@ -153,14 +158,16 @@ and stores the record in PostgreSQL.
 }
 ```
 
-**Response `400`** — validation error or wallet not found
+**Response `422`** — validation error
 
 ```json
 {
-  "error": "Validation failed",
-  "details": {
-    "amount": ["Number must be greater than 0"]
-  }
+  "errors": [
+    {
+      "field": "amount",
+      "message": "amount must be a whole number of stroops"
+    }
+  ]
 }
 ```
 
@@ -221,22 +228,42 @@ Soroban contract. Updates the trade status to `Locked`.
 |-----------|------|-------------|
 | `id` | UUID string | Trade offer ID to purchase |
 
+This is the second half of a two-step flow. Call
+`POST /api/v1/trades/{id}/buy/prepare` first to get the unsigned envelope, sign
+it in the client, then submit it here.
+
 **Request body**
 
 ```json
 {
-  "buyerSecretKey": "SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+  "signedXdr": "AAAAAgAAAAD..."
 }
 ```
 
 | Field | Type | Constraints | Description |
 |-------|------|-------------|-------------|
-| `buyerSecretKey` | string | exactly 56 chars | Buyer's Stellar secret key for signing the escrow transaction |
+| `signedXdr` | string | base64 XDR | The prepared escrow deposit envelope, signed by the buyer |
 
-> **Security note:** Passing a raw secret key to the server is a placeholder
-> for the initial implementation. The production pattern is client-side signing —
-> the client signs the XDR transaction and submits the signed envelope to the
-> server instead.
+> **Security note:** the buyer's secret key is never sent to this API. It is
+> held in the client's memory for the session only and used to sign locally —
+> see Issue #342.
+
+### `POST /api/v1/trades/:id/buy/prepare`
+
+Builds and simulates the `deposit_to_escrow` transaction for the authenticated
+buyer and returns it unsigned. Takes no request body.
+
+**Response `200`**
+
+```json
+{
+  "data": {
+    "xdr": "AAAAAgAAAAD...",
+    "networkPassphrase": "Test SDF Network ; September 2015",
+    "publicKey": "GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+  }
+}
+```
 
 **Response `200`**
 

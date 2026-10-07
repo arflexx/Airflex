@@ -14,7 +14,7 @@ jest.mock("./cache", () => ({
 }));
 
 describe("FraudDetectionService", () => {
-  const mockPoolQuery = pool.query as jest.MockedFunction<typeof pool.query>;
+  const mockPoolQuery = pool.query as jest.Mock;
   const mockCacheGet = cache.get as jest.MockedFunction<typeof cache.get>;
   const mockCacheSet = cache.set as jest.MockedFunction<typeof cache.set>;
 

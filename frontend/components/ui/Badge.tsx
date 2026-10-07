@@ -59,7 +59,7 @@ const statusConfig: Record<
     defaultLabel: "Cancelled",
   },
   Disputed: {
-    container: "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300 border-rose-200 dark:border-rose-800/60",
+    container: "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300 border-rose-200 dark:border-rose-800/60",
     dot: "bg-rose-500",
     defaultLabel: "Disputed",
   },

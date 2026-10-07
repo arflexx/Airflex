@@ -1,22 +1,36 @@
 import { Pool } from "pg";
 
-// Validate DATABASE_URL before creating pool
-if (!process.env["DATABASE_URL"]) {
-  throw new Error("DATABASE_URL environment variable is required");
+// Shared PostgreSQL connection pool configuration
+
+
+/**
+ * Parses a positive integer from an environment variable, falling back to
+ * `fallback` when the variable is unset, empty, or not a valid positive
+ * integer. Keeps a bad value (e.g. "abc" or "-5") from silently producing
+ * NaN/negative pool settings that `pg` would otherwise accept.
+ */
+function envInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 /**
  * Shared PostgreSQL connection pool.
- * Configured with:
- * - max: 10 concurrent connections
- * - idleTimeoutMillis: 30000ms (30 seconds)
- * - connectionTimeoutMillis: 5000ms (5 seconds)
+ *
+ * Configurable via environment variables so pool sizing can be tuned per
+ * deployment (e.g. a small Railway instance vs. a larger box) without a code
+ * change:
+ * - DB_POOL_MAX:               max concurrent connections   (default: 10)
+ * - DB_POOL_IDLE_TIMEOUT_MS:   idle connection timeout in ms (default: 30000)
+ * - DB_POOL_CONN_TIMEOUT_MS:   connection acquire timeout ms (default: 5000)
  */
 export const pool = new Pool({
   connectionString: process.env["DATABASE_URL"],
-  max: 10,
-  idleTimeoutMillis: 30_000,
-  connectionTimeoutMillis: 5_000,
+  max: envInt("DB_POOL_MAX", 10),
+  idleTimeoutMillis: envInt("DB_POOL_IDLE_TIMEOUT_MS", 30_000),
+  connectionTimeoutMillis: envInt("DB_POOL_CONN_TIMEOUT_MS", 5_000),
 });
 
 // Handle unexpected client errors without crashing the process

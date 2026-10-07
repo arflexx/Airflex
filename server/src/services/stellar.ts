@@ -6,6 +6,7 @@ import {
   TransactionBuilder,
   BASE_FEE,
   xdr,
+  Transaction,
   Address,
   nativeToScVal,
   Contract,
@@ -57,15 +58,76 @@ const NETWORK_PASSPHRASE =
     : Networks.TESTNET;
 
 const HORIZON_URL =
-  process.env["HORIZON_URL"] ?? "https://horizon-testnet.stellar.org";
+  process.env["HORIZON_URL"] || "https://horizon-testnet.stellar.org";
 
 const SOROBAN_RPC_URL =
-  process.env["SOROBAN_RPC_URL"] ?? "https://soroban-testnet.stellar.org";
+  process.env["SOROBAN_RPC_URL"] || "https://soroban-testnet.stellar.org";
 
 const horizonServer = new Horizon.Server(HORIZON_URL, { allowHttp: false });
 const sorobanServer = new SorobanRpc.Server(SOROBAN_RPC_URL, {
   allowHttp: false,
 });
+
+// ---------------------------------------------------------------------------
+// Server signing key (issue #313) — parsed and validated exactly once, on
+// first use, so a missing/invalid STELLAR_SERVER_SECRET surfaces as a clear
+// error instead of failing queued release jobs at runtime mid-flight.
+//
+// Deliberately *not* validated as a module-load side effect: boot-time
+// validation is owned by index.ts / config/validateEnv.ts (issue #383), which
+// reports every missing variable in one place and exits non-zero. Keeping this
+// module side-effect free also lets route tests import the app without a real
+// signing key configured. A non-fatal warning is still logged at startup (see
+// below) so a misconfigured deployment is visible in the boot logs.
+// ---------------------------------------------------------------------------
+
+function loadServerKeypair(): Keypair {
+  const secret = process.env["STELLAR_SERVER_SECRET"];
+  if (!secret) {
+    throw new Error(
+      "STELLAR_SERVER_SECRET environment variable is not set. Set it to the admin Stellar secret key before starting the server."
+    );
+  }
+  try {
+    return Keypair.fromSecret(secret);
+  } catch {
+    throw new Error(
+      "STELLAR_SERVER_SECRET is invalid (not a decodable Stellar secret seed)."
+    );
+  }
+}
+
+let cachedServerKeypair: Keypair | null = null;
+
+/**
+ * Internal accessor for the server signing keypair.
+ *
+ * The key is parsed and validated once and then cached; call sites use this
+ * getter so the secret-derived object never leaks into logs or responses.
+ */
+export function getServerKeypair(): Keypair {
+  if (!cachedServerKeypair) {
+    cachedServerKeypair = loadServerKeypair();
+  }
+  return cachedServerKeypair;
+}
+
+// Resolve (and validate) the server key as soon as this module loads so a
+// misconfigured deployment is visible in the startup logs immediately. This
+// only warns (never throws/exits) — index.ts's own REQUIRED_ENV_VARS check is
+// what actually fails startup for a missing STELLAR_SERVER_SECRET; this
+// mirrors the same non-fatal pattern used in config/contracts.ts for missing
+// contract IDs. Skipped under jest so test suites can import freely.
+const isTestEnv =
+  process.env["NODE_ENV"] === "test" || process.env["JEST_WORKER_ID"] !== undefined;
+
+if (!isTestEnv) {
+  try {
+    getServerKeypair();
+  } catch (err) {
+    console.warn(`[stellar] ${(err as Error).message}`);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Encryption helpers (AES-256-GCM)
@@ -204,13 +266,19 @@ export async function getWalletBalance(publicKey: string): Promise<string> {
  * be signed client-side. Here we derive it from the seller's stored secret
  * or a platform hot-wallet for demonstration purposes.
  *
+ * `amountStroops` is passed straight through to the contract: the caller
+ * converts the naira the seller quoted exactly once with `toStroops()` from
+ * packages/shared (issue #292), so no scale factor lives here and a
+ * fractional/ambiguous amount cannot sneak in unnoticed.
+ *
  * @returns The contract listing ID (stringified i128 sequence number)
  */
 export async function createListing(params: {
   sellerPublicKey: string;
   sellerSecretKey: string;
   assetType: string;
-  amount: number;
+  /** Listing amount in stroops (1 NGN = 1,000,000 stroops). */
+  amountStroops: bigint;
   expiresAt: Date;
 }): Promise<string> {
   const contractAddress = ESCROW_CONTRACT_ID;
@@ -226,7 +294,7 @@ export async function createListing(params: {
     span.setAttribute("soroban.function", "create_listing");
     span.setAttribute("soroban.network", process.env["STELLAR_NETWORK"] ?? "testnet");
     span.setAttribute("trade.asset_type", params.assetType);
-    span.setAttribute("trade.amount", params.amount);
+    span.setAttribute("trade.amount_stroops", params.amountStroops.toString());
 
     try {
       const keypair = Keypair.fromSecret(params.sellerSecretKey);
@@ -242,7 +310,7 @@ export async function createListing(params: {
             "create_listing",
             new Address(params.sellerPublicKey).toScVal(),
             nativeToScVal(params.assetType, { type: "symbol" }),
-            nativeToScVal(BigInt(params.amount * 1_000_000), { type: "i128" }),
+            nativeToScVal(params.amountStroops, { type: "i128" }),
             nativeToScVal(
               BigInt(Math.floor(params.expiresAt.getTime() / 1000)),
               { type: "u64" }
@@ -281,17 +349,29 @@ export async function createListing(params: {
 }
 
 /**
- * Calls the smart contract's `deposit_to_escrow` function to lock
- * a buyer's funds against a specific listing.
+ * Builds — but does not sign — the `deposit_to_escrow` transaction for a buyer.
  *
- * @returns Transaction hash of the confirmed escrow deposit
+ * This is the first half of the client-side signing flow (Issue #342). The
+ * server knows the contract, the listing and the amount; the buyer's browser
+ * knows the key. Splitting build from submit means the secret key never leaves
+ * the buyer's device and never appears in a request body.
+ *
+ * The returned XDR is already simulated and assembled by
+ * `prepareTransaction`, so the client only has to sign it.
+ *
+ * `amountStroops` must be the listing amount in stroops. `trade_offers.amount`
+ * is stored in naira (the platform ledger's unit), so the caller converts it
+ * back with `toStroops()` from packages/shared before calling; the deposit then
+ * matches the listing exactly (issue #292).
+ *
+ * @returns the unsigned transaction envelope (base64 XDR) plus the network
+ *          passphrase the client must sign against
  */
-export async function depositToEscrow(params: {
+export async function buildEscrowDepositXdr(params: {
   buyerPublicKey: string;
-  buyerSecretKey: string;
   listingId: string;
-  amount: number;
-}): Promise<string> {
+  amountStroops: bigint;
+}): Promise<{ xdr: string; networkPassphrase: string }> {
   const contractAddress = ESCROW_CONTRACT_ID;
   if (!contractAddress) {
     throw new Error(
@@ -300,15 +380,13 @@ export async function depositToEscrow(params: {
   }
 
   const tracer = getTracer();
-  return tracer.startActiveSpan("soroban.deposit_to_escrow", async (span: Span) => {
+  return tracer.startActiveSpan("soroban.build_deposit_xdr", async (span: Span) => {
     span.setAttribute("soroban.contract_id", contractAddress);
     span.setAttribute("soroban.function", "deposit_to_escrow");
-    span.setAttribute("soroban.network", process.env["STELLAR_NETWORK"] ?? "testnet");
     span.setAttribute("trade.listing_id", params.listingId);
-    span.setAttribute("trade.amount", params.amount);
+    span.setAttribute("trade.amount_stroops", params.amountStroops.toString());
 
     try {
-      const keypair = Keypair.fromSecret(params.buyerSecretKey);
       const account = await horizonServer.loadAccount(params.buyerPublicKey);
       const contract = new Contract(contractAddress);
 
@@ -321,16 +399,72 @@ export async function depositToEscrow(params: {
             "deposit_to_escrow",
             nativeToScVal(params.listingId, { type: "symbol" }),
             new Address(params.buyerPublicKey).toScVal(),
-            nativeToScVal(BigInt(params.amount * 1_000_000), { type: "i128" })
+            nativeToScVal(params.amountStroops, { type: "i128" })
           )
         )
-        .setTimeout(30)
+        // Longer than the server-signed path: the clock is now running while a
+        // human finds their key and the browser signs, not just while the
+        // server round-trips.
+        .setTimeout(180)
         .build();
 
       const preparedTx = await sorobanServer.prepareTransaction(tx);
-      preparedTx.sign(keypair);
 
-      const response = await sorobanServer.sendTransaction(preparedTx);
+      return {
+        xdr: preparedTx.toXDR(),
+        networkPassphrase: NETWORK_PASSPHRASE,
+      };
+    } catch (err) {
+      span.recordException(err as Error);
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { SpanStatusCode } = require("@opentelemetry/api");
+      span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+      throw err;
+    } finally {
+      span.end();
+    }
+  });
+}
+
+/**
+ * Submits a transaction the client already signed, and waits for it to confirm.
+ *
+ * `expectedSourceAccount` is checked before submission so a caller cannot use
+ * their own session to push through a transaction signed for someone else's
+ * account.
+ *
+ * @returns Transaction hash of the confirmed transaction
+ */
+export async function submitSignedTransaction(params: {
+  signedXdr: string;
+  expectedSourceAccount: string;
+}): Promise<string> {
+  const tracer = getTracer();
+  return tracer.startActiveSpan("soroban.submit_signed_tx", async (span: Span) => {
+    try {
+      let tx;
+      try {
+        tx = TransactionBuilder.fromXDR(params.signedXdr, NETWORK_PASSPHRASE);
+      } catch {
+        throw new Error("Signed transaction is not valid XDR for this network");
+      }
+
+      // Soroban invocations are never fee-bump envelopes, and a fee-bump wraps
+      // an inner transaction whose source we have not checked — reject rather
+      // than reason about it.
+      if (!(tx instanceof Transaction)) {
+        throw new Error("Fee-bump transactions are not accepted for escrow deposits");
+      }
+
+      if (tx.source !== params.expectedSourceAccount) {
+        throw new Error("Signed transaction source account does not match the authenticated buyer");
+      }
+
+      if (!tx.signatures.length) {
+        throw new Error("Transaction is not signed");
+      }
+
+      const response = await sorobanServer.sendTransaction(tx);
 
       if (response.status === "ERROR") {
         const parsed = parseContractError(response);
@@ -361,8 +495,9 @@ export async function depositToEscrow(params: {
  * The server signing key (STELLAR_SERVER_SECRET) must be the admin address
  * that was set during contract initialisation.
  *
- * SECURITY: The secret key is read once from env, used to sign the transaction,
- * and the Keypair object is not exported or logged anywhere.
+ * SECURITY: The secret key is validated once at module load (see
+ * getServerKeypair), used to sign the transaction, and the Keypair object
+ * is not exported or logged anywhere.
  *
  * @param contractTradeId  The on-chain trade ID (u64) stored in contract_listing_id
  * @returns Transaction hash of the confirmed release
@@ -375,11 +510,6 @@ export async function releasePayment(contractTradeId: string): Promise<string> {
     );
   }
 
-  const serverSecret = process.env["STELLAR_SERVER_SECRET"];
-  if (!serverSecret) {
-    throw new Error("STELLAR_SERVER_SECRET environment variable is not set");
-  }
-
   const tracer = getTracer();
   return tracer.startActiveSpan("soroban.release_payment", async (span: Span) => {
     span.setAttribute("soroban.contract_id", contractAddress);
@@ -388,8 +518,8 @@ export async function releasePayment(contractTradeId: string): Promise<string> {
     span.setAttribute("trade.contract_trade_id", contractTradeId);
 
     try {
-      // Derive keypair from server secret — never log this object
-      const keypair = Keypair.fromSecret(serverSecret);
+      // Cached keypair, resolved and validated once — never log this object
+      const keypair = getServerKeypair();
       const serverPublicKey = keypair.publicKey();
 
       const account = await horizonServer.loadAccount(serverPublicKey);
@@ -462,13 +592,8 @@ export async function resolveDispute(params: {
     throw new Error("ESCROW_CONTRACT_ADDRESS environment variable is not set");
   }
 
-  const serverSecret = process.env["STELLAR_SERVER_SECRET"];
-  if (!serverSecret) {
-    throw new Error("STELLAR_SERVER_SECRET environment variable is not set");
-  }
-
-  // Derive keypair from server secret — never log this object
-  const keypair = Keypair.fromSecret(serverSecret);
+  // Cached keypair, resolved and validated once — never log this object
+  const keypair = getServerKeypair();
   const serverPublicKey = keypair.publicKey();
 
   const account = await horizonServer.loadAccount(serverPublicKey);

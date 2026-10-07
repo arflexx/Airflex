@@ -8,6 +8,9 @@ export interface UseTradeListOptions {
   page: number;
   limit: number;
   assetType?: string;
+  carrier?: string;
+  minAmount?: number | string;
+  maxAmount?: number | string;
   status?: string;
 }
 
@@ -15,6 +18,12 @@ export interface UseTradeListReturn {
   trades: TradeOffer[];
   total: number;
   isLoading: boolean;
+  /**
+   * `true` only when the latest load **succeeded** and returned zero trades.
+   * Never `true` while loading or when `error` is set — so a caller can tell
+   * "no listings available" apart from "failed to load listings".
+   */
+  isEmpty: boolean;
   error: ApiError | Error | null;
   refetch: () => Promise<void>;
 }
@@ -39,17 +48,21 @@ export function clearTradeListCache(): void {
 }
 
 export function useTradeList(options: UseTradeListOptions): UseTradeListReturn {
-  const { page, limit, assetType, status } = options;
+  const { page, limit, assetType, carrier, minAmount, maxAmount, status } = options;
 
   const [trades, setTrades] = useState<TradeOffer[]>([]);
   const [total, setTotal] = useState<number>(0);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isEmpty, setIsEmpty] = useState<boolean>(false);
   const [error, setError] = useState<ApiError | Error | null>(null);
 
   const queryParams = new URLSearchParams();
   queryParams.set("page", String(page));
   queryParams.set("limit", String(limit));
   if (assetType) queryParams.set("assetType", assetType);
+  if (carrier) queryParams.set("carrier", carrier);
+  if (minAmount !== undefined && minAmount !== "") queryParams.set("minAmount", String(minAmount));
+  if (maxAmount !== undefined && maxAmount !== "") queryParams.set("maxAmount", String(maxAmount));
   if (status) queryParams.set("status", status);
 
   const cacheKey = `/api/v1/trades?${queryParams.toString()}`;
@@ -63,6 +76,7 @@ export function useTradeList(options: UseTradeListOptions): UseTradeListReturn {
         setTotal(cached.data.total);
         setIsLoading(false);
         setError(null);
+        setIsEmpty(cached.data.trades.length === 0);
         return;
       }
     }
@@ -71,6 +85,7 @@ export function useTradeList(options: UseTradeListOptions): UseTradeListReturn {
       setIsLoading(true);
     }
     setError(null);
+    setIsEmpty(false);
 
     try {
       let promise = inFlightPromises.get(cacheKey);
@@ -92,12 +107,14 @@ export function useTradeList(options: UseTradeListOptions): UseTradeListReturn {
         setTrades(result.trades);
         setTotal(result.total);
         setIsLoading(false);
+        setIsEmpty(result.trades.length === 0);
       }
     } catch (err) {
       inFlightPromises.delete(cacheKey);
       if (isMounted.current) {
         const errorObj = err instanceof ApiError ? err : (err as Error);
         setError(errorObj);
+        setIsEmpty(false);
         setIsLoading(false);
       }
     }
@@ -121,6 +138,7 @@ export function useTradeList(options: UseTradeListOptions): UseTradeListReturn {
     trades,
     total,
     isLoading,
+    isEmpty,
     error,
     refetch: () => fetchData(true),
   };

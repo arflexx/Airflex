@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, type FormEvent } from "react";
+import { postAuthDestination, readReturnTo } from "../../lib/returnTo";
 import { useTranslations } from "next-intl";
 import { saveToken, saveUser } from "../../lib/auth";
 
@@ -71,10 +72,13 @@ export default function VerifyPage() {
 
   const apiUrl = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:3001";
 
+  const [returnTo, setReturnTo] = useState<string | null>(null);
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const p = params.get("phone");
     if (p) setPhone(decodeURIComponent(p));
+    setReturnTo(readReturnTo());
   }, []);
 
   function validateOtp(value: string): string | null {
@@ -133,7 +137,7 @@ export default function VerifyPage() {
       setSuccessMessage(t("verified"));
 
       setTimeout(() => {
-        window.location.href = "/";
+        window.location.href = postAuthDestination(returnTo);
       }, 1200);
     } catch {
       setServerError(t("networkError"));

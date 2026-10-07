@@ -1,9 +1,14 @@
-import { Router } from "express";
+import { Router, type Response } from "express";
 import { v4 as uuidv4 } from "uuid";
+import { asStroops, fromStroops, toStroops } from "@airflex/shared/units";
 import pool from "../db";
-import { authenticate, AuthenticatedRequest } from "../middleware/authenticate";
+import { authenticate, optionalAuthenticate, AuthenticatedRequest } from "../middleware/authenticate";
 import { validate } from "../middleware/validate";
-import { createListing, depositToEscrow } from "../services/stellar";
+import {
+  createListing,
+  buildEscrowDepositXdr,
+  submitSignedTransaction,
+} from "../services/stellar";
 import {
   triggerVerification,
   VerificationError,
@@ -15,9 +20,22 @@ import {
   createTradeSchema,
   buyTradeSchema,
   paginationSchema,
+  createRatingSchema,
+  disputeSchema,
   type CreateTradeInput,
   type BuyTradeInput,
+  type CreateRatingInput,
+  type DisputeInput,
 } from "../schemas";
+
+/**
+ * A trade as it appears in the public listing feed. `seller_id` is deliberately
+ * omitted — a listing represents its seller only by an opaque `seller_handle`,
+ * so cards cannot be correlated back to a UUID (issue #330).
+ */
+export type PublicTradeOffer = Omit<TradeOffer, "seller_id"> & {
+  seller_handle: string | null;
+};
 
 const router = Router();
 
@@ -37,20 +55,70 @@ router.get(
       return;
     }
 
-    const { page, limit } = parsed.data;
+    const { page, limit, assetType: assetTypeFilter } = parsed.data;
     const offset = (page - 1) * limit;
 
-    const { rows: trades } = await pool.query<TradeOffer>(
-      `SELECT * FROM trade_offers
-       WHERE status = 'Active' AND expires_at > NOW()
-       ORDER BY created_at DESC
-       LIMIT $1 OFFSET $2`,
-      [limit, offset]
+    // Build WHERE clause — assetType filter is optional
+    const params: (number | string)[] = [];
+    let assetTypeClause = "";
+    if (assetTypeFilter) {
+      params.push(assetTypeFilter);
+      assetTypeClause = `AND t.asset_type = $${params.length}`;
+    }
+
+    // Join ratings on reviewee_display_id so the count survives account
+    // anonymisation (issue #362).  The display_id is captured at rating
+    // creation time and is never modified by the anonymisation job, unlike
+    // the raw UUID which becomes a dangling reference once PII is scrubbed.
+    params.push(limit, offset);
+    const limitIdx = params.length - 1;
+    const offsetIdx = params.length;
+
+    const { rows: trades } = await pool.query<
+      PublicTradeOffer & {
+        seller_average_rating: number;
+        seller_review_count: number;
+      }
+    >(
+      `SELECT t.id,
+              t.buyer_id,
+              t.asset_type,
+              t.amount,
+              t.fee_amount,
+              t.seller_net_amount,
+              t.status,
+              t.contract_listing_id,
+              t.escrow_tx_hash,
+              t.expires_at,
+              t.created_at,
+              t.updated_at,
+              u.display_handle AS seller_handle,
+              COALESCE(sr.avg_stars, 0)::float8 AS seller_average_rating,
+              COALESCE(sr.review_count, 0)::int AS seller_review_count
+       FROM trade_offers t
+       LEFT JOIN users u ON u.id = t.seller_id
+       LEFT JOIN LATERAL (
+         SELECT AVG(stars)::numeric(4,2) AS avg_stars, COUNT(*)::int AS review_count
+         FROM ratings
+         WHERE reviewee_display_id = t.seller_id::text
+       ) sr ON TRUE
+       WHERE t.status = 'Active' AND t.expires_at > NOW() ${assetTypeClause}
+       ORDER BY t.created_at DESC
+       LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+      params
     );
+
+    const countParams: (string)[] = [];
+    let countAssetClause = "";
+    if (assetTypeFilter) {
+      countParams.push(assetTypeFilter);
+      countAssetClause = `AND asset_type = $1`;
+    }
 
     const { rows: countRows } = await pool.query<{ count: string }>(
       `SELECT COUNT(*) FROM trade_offers
-       WHERE status = 'Active' AND expires_at > NOW()`
+       WHERE status = 'Active' AND expires_at > NOW() ${countAssetClause}`,
+      countParams
     );
 
     const total = parseInt(countRows[0]?.count ?? "0", 10);
@@ -79,6 +147,28 @@ router.post(
     const { assetType, amount, expiresInHours } = req.body as CreateTradeInput;
     const { sub: sellerId, stellarPublicKey } = (req as unknown as AuthenticatedRequest).user;
 
+    // KYC gate: a seller must be verified before they can list a trade. This
+    // is checked here rather than only relying on the frontend, since the
+    // frontend check can be bypassed by calling the API directly.
+    const { rows: kycRows } = await pool.query<{ kyc_status: string | null }>(
+      `SELECT kyc_status FROM users WHERE id = $1 LIMIT 1`,
+      [sellerId]
+    );
+
+    if (!kycRows.length) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+
+    if (kycRows[0]!.kyc_status !== "verified") {
+      res.status(403).json({
+        error:
+          "KYC verification is required before creating a trade listing. " +
+          "Submit your KYC documents via POST /api/kyc/submit.",
+      });
+      return;
+    }
+
     // Fetch seller's encrypted secret key from their wallet record
     const { rows: walletRows } = await pool.query<{
       stellar_secret_key: string;
@@ -96,23 +186,33 @@ router.post(
       Date.now() + expiresInHours * 60 * 60 * 1000
     );
 
+    // `amount` arrived already in stroops: createTradeSchema validated it as a
+    // positive integer and the client converted exactly once with toStroops()
+    // (issue #292). It is forwarded to the contract unchanged — there is no
+    // `* 1_000_000` here — so the contract and the seller agree exactly.
+    const amountStroops = asStroops(amount);
+
     // Call Soroban create_listing — may throw if contract call fails
     const contractListingId = await createListing({
       sellerPublicKey: stellarPublicKey,
       sellerSecretKey: walletRows[0].stellar_secret_key,
       assetType,
-      amount,
+      amountStroops,
       expiresAt,
     });
 
     const tradeId = uuidv4();
 
+    // The platform ledger (`trade_offers`, wallets, `transactions`) is
+    // denominated in naira, so the amount the seller quoted in naira is what is
+    // stored; only the wire body and the escrow call speak stroops.
+    const nairaAmount = fromStroops(amountStroops);
     const { rows } = await pool.query<TradeOffer>(
       `INSERT INTO trade_offers
          (id, seller_id, asset_type, amount, status, contract_listing_id, expires_at)
        VALUES ($1, $2, $3, $4, 'Active', $5, $6)
        RETURNING *`,
-      [tradeId, sellerId, assetType, amount, contractListingId, expiresAt]
+      [tradeId, sellerId, assetType, nairaAmount, contractListingId, expiresAt]
     );
 
     res.status(201).json({ data: rows[0] });
@@ -123,12 +223,29 @@ router.post(
 // GET /api/v1/trades/:id
 // ---------------------------------------------------------------------------
 
+/**
+ * This route is intentionally public (no `authenticate`) so shared trade
+ * links and SSR page loads work without a session — but that also means
+ * anyone who knows (or guesses) a trade UUID could read it. `feeAmount` and
+ * `sellerNetAmount` are the platform's internal financial breakdown for the
+ * trade (fee taken, seller's net payout) and aren't shown anywhere in the
+ * public UI, so they're now only included when the caller authenticates
+ * (via `optionalAuthenticate`) as the trade's own buyer or seller. Every
+ * other field (status, asset type, amount, buyer/seller ids, escrow tx hash)
+ * stays public: they're either needed for the public trade page to render
+ * at all, or — like the escrow transaction hash — already treated as public,
+ * on-chain information elsewhere in this app (see the frontend's unguarded
+ * "Escrow Transaction" explorer link).
+ */
 router.get(
   "/:id",
+  optionalAuthenticate,
   async (req, res) => {
     const { id } = req.params;
 
-    const { rows } = await pool.query<TradeOffer>(
+    const { rows } = await pool.query<
+      TradeOffer & { feeAmount: number | null; sellerNetAmount: number | null }
+    >(
       `SELECT *, fee_amount AS "feeAmount", seller_net_amount AS "sellerNetAmount"
          FROM trade_offers WHERE id = $1`,
       [id]
@@ -139,7 +256,105 @@ router.get(
       return;
     }
 
-    res.status(200).json({ data: rows[0] });
+    const trade = rows[0]!;
+    const caller = (req as unknown as AuthenticatedRequest).user as
+      | AuthenticatedRequest["user"]
+      | undefined;
+    const isParty =
+      !!caller && (caller.sub === trade.seller_id || caller.sub === trade.buyer_id);
+
+    if (isParty) {
+      res.status(200).json({ data: trade });
+      return;
+    }
+
+    const { feeAmount: _feeAmount, sellerNetAmount: _sellerNetAmount, ...publicTrade } = trade;
+    res.status(200).json({ data: publicTrade });
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Buy flow (Issue #342)
+// ---------------------------------------------------------------------------
+
+/**
+ * Loads a trade and checks it can be bought by `buyerId`.
+ *
+ * Both halves of the buy flow run the same checks: `prepare` so the client is
+ * not asked to sign a transaction that will be rejected, and `buy` because the
+ * trade can be locked by someone else in between the two calls.
+ *
+ * @returns the trade, or null after having already written the error response
+ */
+async function loadBuyableTrade(
+  id: string,
+  buyerId: string,
+  res: Response
+): Promise<TradeOffer | null> {
+  const { rows } = await pool.query<TradeOffer>(
+    `SELECT * FROM trade_offers WHERE id = $1`,
+    [id]
+  );
+
+  if (!rows.length) {
+    res.status(404).json({ error: "Trade offer not found" });
+    return null;
+  }
+
+  const trade = rows[0]!;
+
+  if (trade.status !== "Active") {
+    res.status(400).json({
+      error: `Trade is not available for purchase (status: ${trade.status})`,
+    });
+    return null;
+  }
+
+  if (!trade.contract_listing_id) {
+    res.status(400).json({ error: "Trade has no associated contract listing" });
+    return null;
+  }
+
+  if (trade.seller_id === buyerId) {
+    res.status(400).json({ error: "Seller cannot buy their own trade" });
+    return null;
+  }
+
+  return trade;
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/trades/:id/buy/prepare  (authenticated)
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns the unsigned escrow deposit transaction for the buyer to sign
+ * locally. No request body — everything needed is derived from the trade and
+ * the authenticated session.
+ */
+router.post(
+  "/:id/buy/prepare",
+  authenticate,
+  async (req, res) => {
+    const { id } = req.params;
+    const { sub: buyerId, stellarPublicKey } = (req as unknown as AuthenticatedRequest).user;
+
+    const trade = await loadBuyableTrade(id!, buyerId, res);
+    if (!trade) return;
+
+    const { xdr: unsignedXdr, networkPassphrase } = await buildEscrowDepositXdr({
+      buyerPublicKey: stellarPublicKey,
+      listingId: trade.contract_listing_id!,
+      // The deposit must match the listing exactly. `trade_offers.amount` is
+      // stored in naira (the platform ledger's unit), so it is converted back
+      // to stroops with the same shared helper the seller used (issue #292):
+      // one explicit conversion, never a literal `* 1_000_000`.
+      amountStroops: toStroops(Number(trade.amount)),
+    });
+
+    res.status(200).json({
+      data: { xdr: unsignedXdr, networkPassphrase, publicKey: stellarPublicKey },
+    });
   }
 );
 
@@ -154,44 +369,16 @@ router.post(
   async (req, res) => {
     const { id } = req.params;
     const { sub: buyerId, stellarPublicKey } = (req as unknown as AuthenticatedRequest).user;
-    const { buyerSecretKey } = req.body as BuyTradeInput;
+    const { signedXdr } = req.body as BuyTradeInput;
 
-    // Load the trade offer
-    const { rows: tradeRows } = await pool.query<TradeOffer>(
-      `SELECT * FROM trade_offers WHERE id = $1`,
-      [id]
-    );
+    const trade = await loadBuyableTrade(id!, buyerId, res);
+    if (!trade) return;
 
-    if (!tradeRows.length) {
-      res.status(404).json({ error: "Trade offer not found" });
-      return;
-    }
-
-    const trade = tradeRows[0]!;
-
-    if (trade.status !== "Active") {
-      res.status(400).json({
-        error: `Trade is not available for purchase (status: ${trade.status})`,
-      });
-      return;
-    }
-
-    if (!trade.contract_listing_id) {
-      res.status(400).json({ error: "Trade has no associated contract listing" });
-      return;
-    }
-
-    if (trade.seller_id === buyerId) {
-      res.status(400).json({ error: "Seller cannot buy their own trade" });
-      return;
-    }
-
-    // Call Soroban deposit_to_escrow
-    const txHash = await depositToEscrow({
-      buyerPublicKey: stellarPublicKey,
-      buyerSecretKey: buyerSecretKey,
-      listingId: trade.contract_listing_id,
-      amount: trade.amount,
+    // Submit the envelope the buyer signed in their browser. The secret key
+    // itself never reaches this server.
+    const txHash = await submitSignedTransaction({
+      signedXdr,
+      expectedSourceAccount: stellarPublicKey,
     });
 
     // Lock the trade in the database
@@ -270,20 +457,11 @@ router.post(
 router.post(
   "/:id/dispute",
   authenticate,
+  validate(disputeSchema),
   asyncHandler(async (req, res) => {
     const { id } = req.params;
     const { sub: userId } = (req as unknown as AuthenticatedRequest).user;
-    const { reason } = (req.body ?? {}) as { reason?: string };
-
-    if (!reason || typeof reason !== "string" || !reason.trim()) {
-      res.status(400).json({ error: "Dispute reason is required" });
-      return;
-    }
-
-    if (reason.trim().length > 500) {
-      res.status(400).json({ error: "Dispute reason cannot exceed 500 characters" });
-      return;
-    }
+    const { reason } = req.body as DisputeInput;
 
     // Fetch the trade offer
     const { rows: tradeRows } = await pool.query<TradeOffer>(
@@ -345,6 +523,74 @@ router.post(
       message: "Trade successfully disputed. An admin will review within 24 hours.",
       data: updated[0],
     });
+  })
+);
+
+router.post(
+  "/:id/rate",
+  authenticate,
+  validate(createRatingSchema),
+  asyncHandler(async (req, res) => {
+    const tradeId = req.params["id"];
+    const { stars, comment } = req.body as CreateRatingInput;
+    const { sub: reviewerId } = (req as AuthenticatedRequest).user;
+
+    const { rows: trades } = await pool.query<TradeOffer>(
+      `SELECT * FROM trade_offers WHERE id = $1 LIMIT 1`,
+      [tradeId]
+    );
+
+    if (!trades.length) {
+      res.status(404).json({ error: "Trade not found" });
+      return;
+    }
+
+    const trade = trades[0]!;
+
+    if (trade.status !== "Completed") {
+      res.status(400).json({ error: "Only completed trades can be rated" });
+      return;
+    }
+
+    if (trade.buyer_id !== reviewerId) {
+      res.status(403).json({ error: "Only the buyer can rate this trade" });
+      return;
+    }
+
+    // Resolve the seller's stable display identifier at rating creation time.
+    // We capture it now so the rating remains retrievable even after the
+    // seller's account is anonymised and their phone is replaced with a hash
+    // (issue #362).  The display_id is the seller's phone (or the anonymised
+    // hash if the account has already been scrubbed) — it never changes after
+    // it is written here, giving the LATERAL join in GET /trades a stable key.
+    const { rows: sellerRows } = await pool.query<{ phone: string }>(
+      `SELECT phone FROM users WHERE id = $1 LIMIT 1`,
+      [trade.seller_id]
+    );
+
+    // Fall back to the raw UUID text if the seller row has somehow been
+    // removed — this should not happen due to FK CASCADE, but guards against
+    // a split-second race between deletion and rating.
+    const revieweeDisplayId =
+      sellerRows[0]?.phone?.trim() || trade.seller_id;
+
+    try {
+      const { rows } = await pool.query(
+        `INSERT INTO ratings (trade_id, reviewer_id, reviewee_id, reviewee_display_id, stars, comment)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING *`,
+        [tradeId, reviewerId, trade.seller_id, revieweeDisplayId, stars, comment ?? null]
+      );
+
+      res.status(201).json({ data: rows[0] });
+    } catch (err: unknown) {
+      const pgCode = (err as { code?: string }).code;
+      if (pgCode === "23505") {
+        res.status(409).json({ error: "This trade has already been rated" });
+        return;
+      }
+      throw err;
+    }
   })
 );
 

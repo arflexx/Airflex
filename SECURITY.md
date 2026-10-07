@@ -8,7 +8,7 @@ working with the security community to resolve vulnerabilities responsibly.
 
 ## Reporting a Vulnerability
 
-**Do not open a public GitHub issue for security vulnerabilities.**
+**Do not open a public GitHub issue for security vulnerabilities..**
 
 Use one of the following private channels:
 

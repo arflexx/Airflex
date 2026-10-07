@@ -18,6 +18,7 @@ const PORT = Number(process.env.MOCK_API_PORT ?? 3001);
 export const TEST_TRADE = {
   id: "trade_e2e_001",
   seller_id: "seller_1",
+  seller_handle: "@airflex_2f9a",
   buyer_id: null,
   asset_type: "MTN",
   amount: 5000,

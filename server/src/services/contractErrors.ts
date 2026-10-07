@@ -164,6 +164,27 @@ export class NotAPartyError extends ContractError {
   }
 }
 
+/** Code 15 — `unpause` was called before the pause cooldown elapsed (escrow). */
+export class PauseCooldownNotExpiredError extends ContractError {
+  constructor() {
+    super("The pause cooldown has not expired yet", 15);
+    this.name = "PauseCooldownNotExpiredError";
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/**
+ * Code 16 — The buyer already holds an active sub-escrow on this trade, so a
+ * second fill is refused (one active fill per buyer per trade, escrow only).
+ */
+export class DuplicateFillError extends ContractError {
+  constructor() {
+    super("This buyer already has an active fill on this trade", 16);
+    this.name = "DuplicateFillError";
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
@@ -184,6 +205,8 @@ const ERROR_REGISTRY = new Map<number, new () => ContractError>([
   [12, InvalidAmountError],
   [13, FillAlreadyProcessedError],
   [14, NotAPartyError],
+  [15, PauseCooldownNotExpiredError],
+  [16, DuplicateFillError],
 ]);
 
 // ---------------------------------------------------------------------------

@@ -10,8 +10,11 @@
  *     using the server's admin signing key (STELLAR_SERVER_SECRET).
  *  3. On success → updates the DB row to Completed and notifies both
  *     parties via SSE.
- *  4. On failure → retries up to MAX_RETRIES times with exponential back-off.
- *  5. After exhausting retries → escalates the trade to Disputed in the DB,
+ *  4. On failure → retries up to RELEASE_RETRY_MAX times with exponential back-off
+ *     and jitter (configured via RELEASE_RETRY_MAX and RELEASE_RETRY_BASE_DELAY_MS).
+ *  5. On permanent errors (e.g. WrongStatusError, TradeNotFoundError) → aborts
+ *     retries immediately and escalates to Disputed without useless retries.
+ *  6. After exhausting retries → escalates the trade to Disputed in the DB,
  *     emits an SSE admin alert, and logs a structured error for ops.
  *
  * The STELLAR_SERVER_SECRET is read from the environment at call time and
@@ -37,24 +40,93 @@ import { SseEmitter } from "./sseEmitter";
 import { WalletService } from "./wallet";
 import { creditReferralReward } from "./referrals";
 import { NotificationService } from "./notifications";
+import { ContractError, parseContractError } from "./contractErrors";
 import type { TradeOffer } from "../types/trade";
 
 // ---------------------------------------------------------------------------
-// Constants
+// Config Helpers
 // ---------------------------------------------------------------------------
 
-const MAX_RETRIES = 3;
+/**
+ * Reads maximum verification attempts from RELEASE_RETRY_MAX env var, defaulting to 3.
+ */
+export function getReleaseRetryMax(): number {
+  const envVal = process.env["RELEASE_RETRY_MAX"];
+  if (envVal !== undefined && envVal !== "") {
+    const parsed = Number.parseInt(envVal, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return 3;
+}
 
 /**
- * Base delay in ms for the first retry. Each subsequent retry doubles this
- * value plus a random jitter of ±20 % to spread load.
+ * Reads base delay in ms for retries from RELEASE_RETRY_BASE_DELAY_MS env var, defaulting to 2000.
  */
-const BASE_RETRY_DELAY_MS = 2_000;
+export function getReleaseRetryBaseDelayMs(): number {
+  const envVal = process.env["RELEASE_RETRY_BASE_DELAY_MS"];
+  if (envVal !== undefined && envVal !== "") {
+    const parsed = Number.parseInt(envVal, 10);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return parsed;
+    }
+  }
+  return 2_000;
+}
 
 export function calculatePlatformFee(amount: number): number {
   const configured = Number.parseFloat(process.env["PLATFORM_FEE_PERCENT"] ?? "1.5");
   const percentage = Number.isFinite(configured) ? configured : 1.5;
   return Math.round((amount * percentage / 100 + Number.EPSILON) * 100) / 100;
+}
+
+// ---------------------------------------------------------------------------
+// Error Classification
+// ---------------------------------------------------------------------------
+
+/**
+ * Determines whether an error is permanent (deterministic rejection) and
+ * should not be retried. Permanent errors include contract errors (e.g. WrongStatus,
+ * TradeNotFound, Unauthorized), VerificationErrors, or specific error signatures.
+ */
+export function isPermanentError(err: unknown): boolean {
+  if (!err) return false;
+
+  if (err instanceof VerificationError) {
+    return true;
+  }
+
+  if (err instanceof ContractError) {
+    return true;
+  }
+
+  const parsed = parseContractError(err);
+  if (parsed instanceof ContractError) {
+    return true;
+  }
+
+  if (err instanceof Error) {
+    const name = (err.name || "").toLowerCase();
+    const msg = (err.message || "").toLowerCase();
+
+    if (
+      name === "wrongstatuserror" ||
+      name === "tradenotfounderror" ||
+      name === "unauthorizedcontracterror" ||
+      name === "contracterror" ||
+      msg.includes("wrongstatus") ||
+      msg.includes("error(contract, #4)") ||
+      msg.includes("contracterror(4)") ||
+      msg.includes("trade cannot be confirmed in its current state") ||
+      msg.includes("only locked trades can be confirmed") ||
+      msg.includes("has no associated on-chain listing id")
+    ) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -127,21 +199,23 @@ export async function triggerVerification(
 }
 
 // ---------------------------------------------------------------------------
-// Internal — retry loop
+// Internal / Exported for Testing — retry loop
 // ---------------------------------------------------------------------------
 
 /**
  * Attempts to call `release_payment` on the contract, retrying up to
- * MAX_RETRIES times on failure. On final failure escalates to Disputed.
+ * RELEASE_RETRY_MAX times on transient failure. Aborts immediately on
+ * permanent errors. On final failure escalates to Disputed.
  */
-async function runVerificationWithRetry(
+export async function runVerificationWithRetry(
   trade: TradeOffer,
   attempt: number
 ): Promise<void> {
-  const tradeId          = trade.id;
+  const maxRetries = getReleaseRetryMax();
+  const tradeId = trade.id;
   const contractListingId = trade.contract_listing_id!;
 
-  log("info", tradeId, `Verification attempt ${attempt}/${MAX_RETRIES}`);
+  log("info", tradeId, `Verification attempt ${attempt}/${maxRetries}`);
 
   try {
     // ------------------------------------------------------------------
@@ -220,11 +294,21 @@ async function runVerificationWithRetry(
     });
 
   } catch (err) {
-    const errorName = err instanceof Error ? err.constructor.name : "UnknownError";
+    const errorName = err instanceof Error ? err.name || err.constructor.name : "UnknownError";
     const message = err instanceof Error ? err.message : String(err);
     log("error", tradeId, `Attempt ${attempt} failed [${errorName}]: ${message}`);
 
-    if (attempt < MAX_RETRIES) {
+    // ------------------------------------------------------------------
+    // Check if error is permanent (e.g. ContractError::WrongStatus)
+    // Permanent errors abort retries immediately
+    // ------------------------------------------------------------------
+    if (isPermanentError(err)) {
+      log("error", tradeId, `Permanent error encountered [${errorName}]: ${message}. Aborting retries immediately.`);
+      await escalateToDisputed(trade, `Permanent error: ${message}`);
+      return;
+    }
+
+    if (attempt < maxRetries) {
       // Exponential back-off with ±20 % jitter
       const delay = backoffDelay(attempt);
       log("info", tradeId, `Retrying in ${delay}ms (attempt ${attempt + 1})`);
@@ -252,7 +336,7 @@ async function escalateToDisputed(
   log(
     "error",
     tradeId,
-    `Escalating to Disputed after ${MAX_RETRIES} failed attempts. Reason: ${reason}`
+    `Escalating to Disputed. Reason: ${reason}`
   );
 
   try {
@@ -283,12 +367,12 @@ async function escalateToDisputed(
   // Admin alert — broadcast to all connected admin clients.
   // In a production system this would also fire a Slack/PagerDuty webhook.
   SseEmitter.emitAll({
-    type:    "admin_alert",
+    type:     "admin_alert",
     tradeId,
     sellerId: trade.seller_id,
     buyerId:  trade.buyer_id,
     reason,
-    message: `Trade ${tradeId} escalated to Disputed after ${MAX_RETRIES} failed release attempts.`,
+    message:  `Trade ${tradeId} escalated to Disputed after verification failure (${reason}).`,
   });
 
   // Out-of-band SMS to both parties and all admins (best-effort)
@@ -313,11 +397,20 @@ function buildParticipantList(trade: TradeOffer): string[] {
  * Truncated exponential back-off with ±20 % random jitter.
  * attempt=1 → ~2 s, attempt=2 → ~4 s, attempt=3 → ~8 s (capped at 30 s).
  */
-function backoffDelay(attempt: number): number {
-  const base   = BASE_RETRY_DELAY_MS * Math.pow(2, attempt - 1);
+export function calculateBackoffDelay(
+  attempt: number,
+  baseDelayMs: number = getReleaseRetryBaseDelayMs(),
+  randomFn: () => number = Math.random
+): number {
+  const base = baseDelayMs * Math.pow(2, attempt - 1);
   const capped = Math.min(base, 30_000);
-  const jitter = capped * 0.2 * (Math.random() * 2 - 1); // ±20 %
+  const jitterFactor = randomFn() * 2 - 1; // [-1.0, 1.0]
+  const jitter = capped * 0.2 * jitterFactor; // ±20 %
   return Math.round(capped + jitter);
+}
+
+function backoffDelay(attempt: number): number {
+  return calculateBackoffDelay(attempt);
 }
 
 function sleep(ms: number): Promise<void> {

@@ -2,8 +2,7 @@
 #![allow(clippy::too_many_arguments)]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, contracterror, symbol_short,
-    token, Address, Env, Symbol,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Symbol,
 };
 
 // ---------------------------------------------------------------------------
@@ -17,7 +16,10 @@ pub enum DataKey {
     Listing(u64),
     Reputation(Address),
     Paused,
+    PausedAt,
 }
+
+pub const EMERGENCY_TIMELOCK_SECS: u64 = 72 * 60 * 60; // 72 hours = 259,200 seconds
 
 // ---------------------------------------------------------------------------
 // Types
@@ -28,6 +30,12 @@ pub enum DataKey {
 pub enum ListingStatus {
     Active,
     Sold,
+    /// Payment has been released to the seller after delivery was confirmed.
+    /// Distinct from `Sold` so a completed sale can be told apart from one
+    /// still awaiting release — release_payment used to leave a listing in
+    /// `Sold` forever, making the two indistinguishable and leaving nothing
+    /// to stop `release_payment` being called again on the same listing.
+    Released,
     Cancelled,
 }
 
@@ -39,18 +47,22 @@ pub enum AssetCategory {
 }
 
 #[contracttype]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Listing {
     pub id: u64,
     pub seller: Address,
-    pub token: Address,        // payment token (e.g. USDC / NGNC)
-    pub price: i128,           // price in base token units
+    pub token: Address, // payment token (e.g. USDC / NGNC)
+    pub price: i128,    // price in base token units
     pub asset_category: AssetCategory,
-    pub asset_type: Symbol,    // e.g. symbol_short!("MTN")
-    pub quantity: i128,        // units of airtime/data being sold
+    pub asset_type: Symbol, // e.g. symbol_short!("MTN")
+    pub quantity: i128,     // units of airtime/data being sold
     pub status: ListingStatus,
-    pub created_at: u64,       // ledger timestamp
-    pub expires_at: u64,       // listing expiry
+    pub created_at: u64, // ledger timestamp
+    pub expires_at: u64, // listing expiry
+    /// Set by deposit_to_escrow once a buyer locks funds. Used by
+    /// resolve_dispute to confirm a recipient is actually a party to the
+    /// trade before funds are moved to them.
+    pub buyer: Option<Address>,
 }
 
 #[contracttype]
@@ -73,32 +85,51 @@ pub struct Reputation {
 #[contracterror]
 #[derive(Clone, Debug, PartialEq)]
 pub enum ContractError {
-    AlreadyInitialized   = 1,
-    Unauthorized         = 2,
-    TradeNotFound        = 3,
-    WrongStatus          = 4,
-    TradeExpired         = 5,
-    InsufficientFunds    = 6,
-    InvalidExpiry        = 7,
-    AlreadyDisputed      = 8,
-    ContractPaused       = 9,
-    TimelockNotExpired   = 10,
-    UnsupportedToken     = 11,
-    InvalidAmount        = 12,
+    AlreadyInitialized = 1,
+    Unauthorized = 2,
+    TradeNotFound = 3,
+    WrongStatus = 4,
+    TradeExpired = 5,
+    InsufficientFunds = 6,
+    InvalidExpiry = 7,
+    AlreadyDisputed = 8,
+    ContractPaused = 9,
+    TimelockNotExpired = 10,
+    UnsupportedToken = 11,
+    InvalidAmount = 12,
     FillAlreadyProcessed = 13,
-    NotAParty            = 14,
+    NotAParty = 14,
 }
 
 // ---------------------------------------------------------------------------
 // Events
 // ---------------------------------------------------------------------------
 
-fn topic_listed()    -> Symbol { symbol_short!("listed")    }
-fn topic_sold()      -> Symbol { symbol_short!("sold")      }
-fn topic_cancelled() -> Symbol { symbol_short!("cancelled") }
-fn topic_contract()  -> Symbol { symbol_short!("contract")  }
-fn topic_paused()    -> Symbol { symbol_short!("paused")    }
-fn topic_unpaused()  -> Symbol { symbol_short!("unpaused")  }
+// Event topics defined with `symbol_short!` are limited to at most 9 ASCII
+// characters (e.g. "cancelled" is exactly 9 chars, at the limit).
+// Any topic strings approaching or exceeding 9 characters must use `Symbol::new(env, "...")`
+// to avoid compile-time macro panics.
+fn topic_listed() -> Symbol {
+    symbol_short!("listed")
+} // 6 chars
+fn topic_sold() -> Symbol {
+    symbol_short!("sold")
+} // 4 chars
+fn topic_cancelled() -> Symbol {
+    symbol_short!("cancelled")
+} // 9 chars (max limit for symbol_short!)
+fn topic_contract() -> Symbol {
+    symbol_short!("contract")
+} // 8 chars
+fn topic_paused() -> Symbol {
+    symbol_short!("paused")
+} // 6 chars
+fn topic_unpaused() -> Symbol {
+    symbol_short!("unpaused")
+} // 8 chars
+fn topic_updated() -> Symbol {
+    symbol_short!("updated")
+} // 7 chars
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -144,9 +175,11 @@ fn update_reputation(env: &Env, seller: &Address, volume: i128, disputed: bool) 
     env.storage()
         .persistent()
         .set(&DataKey::Reputation(seller.clone()), &rep);
-    env.storage()
-        .persistent()
-        .extend_ttl(&DataKey::Reputation(seller.clone()), 17_280, 17_280 * 365);
+    env.storage().persistent().extend_ttl(
+        &DataKey::Reputation(seller.clone()),
+        17_280,
+        17_280 * 365,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -170,7 +203,9 @@ impl MarketplaceContract {
         }
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::ListingCounter, &0u64);
+        env.storage()
+            .instance()
+            .set(&DataKey::ListingCounter, &0u64);
         env.storage().instance().set(&DataKey::Paused, &false);
         env.storage().instance().extend_ttl(17_280, 17_280 * 30);
         Ok(())
@@ -186,10 +221,20 @@ impl MarketplaceContract {
         let admin = get_admin(&env)?;
         admin.require_auth();
 
+        let is_already_paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false);
+
+        if !is_already_paused {
+            let now = env.ledger().timestamp();
+            env.storage().instance().set(&DataKey::PausedAt, &now);
+        }
+
         env.storage().instance().set(&DataKey::Paused, &true);
 
-        env.events()
-            .publish((topic_contract(), topic_paused()), ());
+        env.events().publish((topic_contract(), topic_paused()), ());
         Ok(())
     }
 
@@ -200,6 +245,7 @@ impl MarketplaceContract {
         admin.require_auth();
 
         env.storage().instance().set(&DataKey::Paused, &false);
+        env.storage().instance().remove(&DataKey::PausedAt);
 
         env.events()
             .publish((topic_contract(), topic_unpaused()), ());
@@ -257,6 +303,7 @@ impl MarketplaceContract {
             status: ListingStatus::Active,
             created_at: now,
             expires_at,
+            buyer: None,
         };
 
         env.storage()
@@ -311,6 +358,7 @@ impl MarketplaceContract {
         token_client.transfer(&buyer, &env.current_contract_address(), &listing.price);
 
         listing.status = ListingStatus::Sold;
+        listing.buyer = Some(buyer.clone());
 
         env.storage()
             .persistent()
@@ -335,7 +383,7 @@ impl MarketplaceContract {
         let admin = get_admin(&env)?;
         admin.require_auth();
 
-        let listing: Listing = env
+        let mut listing: Listing = env
             .storage()
             .persistent()
             .get(&DataKey::Listing(listing_id))
@@ -351,6 +399,15 @@ impl MarketplaceContract {
             &listing.seller,
             &listing.price,
         );
+
+        // Previously the listing was never re-saved here, so it stayed
+        // `Sold` forever — indistinguishable from a listing whose payment had
+        // not yet been released, and with nothing stopping this function
+        // being called again on the same listing to drain it a second time.
+        listing.status = ListingStatus::Released;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Listing(listing_id), &listing);
 
         update_reputation(&env, &listing.seller, listing.price, false);
 
@@ -387,11 +444,7 @@ impl MarketplaceContract {
         }
 
         let token_client = token::Client::new(&env, &listing.token);
-        token_client.transfer(
-            &env.current_contract_address(),
-            &buyer,
-            &listing.price,
-        );
+        token_client.transfer(&env.current_contract_address(), &buyer, &listing.price);
 
         listing.status = ListingStatus::Cancelled;
 
@@ -433,12 +486,19 @@ impl MarketplaceContract {
             return Err(ContractError::WrongStatus);
         }
 
+        // `recipient` must be a known party to this specific trade — either
+        // the seller (a release) or the buyer who actually deposited into
+        // escrow (a refund). Without this check the admin key could move a
+        // listing's escrowed funds to any arbitrary address, since nothing
+        // here previously tied `recipient` back to the trade at all.
+        let is_seller = recipient == listing.seller;
+        let is_buyer = listing.buyer.as_ref() == Some(&recipient);
+        if !is_seller && !is_buyer {
+            return Err(ContractError::NotAParty);
+        }
+
         let token_client = token::Client::new(&env, &listing.token);
-        token_client.transfer(
-            &env.current_contract_address(),
-            &recipient,
-            &listing.price,
-        );
+        token_client.transfer(&env.current_contract_address(), &recipient, &listing.price);
 
         listing.status = ListingStatus::Cancelled;
 
@@ -447,11 +507,127 @@ impl MarketplaceContract {
             .set(&DataKey::Listing(listing_id), &listing);
 
         // If recipient is the seller, count as completed; otherwise disputed
-        let is_seller = recipient == listing.seller;
         update_reputation(&env, &listing.seller, listing.price, !is_seller);
 
         env.events()
             .publish((topic_cancelled(),), (listing_id, recipient));
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // update_listing — called by the Seller (Issue #345)
+    // -----------------------------------------------------------------------
+
+    /// Updates the price and expiration timestamp of an active listing.
+    ///
+    /// Only the original seller can call this, and only while the listing is `Active`.
+    /// Emits an `updated` event.
+    pub fn update_listing(
+        env: Env,
+        seller: Address,
+        listing_id: u64,
+        new_price: i128,
+        new_expires_at: u64,
+    ) -> Result<(), ContractError> {
+        require_not_paused(&env)?;
+        seller.require_auth();
+
+        if new_price <= 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+
+        let now = env.ledger().timestamp();
+        if new_expires_at <= now {
+            return Err(ContractError::InvalidExpiry);
+        }
+
+        let mut listing: Listing = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Listing(listing_id))
+            .ok_or(ContractError::TradeNotFound)?;
+
+        if listing.seller != seller {
+            return Err(ContractError::Unauthorized);
+        }
+
+        if listing.status != ListingStatus::Active {
+            return Err(ContractError::WrongStatus);
+        }
+
+        listing.price = new_price;
+        listing.expires_at = new_expires_at;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Listing(listing_id), &listing);
+
+        env.events().publish(
+            (topic_updated(),),
+            (listing_id, seller, new_price, new_expires_at),
+        );
+
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // emergency_withdraw — admin recovery for trapped funds (Issue #346)
+    // -----------------------------------------------------------------------
+
+    /// Recovers trapped funds in the event of a critical bug or settlement deadlock.
+    ///
+    /// Requirements:
+    /// - Callable only by the admin.
+    /// - Contract must be currently paused.
+    /// - A 72-hour timelock must have elapsed since the contract was paused.
+    /// - Emits a high-severity `emergency_withdrawal` event.
+    pub fn emergency_withdraw(
+        env: Env,
+        token: Address,
+        recipient: Address,
+        amount: i128,
+    ) -> Result<(), ContractError> {
+        let admin = get_admin(&env)?;
+        admin.require_auth();
+
+        let is_paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false);
+
+        if !is_paused {
+            return Err(ContractError::WrongStatus);
+        }
+
+        if amount <= 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+
+        let paused_at: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PausedAt)
+            .unwrap_or(0);
+
+        let now = env.ledger().timestamp();
+        if now < paused_at + EMERGENCY_TIMELOCK_SECS {
+            return Err(ContractError::TimelockNotExpired);
+        }
+
+        let token_client = token::Client::new(&env, &token);
+        let contract_balance = token_client.balance(&env.current_contract_address());
+        if contract_balance < amount {
+            return Err(ContractError::InsufficientFunds);
+        }
+
+        token_client.transfer(&env.current_contract_address(), &recipient, &amount);
+
+        env.events().publish(
+            (Symbol::new(&env, "emergency_withdrawal"),),
+            (token, recipient, amount),
+        );
+
         Ok(())
     }
 
@@ -534,7 +710,7 @@ mod test {
         let env = Env::default();
         env.mock_all_auths();
 
-        let contract_id = env.register_contract(None, MarketplaceContract);
+        let contract_id = env.register(MarketplaceContract, ());
         let client = MarketplaceContractClient::new(&env, &contract_id);
 
         let admin = Address::generate(&env);
@@ -547,7 +723,7 @@ mod test {
         let sac = StellarAssetClient::new(&env, &token_address);
 
         // Mint tokens to buyer
-        sac.mint(&buyer, &10_000_0000000i128);
+        sac.mint(&buyer, &100_000_000_000i128);
 
         client.initialize(&admin);
 
@@ -659,7 +835,7 @@ mod test {
             &1000i128,
             &(1_000_000 + 86_400),
         );
-        assert_eq!(result, Ok(Err(ContractError::ContractPaused)));
+        assert_eq!(result, Err(Ok(ContractError::ContractPaused)));
     }
 
     #[test]
@@ -680,7 +856,7 @@ mod test {
         client.pause();
 
         let result = client.try_deposit_to_escrow(&buyer, &listing_id);
-        assert_eq!(result, Ok(Err(ContractError::ContractPaused)));
+        assert_eq!(result, Err(Ok(ContractError::ContractPaused)));
     }
 
     #[test]
@@ -702,7 +878,7 @@ mod test {
         client.pause();
 
         let result = client.try_release_payment(&listing_id);
-        assert_eq!(result, Ok(Err(ContractError::ContractPaused)));
+        assert_eq!(result, Err(Ok(ContractError::ContractPaused)));
     }
 
     #[test]
@@ -724,7 +900,7 @@ mod test {
         client.pause();
 
         let result = client.try_cancel_and_refund(&buyer, &listing_id);
-        assert_eq!(result, Ok(Err(ContractError::ContractPaused)));
+        assert_eq!(result, Err(Ok(ContractError::ContractPaused)));
     }
 
     #[test]
@@ -746,7 +922,7 @@ mod test {
         client.pause();
 
         let result = client.try_resolve_dispute(&listing_id, &buyer);
-        assert_eq!(result, Ok(Err(ContractError::ContractPaused)));
+        assert_eq!(result, Err(Ok(ContractError::ContractPaused)));
     }
 
     #[test]
@@ -820,25 +996,25 @@ mod test {
         let (_env, client, admin, _seller, _buyer, _token) = setup();
         // setup() already initialised — call again
         let result = client.try_initialize(&admin);
-        assert_eq!(result, Ok(Err(ContractError::AlreadyInitialized)));
+        assert_eq!(result, Err(Ok(ContractError::AlreadyInitialized)));
     }
 
     #[test]
     fn test_err_unauthorized_uninitialised_pause() {
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register_contract(None, MarketplaceContract);
+        let contract_id = env.register(MarketplaceContract, ());
         let client = MarketplaceContractClient::new(&env, &contract_id);
         // Contract not initialised — pause should fail with Unauthorized
         let result = client.try_pause();
-        assert_eq!(result, Ok(Err(ContractError::Unauthorized)));
+        assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
     }
 
     #[test]
     fn test_err_trade_not_found() {
         let (_env, client, _admin, _seller, _buyer, _token) = setup();
         let result = client.try_get_listing(&999u64);
-        assert_eq!(result, Ok(Err(ContractError::TradeNotFound)));
+        assert_eq!(result, Err(Ok(ContractError::TradeNotFound)));
     }
 
     #[test]
@@ -854,7 +1030,7 @@ mod test {
             &1000i128,
             &(1_000_000 + 86_400),
         );
-        assert_eq!(result, Ok(Err(ContractError::InvalidAmount)));
+        assert_eq!(result, Err(Ok(ContractError::InvalidAmount)));
     }
 
     #[test]
@@ -870,7 +1046,7 @@ mod test {
             &0i128,
             &(1_000_000 + 86_400),
         );
-        assert_eq!(result, Ok(Err(ContractError::InvalidAmount)));
+        assert_eq!(result, Err(Ok(ContractError::InvalidAmount)));
     }
 
     #[test]
@@ -886,7 +1062,7 @@ mod test {
             &500i128,
             &999_999u64,
         );
-        assert_eq!(result, Ok(Err(ContractError::InvalidExpiry)));
+        assert_eq!(result, Err(Ok(ContractError::InvalidExpiry)));
     }
 
     #[test]
@@ -909,7 +1085,7 @@ mod test {
         let sac = StellarAssetClient::new(&env, &token);
         sac.mint(&buyer2, &500_0000000i128);
         let result = client.try_deposit_to_escrow(&buyer2, &listing_id);
-        assert_eq!(result, Ok(Err(ContractError::WrongStatus)));
+        assert_eq!(result, Err(Ok(ContractError::WrongStatus)));
     }
 
     #[test]
@@ -930,7 +1106,7 @@ mod test {
         env.ledger().with_mut(|l| l.timestamp = 1_000_000 + 86_401);
 
         let result = client.try_deposit_to_escrow(&buyer, &listing_id);
-        assert_eq!(result, Ok(Err(ContractError::TradeExpired)));
+        assert_eq!(result, Err(Ok(ContractError::TradeExpired)));
     }
 
     #[test]
@@ -948,7 +1124,7 @@ mod test {
             &(1_000_000 + 86_400),
         );
         let result = client.try_deposit_to_escrow(&seller, &listing_id);
-        assert_eq!(result, Ok(Err(ContractError::Unauthorized)));
+        assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
     }
 
     #[test]
@@ -967,7 +1143,7 @@ mod test {
         );
         // No deposit — still Active
         let result = client.try_release_payment(&listing_id);
-        assert_eq!(result, Ok(Err(ContractError::WrongStatus)));
+        assert_eq!(result, Err(Ok(ContractError::WrongStatus)));
     }
 
     #[test]
@@ -986,6 +1162,183 @@ mod test {
         );
         // Listing is Active, not Sold
         let result = client.try_cancel_and_refund(&buyer, &listing_id);
-        assert_eq!(result, Ok(Err(ContractError::WrongStatus)));
+        assert_eq!(result, Err(Ok(ContractError::WrongStatus)));
+    }
+
+    #[test]
+    fn test_event_topic_lengths_and_long_topic_handling() {
+        let env = Env::default();
+
+        // Compile-time & runtime verification that symbol_short! topics stay within <= 9 chars
+        const SHORT_TOPICS: &[&str] = &[
+            "listed",
+            "sold",
+            "cancelled",
+            "contract",
+            "paused",
+            "unpaused",
+        ];
+
+        for topic in SHORT_TOPICS {
+            assert!(
+                topic.len() <= 9,
+                "symbol_short! topic '{topic}' exceeds 9 characters"
+            );
+        }
+
+        // Test topic functions
+        let _ = topic_listed();
+        let _ = topic_sold();
+        let _ = topic_cancelled();
+        let _ = topic_contract();
+        let _ = topic_paused();
+        let _ = topic_unpaused();
+
+        // Verify that longer/new topics (> 9 chars, e.g. "emergency_withdrawal") work with Symbol::new(&env, ...)
+        let long_topic = Symbol::new(&env, "emergency_withdrawal");
+        assert_eq!(long_topic, Symbol::new(&env, "emergency_withdrawal"));
+    }
+
+    // -----------------------------------------------------------------------
+    // update_listing tests (Issue #345)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_update_listing_authorized() {
+        let (env, client, _admin, seller, _buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let listing_id = client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &AssetCategory::Airtime,
+            &symbol_short!("MTN"),
+            &1000i128,
+            &(1_000_000 + 86_400),
+        );
+
+        let new_price = 600_0000000i128;
+        let new_expires_at = 1_000_000 + 172_800;
+
+        client.update_listing(&seller, &listing_id, &new_price, &new_expires_at);
+
+        let updated = client.get_listing(&listing_id);
+        assert_eq!(updated.price, new_price);
+        assert_eq!(updated.expires_at, new_expires_at);
+        assert_eq!(updated.status, ListingStatus::Active);
+    }
+
+    #[test]
+    fn test_update_listing_unauthorized() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let listing_id = client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &AssetCategory::Airtime,
+            &symbol_short!("MTN"),
+            &1000i128,
+            &(1_000_000 + 86_400),
+        );
+
+        let result = client.try_update_listing(
+            &buyer,
+            &listing_id,
+            &600_0000000i128,
+            &(1_000_000 + 100_000),
+        );
+        assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
+    }
+
+    #[test]
+    fn test_update_listing_non_active_fails() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let listing_id = client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &AssetCategory::Airtime,
+            &symbol_short!("MTN"),
+            &1000i128,
+            &(1_000_000 + 86_400),
+        );
+
+        // Buyer deposits, making listing Sold
+        client.deposit_to_escrow(&buyer, &listing_id);
+
+        let result = client.try_update_listing(
+            &seller,
+            &listing_id,
+            &600_0000000i128,
+            &(1_000_000 + 100_000),
+        );
+        assert_eq!(result, Err(Ok(ContractError::WrongStatus)));
+    }
+
+    // -----------------------------------------------------------------------
+    // emergency_withdraw tests (Issue #346)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_emergency_withdraw_success_after_timelock() {
+        let (env, client, _admin, _seller, buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let sac = StellarAssetClient::new(&env, &token);
+        let contract_addr = client.address.clone();
+        sac.mint(&contract_addr, &10_000_000_000i128);
+
+        // Must be paused
+        client.pause();
+
+        // Advance ledger time past 72 hours
+        env.ledger()
+            .with_mut(|l| l.timestamp = 1_000_000 + EMERGENCY_TIMELOCK_SECS + 1);
+
+        let recipient = buyer.clone();
+        let token_client = TokenClient::new(&env, &token);
+        let initial_balance = token_client.balance(&recipient);
+
+        client.emergency_withdraw(&token, &recipient, &500_0000000i128);
+
+        assert_eq!(
+            token_client.balance(&recipient),
+            initial_balance + 500_0000000i128
+        );
+    }
+
+    #[test]
+    fn test_emergency_withdraw_fails_before_timelock() {
+        let (env, client, _admin, _seller, buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let sac = StellarAssetClient::new(&env, &token);
+        sac.mint(&client.address, &10_000_000_000i128);
+
+        client.pause();
+
+        // Only 1 hour passed
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000 + 3600);
+
+        let result = client.try_emergency_withdraw(&token, &buyer, &500_0000000i128);
+        assert_eq!(result, Err(Ok(ContractError::TimelockNotExpired)));
+    }
+
+    #[test]
+    fn test_emergency_withdraw_fails_when_not_paused() {
+        let (env, client, _admin, _seller, buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let sac = StellarAssetClient::new(&env, &token);
+        sac.mint(&client.address, &10_000_000_000i128);
+
+        // Not paused
+        let result = client.try_emergency_withdraw(&token, &buyer, &500_0000000i128);
+        assert_eq!(result, Err(Ok(ContractError::WrongStatus)));
     }
 }

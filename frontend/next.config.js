@@ -45,6 +45,20 @@ const withPWA = require("next-pwa")({
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  async headers() {
+    return [
+      {
+        source: "/(.*)",
+        headers: [
+          {
+            key: "Content-Security-Policy-Report-Only",
+            value:
+              "default-src 'self'; report-uri /api/csp-report",
+          },
+        ],
+      },
+    ];
+  },
   images: {
     domains: [],
   },

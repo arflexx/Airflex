@@ -536,13 +536,28 @@ components:
 
     BuyTradeInput:
       type: object
-      required: [buyerSecretKey]
+      required: [signedXdr]
       properties:
-        buyerSecretKey:
+        signedXdr:
           type: string
-          minLength: 56
-          maxLength: 56
-          description: Buyer's Stellar secret key (placeholder — production uses client-side signing)
+          description: >-
+            Escrow deposit envelope from POST /api/v1/trades/{id}/buy/prepare,
+            signed by the buyer in their own browser. Base64 XDR. The secret key
+            is never sent to this API.
+
+    PrepareBuyResponse:
+      type: object
+      required: [xdr, networkPassphrase, publicKey]
+      properties:
+        xdr:
+          type: string
+          description: Unsigned, already-simulated transaction envelope (base64 XDR)
+        networkPassphrase:
+          type: string
+          example: Test SDF Network ; September 2015
+        publicKey:
+          type: string
+          description: Buyer's Stellar account — the envelope's source account
 
     WithdrawInput:
       type: object
@@ -632,6 +647,9 @@ components:
           type: string
         stellarPublicKey:
           type: string
+        referralCode:
+          type: string
+          example: ABC12345
 
     WalletResponse:
       type: object

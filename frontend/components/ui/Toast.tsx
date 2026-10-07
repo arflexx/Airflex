@@ -37,7 +37,7 @@ export function Toast({ type = "info", message, onClose }: ToastProps) {
 
   return (
     <div
-      role="alert"
+      role="status"
       className={`flex items-center justify-between gap-3 rounded-xl border px-4 py-3 shadow-lg ${style.bg} ${style.text} transition-all`}
     >
       <div className="flex items-center gap-2.5">

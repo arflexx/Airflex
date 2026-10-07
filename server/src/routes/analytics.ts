@@ -32,6 +32,67 @@ const router = Router();
 const ANALYTICS_CACHE_TTL_SECONDS = 5 * 60;
 
 // ---------------------------------------------------------------------------
+// GET /api/v1/admin/metrics  (admin only)
+// ---------------------------------------------------------------------------
+
+/**
+ * Quick-summary metrics for the admin dashboard header cards.
+ *
+ * Returns a flat object that the frontend can render without any additional
+ * transformation:
+ *   totalUsers       — all-time registered user count
+ *   openTrades       — trades currently in Active status
+ *   lockedTrades     — trades currently in Locked (escrow held) status
+ *   completedTrades  — all-time completed trades
+ *   disputedTrades   — trades currently in Disputed status
+ *   totalVolume      — sum of amounts for all Completed trades
+ *
+ * Cached for 5 minutes alongside the other analytics routes.
+ */
+router.get(
+  "/metrics",
+  authenticate,
+  authorize("admin"),
+  async (_req, res) => {
+    const data = await cache.remember(
+      "analytics:metrics",
+      ANALYTICS_CACHE_TTL_SECONDS,
+      async () => {
+        const { rows } = await pool.query<{
+          totalUsers: string;
+          openTrades: string;
+          lockedTrades: string;
+          completedTrades: string;
+          disputedTrades: string;
+          totalVolume: string | null;
+        }>(
+          `SELECT
+             (SELECT COUNT(*) FROM users)                                     AS "totalUsers",
+             (SELECT COUNT(*) FROM trade_offers WHERE status = 'Active')      AS "openTrades",
+             (SELECT COUNT(*) FROM trade_offers WHERE status = 'Locked')      AS "lockedTrades",
+             (SELECT COUNT(*) FROM trade_offers WHERE status = 'Completed')   AS "completedTrades",
+             (SELECT COUNT(*) FROM trade_offers WHERE status = 'Disputed')    AS "disputedTrades",
+             (SELECT COALESCE(SUM(amount), 0) FROM trade_offers
+               WHERE status = 'Completed')                                    AS "totalVolume"`
+        );
+
+        const row = rows[0]!;
+        return {
+          totalUsers:      Number(row.totalUsers),
+          openTrades:      Number(row.openTrades),
+          lockedTrades:    Number(row.lockedTrades),
+          completedTrades: Number(row.completedTrades),
+          disputedTrades:  Number(row.disputedTrades),
+          totalVolume:     Math.round((Number(row.totalVolume ?? 0) + Number.EPSILON) * 100) / 100,
+        };
+      }
+    );
+
+    res.status(200).json(data);
+  }
+);
+
+// ---------------------------------------------------------------------------
 // GET /api/v1/admin/analytics/overview  (admin only)
 // ---------------------------------------------------------------------------
 

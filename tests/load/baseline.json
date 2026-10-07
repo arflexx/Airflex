@@ -1,0 +1,25 @@
+{
+  "version": "1.0.0",
+  "lastUpdated": "2026-09-24",
+  "thresholds": {
+    "maxP95DegradationPercent": 20,
+    "maxErrorRate": 0.01
+  },
+  "scenarios": {
+    "marketplace": {
+      "p95Ms": 150,
+      "errorRate": 0.0,
+      "rps": 95.0
+    },
+    "otp-burst": {
+      "p95Ms": 120,
+      "errorRate": 0.0,
+      "rps": 85.0
+    },
+    "trade-create": {
+      "p95Ms": 220,
+      "errorRate": 0.0,
+      "rps": 10.0
+    }
+  }
+}

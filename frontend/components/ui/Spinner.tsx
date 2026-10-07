@@ -38,8 +38,8 @@ export function Spinner({
       viewBox="0 0 24 24"
       fill="none"
       role="status"
-      aria-label={label}
       {...props}
+      aria-label={label}
     >
       <circle
         className="opacity-25"
@@ -54,7 +54,6 @@ export function Spinner({
         fill="currentColor"
         d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z"
       />
-      <span className="sr-only">{label}</span>
     </svg>
   );
 }
