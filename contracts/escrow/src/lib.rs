@@ -9,6 +9,14 @@ use soroban_sdk::{
 };
 
 // ---------------------------------------------------------------------------
+// TTL constants
+// ---------------------------------------------------------------------------
+
+pub const MIN_TTL_LEDGERS: u32 = 2_592_000; // 30 days at 1s/ledger
+pub const MAX_TTL_LEDGERS: u32 = 2_592_000; // 30 days
+pub const SHORT_TTL_LEDGERS: u32 = 604_800; // 7 days
+
+// ---------------------------------------------------------------------------
 // Storage keys
 // ---------------------------------------------------------------------------
 
@@ -425,6 +433,14 @@ impl EscrowContract {
         Ok(())
     }
 
+    /// Admin utility to manually extend a trade's TTL.
+    pub fn bump_trade(env: Env, trade_id: u64) {
+        bump_instance_ttl(&env);
+        let admin = get_admin(&env);
+        admin.require_auth();
+        env.storage().persistent().extend_ttl(&DataKey::Trade(trade_id), MIN_TTL_LEDGERS, MAX_TTL_LEDGERS);
+    }
+
     // -----------------------------------------------------------------------
     // deposit_to_escrow
     // -----------------------------------------------------------------------
@@ -593,6 +609,9 @@ impl EscrowContract {
                         break;
                     }
                 }
+            }
+            if all_released {
+                env.storage().persistent().extend_ttl(&DataKey::Trade(trade_id), SHORT_TTL_LEDGERS, SHORT_TTL_LEDGERS);
             }
             if all_released {
                 trade.status = TradeStatus::Completed;
