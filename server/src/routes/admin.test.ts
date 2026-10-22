@@ -346,3 +346,91 @@ describe("Admin audit logs (issue #539)", () => {
     expect(res.status).toBe(200);
   });
 });
+
+describe("GET /api/v1/admin/users query count (issue #480)", () => {
+  const adminId = "99999999-9999-9999-9999-999999999999";
+  const adminToken = jwt.sign(
+    { sub: adminId, role: "admin", tokenVersion: 1 },
+    JWT_SECRET,
+    { expiresIn: "1h" }
+  );
+
+  function makeUsers(n: number) {
+    return Array.from({ length: n }, (_, i) => ({
+      id: `00000000-0000-0000-0000-${String(i).padStart(12, "0")}`,
+      phone: `+23480000${String(i).padStart(5, "0")}`,
+      registrationDate: "2026-01-01T00:00:00.000Z",
+      balance: i === 0 ? 0 : 10 * i,
+      tradeCount: i === 0 ? 0 : i,
+    }));
+  }
+
+  // Answers the auth middleware, the page query and the total count; any
+  // other statement (e.g. a per-user follow-up) fails the test.
+  function wireDb(pageRows: ReturnType<typeof makeUsers>, total: number) {
+    mockQuery.mockImplementation(async (sql: string) => {
+      if (/token_version/i.test(sql)) return { rows: [{ token_version: 1 }] };
+      if (/SELECT role FROM users/i.test(sql)) return { rows: [{ role: "admin" }] };
+      if (/SELECT COUNT\(\*\) FROM users/i.test(sql)) return { rows: [{ count: String(total) }] };
+      if (/FROM page_users pu/i.test(sql)) return { rows: pageRows };
+      throw new Error(`unexpected query: ${sql.replace(/\s+/g, " ").slice(0, 80)}`);
+    });
+  }
+
+  async function listUsers(n: number, limit: number, total: number, page = 1) {
+    mockQuery.mockReset();
+    wireDb(makeUsers(n), total);
+    const res = await request(app)
+      .get(`/api/v1/admin/users?page=${page}&limit=${limit}`)
+      .set("Authorization", `Bearer ${adminToken}`);
+    return { res, queries: mockQuery.mock.calls.length };
+  }
+
+  it("issues the same number of queries for 1 user and for 50 users", async () => {
+    const small = await listUsers(1, 1, 1);
+    const large = await listUsers(50, 50, 50);
+
+    expect(small.res.status).toBe(200);
+    expect(large.res.status).toBe(200);
+    expect(large.res.body.data).toHaveLength(50);
+    // auth (2) + page query (1) + total count (1)
+    expect(small.queries).toBe(4);
+    expect(large.queries).toBe(small.queries);
+  });
+
+  it("returns an empty page with the same query count", async () => {
+    const { res, queries } = await listUsers(0, 20, 0);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      data: [],
+      pagination: { page: 1, limit: 20, total: 0, totalPages: 0 },
+    });
+    expect(queries).toBe(4);
+  });
+
+  it("keeps the response shape and pagination metadata unchanged", async () => {
+    const { res } = await listUsers(2, 2, 45, 3);
+
+    expect(res.status).toBe(200);
+    expect(res.body.pagination).toEqual({ page: 3, limit: 2, total: 45, totalPages: 23 });
+    expect(Object.keys(res.body.data[0]).sort()).toEqual(
+      ["balance", "id", "phone", "registrationDate", "tradeCount"]
+    );
+    // a user with no transactions or trades still comes back with zero values
+    expect(res.body.data[0]).toMatchObject({ balance: 0, tradeCount: 0 });
+  });
+
+  it("scopes the aggregates to the requested page and passes limit/offset", async () => {
+    await listUsers(2, 2, 45, 3);
+
+    const pageCall = mockQuery.mock.calls.find(([sql]) => /FROM page_users pu/i.test(sql));
+    expect(pageCall).toBeDefined();
+    const [sql, params] = pageCall as [string, unknown[]];
+    expect(params).toEqual([2, 4]);
+    expect(sql).toMatch(/WITH page_users AS/i);
+    expect(sql).toMatch(/FROM transactions\s+WHERE user_id IN \(SELECT id FROM page_users\)/i);
+    expect(sql).toMatch(/WHERE seller_id IN \(SELECT id FROM page_users\)/i);
+    expect(sql).toMatch(/WHERE buyer_id\s+IN \(SELECT id FROM page_users\)/i);
+  });
+});
