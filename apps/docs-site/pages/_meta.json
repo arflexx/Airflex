@@ -4,6 +4,7 @@
   "api-reference": "API Reference",
   "contract-reference": "Contract Reference",
   "sdk-reference": "SDK Reference",
+  "escrow-dispute-flow": "Escrow Dispute Flow",
   "deployment": "Deployment",
   "contributing": "Contributing"
 }
