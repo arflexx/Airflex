@@ -241,6 +241,15 @@ env.storage()
 
 ## 5. Build the Contract
 
+Build the optimized production WASM binary:
+
+```bash
+cargo build --release --target wasm32v1-none
+```
+
+The compiled WASM artefact will be located at:
+`target/wasm32v1-none/release/airflex_escrow.wasm` (or `contracts/target/...` depending on your workspace root).
+
 From your workspace root (the folder containing the root `Cargo.toml`):
 
 ```bash
@@ -309,6 +318,89 @@ deployment fee (typically 0.01–0.1 XLM depending on WASM size).
 ---
 
 ## 8. Deploy to Testnet
+
+### Step-by-Step Example: Deploying the Escrow Contract to Testnet
+
+Follow these exact CLI commands to configure your network, fund your deployer account, deploy the AirFlex escrow contract, initialize it, and verify the deployment.
+
+#### Step 8.1: Configure Testnet Network & Deployer Identity
+
+Set up the Stellar Testnet network and your local deployer keypair using environment variables:
+
+```bash
+# Define environment variables
+export SOROBAN_RPC_URL="https://soroban-testnet.stellar.org"
+export NETWORK_PASSPHRASE="Test SDF Network ; September 2015"
+
+# Configure network in stellar-cli
+stellar network add testnet \
+  --rpc-url "$SOROBAN_RPC_URL" \
+  --network-passphrase "$NETWORK_PASSPHRASE"
+
+# Generate a deployer keypair (or load an existing secret key)
+stellar keys generate deployer --network testnet
+
+# Export the deployer address for subsequent commands
+export DEPLOYER_ADDRESS=$(stellar keys address deployer)
+echo "Deployer address: $DEPLOYER_ADDRESS"
+```
+
+#### Step 8.2: Fund the Deployer Account via Friendbot
+
+Before deploying, your deployer account must have Testnet XLM to pay for transaction fees and rent. Fund it instantly using the Stellar Testnet Friendbot:
+
+```bash
+curl "https://friendbot.stellar.org/?addr=$DEPLOYER_ADDRESS"
+```
+
+Verify the account balance:
+
+```bash
+stellar keys balance deployer --network testnet
+```
+
+#### Step 8.3: Deploy the WASM Binary
+
+Deploy the compiled escrow WASM to Testnet:
+
+```bash
+export ESCROW_WASM_PATH="contracts/target/wasm32v1-none/release/airflex_escrow.wasm"
+
+export CONTRACT_ID=$(stellar contract deploy \
+  --wasm "$ESCROW_WASM_PATH" \
+  --source deployer \
+  --network testnet)
+
+echo "Successfully deployed Escrow Contract ID: $CONTRACT_ID"
+```
+
+#### Step 8.4: Initialize the Contract
+
+Every AirFlex escrow contract requires one-time initialization to set the admin and allowed tokens/categories. Use environment variables for the admin public key and allowed token address (e.g. Testnet USDC):
+
+```bash
+export ADMIN_ADDRESS="$DEPLOYER_ADDRESS"
+export USDC_TOKEN_ID="CCW67USJQXV7OD7J6CC6CKALKYRHWNYOGCRW7TAYW35LSTQHX7G55ZZ6"
+
+stellar contract invoke \
+  --id "$CONTRACT_ID" \
+  --source deployer \
+  --network testnet \
+  -- initialize \
+  --admin "$ADMIN_ADDRESS" \
+  --allowed_tokens "[$USDC_TOKEN_ID]"
+```
+
+#### Step 8.5: Verify Deployment via Stellar Explorer
+
+Verify that the contract deployment and initialization succeeded by inspecting the contract on the Stellar Expert Testnet explorer:
+
+1. Open your browser to:
+   `https://stellar.expert/explorer/testnet/contract/$CONTRACT_ID`
+2. Confirm that:
+   - The contract status is active.
+   - The WASM hash matches your compiled bytecode.
+   - Contract instance storage displays the correct `admin` and `allowed_tokens` keys.
 
 ```bash
 stellar contract deploy \
@@ -496,6 +588,23 @@ async function callMyFunction(callerSecret: string, arg: string) {
 ---
 
 ## 14. Troubleshooting
+
+### Common Deploy Failure Modes
+
+1. **Insufficient Balance (`op_underfunded` or transaction fee error)**
+   - *Symptom:* `stellar contract deploy` fails with an underfunded or low reserve error.
+   - *Cause:* The deployer account has not received Friendbot funds or lacks enough XLM to cover the WASM upload rent and transaction fees.
+   - *Resolution:* Re-run the Friendbot curl command (`curl "https://friendbot.stellar.org/?addr=$DEPLOYER_ADDRESS"`) and check your balance with `stellar keys balance deployer --network testnet` before retrying.
+
+2. **WASM Target Mismatch (`wasm32-unknown-unknown` vs `wasm32v1-none`)**
+   - *Symptom:* Cargo build succeeds, but `stellar contract deploy` or Soroban RPC rejects the WASM with an invalid instruction or unsupported target error.
+   - *Cause:* Stellar CLI v22+ requires the `wasm32v1-none` target instead of the legacy `wasm32-unknown-unknown` target.
+   - *Resolution:* Install the correct target (`rustup target add wasm32v1-none`) and rebuild with `cargo build --release --target wasm32v1-none`.
+
+3. **Already Initialized Error (`ContractError(1)` or `AlreadyInitialized`)**
+   - *Symptom:* Contract deployment succeeds, but `stellar contract invoke ... initialize` panics or returns error code `1`.
+   - *Cause:* The contract's `initialize` function can only be executed exactly once. It was either already invoked during a previous test run or bundled incorrectly.
+   - *Resolution:* Verify the contract state on Stellar Expert or deploy a fresh contract instance if re-initialization with new parameters is required.
 
 ### `wasm32v1-none` target not found
 
