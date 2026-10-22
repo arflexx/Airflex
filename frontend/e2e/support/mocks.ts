@@ -8,7 +8,9 @@ import type { Page, Route } from "@playwright/test";
  * without adding a service worker to the app bundle.
  */
 
-export const API_URL = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:3001";
+const mockApiPort = process.env["PLAYWRIGHT_MOCK_API_PORT"] ?? "3001";
+export const API_URL =
+  process.env["NEXT_PUBLIC_API_URL"] ?? `http://localhost:${mockApiPort}`;
 
 export const TEST_TRADE = {
   id: "trade_e2e_001",
