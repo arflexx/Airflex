@@ -31,11 +31,17 @@ jest.mock("../services/recoveryCodes", () => ({
   redeemRecoveryCode: jest.fn(),
 }));
 
+jest.mock("../middleware/rateLimitOtp", () => ({
+  rateLimitOtp: (_req: unknown, _res: unknown, next: () => void) => next(),
+  enforceOtpRateLimit: jest.fn().mockResolvedValue(true),
+}));
+
 // Mock fetch for Termii OTP send
 const mockFetch = jest.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
 
 import authRouter from "./auth";
+import { enforceOtpRateLimit } from "../middleware/rateLimitOtp";
 
 const app = express();
 app.use(express.json());
@@ -77,6 +83,11 @@ describe("POST /api/v1/auth/recover/change-phone", () => {
       .send({ token: validRecoveryToken, newPhone });
 
     expect(res.status).toBe(200);
+    expect(enforceOtpRateLimit).toHaveBeenCalledWith(
+      newPhone,
+      expect.any(String),
+      expect.anything()
+    );
     // Does NOT return a session token
     expect(res.body.token).toBeUndefined();
     expect(res.body.requiresVerification).toBe(true);

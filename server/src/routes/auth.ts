@@ -1,6 +1,6 @@
 import { Router } from "express";
 
-import { rateLimitOtp } from "../middleware/rateLimitOtp";
+import { enforceOtpRateLimit, rateLimitOtp } from "../middleware/rateLimitOtp";
 import { authenticate, AuthenticatedRequest } from "../middleware/authenticate";
 import {
   isRecoveryLockedOut,
@@ -460,6 +460,9 @@ router.post(
       res.status(404).json({ error: "Account not found" });
       return;
     }
+
+    const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
+    if (!(await enforceOtpRateLimit(newPhone, ip, res))) return;
 
     // Update phone number and bump token version
     await pool.query(
