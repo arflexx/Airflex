@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { NextIntlClientProvider } from "next-intl";
 import { getLocale, getMessages } from "next-intl/server";
 import Navbar from "../components/Navbar";
+import LocaleInitializer from "../components/LocaleInitializer";
 import ServiceWorkerRegister from "../components/ServiceWorkerRegister";
 import { AuthProvider } from "./context/AuthContext";
 import ThemeProvider from "./context/ThemeProvider";
@@ -65,9 +66,10 @@ export default async function RootLayout({
   return (
     <html lang={locale} suppressHydrationWarning>
       <body className="bg-gray-50 text-gray-900 antialiased dark:bg-gray-900 dark:text-gray-100">
-<NextIntlClientProvider messages={messages}>
+        <NextIntlClientProvider messages={messages}>
           <ThemeProvider>
             <AuthProvider>
+              <LocaleInitializer />
               <Navbar />
               {children}
             </AuthProvider>
