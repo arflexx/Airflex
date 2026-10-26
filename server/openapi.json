@@ -381,6 +381,21 @@
           }
         }
       },
+      "DisputeBody": {
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "Why the trade is being disputed.",
+            "example": "Seller did not deliver the airtime after payment was locked."
+          }
+        }
+      },
       "PrepareBuyResponse": {
         "type": "object",
         "required": [
@@ -557,9 +572,19 @@
                 "type": "string",
                 "example": "GABC1234..."
               },
+              "kycStatus": {
+                "type": "string",
+                "enum": [
+                  "unverified",
+                  "pending",
+                  "verified",
+                  "rejected"
+                ],
+                "example": "verified"
+              },
               "referralCode": {
                 "type": "string",
-                "example": "ABC12345"
+                "example": "K7QM2XWTHN4PZR8C"
               }
             }
           }
@@ -1758,6 +1783,103 @@
         }
       }
     },
+    "/api/v1/trades/{id}/dispute": {
+      "post": {
+        "tags": [
+          "Trades"
+        ],
+        "summary": "Dispute a locked trade",
+        "description": "Escalates a Locked trade to Disputed. Either the buyer or the seller of the trade may call this. An admin resolves the dispute via POST /api/v1/admin/trades/{id}/resolve.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DisputeBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Trade successfully disputed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/TradeOffer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Trade is not in a state that can be disputed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Caller is neither the buyer nor the seller of this trade.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "Trade is already disputed or is no longer Locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "$ref": "#/components/responses/UnprocessableEntity"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
     "/api/v1/wallet": {
       "get": {
         "tags": [
@@ -2078,6 +2200,24 @@
             "$ref": "#/components/responses/InternalError"
           }
         }
+      },
+      "patch": {
+        "summary": "PATCH /api/v1/profile",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      },
+      "put": {
+        "summary": "PUT /api/v1/profile",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
       }
     },
     "/api/v1/profile/trades": {
@@ -2235,13 +2375,42 @@
         }
       }
     },
-    "/api/events": {
+    "/api/v1/events": {
       "get": {
         "tags": [
           "Events"
         ],
         "summary": "Server-Sent Events stream",
-        "description": "Persistent SSE connection for real-time trade status updates. Event types: `connected`, `trade_completed`, `trade_disputed`, `admin_alert`.",
+        "description": "Persistent SSE connection for real-time trade status updates. Event types: `connected`, `trade_completed`, `trade_disputed`, `admin_alert`. Also available, unversioned, at `/api/events` for backwards compatibility.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "SSE stream opened.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/events": {
+      "get": {
+        "tags": [
+          "Events"
+        ],
+        "summary": "Server-Sent Events stream (legacy alias)",
+        "description": "Unversioned alias for `/api/v1/events`, kept for backwards compatibility. Prefer `/api/v1/events` for new integrations.",
         "security": [
           {
             "bearerAuth": []
@@ -2751,6 +2920,576 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/admin/analytics/assets": {
+      "get": {
+        "summary": "GET /api/admin/analytics/assets",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/admin/analytics/overview": {
+      "get": {
+        "summary": "GET /api/admin/analytics/overview",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/admin/analytics/trades/timeseries": {
+      "get": {
+        "summary": "GET /api/admin/analytics/trades/timeseries",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/admin/audit-logs": {
+      "get": {
+        "summary": "GET /api/admin/audit-logs",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/admin/flagged-accounts": {
+      "get": {
+        "summary": "GET /api/admin/flagged-accounts",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/admin/fraud-flags": {
+      "get": {
+        "summary": "GET /api/admin/fraud-flags",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/admin/metrics": {
+      "get": {
+        "summary": "GET /api/admin/metrics",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/admin/queues": {
+      "get": {
+        "summary": "GET /api/admin/queues",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/admin/trades": {
+      "get": {
+        "summary": "GET /api/admin/trades",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/admin/users": {
+      "get": {
+        "summary": "GET /api/admin/users",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/admin/users/{phone}": {
+      "get": {
+        "summary": "GET /api/admin/users/{phone}",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/admin/webhooks": {
+      "get": {
+        "summary": "GET /api/admin/webhooks",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/docs": {
+      "get": {
+        "summary": "GET /api/docs",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/docs.json": {
+      "get": {
+        "summary": "GET /api/docs.json",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/rates": {
+      "get": {
+        "summary": "GET /api/rates",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/test-async-error": {
+      "get": {
+        "summary": "GET /api/test-async-error",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/trades": {
+      "get": {
+        "summary": "GET /api/trades",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      },
+      "post": {
+        "summary": "POST /api/trades",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/trades/{id}": {
+      "get": {
+        "summary": "GET /api/trades/{id}",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/trades/{id}/buy": {
+      "post": {
+        "summary": "POST /api/trades/{id}/buy",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/trades/{id}/buy/prepare": {
+      "post": {
+        "summary": "POST /api/trades/{id}/buy/prepare",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/trades/{id}/confirm-delivery": {
+      "post": {
+        "summary": "POST /api/trades/{id}/confirm-delivery",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/trades/{id}/dispute": {
+      "post": {
+        "summary": "POST /api/trades/{id}/dispute",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/trades/{id}/rate": {
+      "post": {
+        "summary": "POST /api/trades/{id}/rate",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/users/me/export": {
+      "get": {
+        "summary": "GET /api/users/me/export",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/users/me/export/{exportId}": {
+      "get": {
+        "summary": "GET /api/users/me/export/{exportId}",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/users/me/export/{exportId}/download": {
+      "get": {
+        "summary": "GET /api/users/me/export/{exportId}/download",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/users/{id}/ratings": {
+      "get": {
+        "summary": "GET /api/users/{id}/ratings",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/v1/admin/flagged-accounts": {
+      "get": {
+        "summary": "GET /api/v1/admin/flagged-accounts",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/v1/admin/fraud-flags": {
+      "get": {
+        "summary": "GET /api/v1/admin/fraud-flags",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/v1/admin/fraud-flags/{id}": {
+      "patch": {
+        "summary": "PATCH /api/v1/admin/fraud-flags/{id}",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/v1/admin/metrics": {
+      "get": {
+        "summary": "GET /api/v1/admin/metrics",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/v1/admin/trades": {
+      "get": {
+        "summary": "GET /api/v1/admin/trades",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/v1/admin/trades/{id}/resolve": {
+      "post": {
+        "summary": "POST /api/v1/admin/trades/{id}/resolve",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/v1/admin/users": {
+      "get": {
+        "summary": "GET /api/v1/admin/users",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/v1/admin/users/{phone}": {
+      "get": {
+        "summary": "GET /api/v1/admin/users/{phone}",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/v1/admin/webhooks": {
+      "get": {
+        "summary": "GET /api/v1/admin/webhooks",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/v1/admin/webhooks/{id}/replay": {
+      "post": {
+        "summary": "POST /api/v1/admin/webhooks/{id}/replay",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/v1/auth/revoke": {
+      "post": {
+        "summary": "POST /api/v1/auth/revoke",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/v1/rates": {
+      "get": {
+        "summary": "GET /api/v1/rates",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/v1/referrals": {
+      "get": {
+        "summary": "GET /api/v1/referrals",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/v1/referrals/stats": {
+      "get": {
+        "summary": "GET /api/v1/referrals/stats",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/v1/test-async-error": {
+      "get": {
+        "summary": "GET /api/v1/test-async-error",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/v1/trades/{id}/rate": {
+      "post": {
+        "summary": "POST /api/v1/trades/{id}/rate",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/v1/users/{id}/ratings": {
+      "get": {
+        "summary": "GET /api/v1/users/{id}/ratings",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/v1/wallet/unlock": {
+      "post": {
+        "summary": "POST /api/v1/wallet/unlock",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/v1/webhooks/paystack": {
+      "post": {
+        "summary": "POST /api/v1/webhooks/paystack",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/v1/webhooks/stellar": {
+      "post": {
+        "summary": "POST /api/v1/webhooks/stellar",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/kyc/submit": {
+      "post": {
+        "summary": "POST /api/kyc/submit",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/admin/fraud-flags/{id}": {
+      "patch": {
+        "summary": "PATCH /api/admin/fraud-flags/{id}",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/admin/trades/{id}/resolve": {
+      "post": {
+        "summary": "POST /api/admin/trades/{id}/resolve",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          }
+        }
+      }
+    },
+    "/api/admin/webhooks/{id}/replay": {
+      "post": {
+        "summary": "POST /api/admin/webhooks/{id}/replay",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
           }
         }
       }
