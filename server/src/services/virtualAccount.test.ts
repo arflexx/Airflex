@@ -8,6 +8,7 @@
 import {
   createDedicatedVirtualAccount,
   ensurePaystackCustomer,
+  listDedicatedAccountTransactions,
   PaystackTimeoutError,
   PAYSTACK_TIMEOUT_MS,
 } from "./virtualAccount";
@@ -148,5 +149,83 @@ describe("virtualAccount Paystack timeout", () => {
     await jest.advanceTimersByTimeAsync(PAYSTACK_TIMEOUT_MS);
 
     await expect(assertion).resolves.toBe(networkErr);
+  });
+
+  it("lists only successful NGN dedicated-account payments for the customer", async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ status: true, data: { id: 42, dedicated_account: { active: true } } }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          status: true,
+          data: [
+            { reference: "dva-1", amount: 12500, currency: "NGN", channel: "dedicated_nuban", status: "success" },
+            { reference: "card-1", amount: 9000, currency: "NGN", channel: "card", status: "success" },
+            { reference: "dva-usd", amount: 500, currency: "USD", channel: "dedicated_nuban", status: "success" },
+          ],
+        }),
+      });
+    (global as unknown as { fetch: jest.Mock }).fetch = fetchMock;
+
+    await expect(listDedicatedAccountTransactions("CUS_42")).resolves.toEqual([
+      { reference: "dva-1", amount: 12500, currency: "NGN", channel: "dedicated_nuban", status: "success" },
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[1]![0])).toContain("customer=42");
+  });
+
+  it("does not list transactions for an inactive Paystack virtual account", async () => {
+    const fetchMock = jest.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ status: true, data: { id: 42, dedicated_account: { active: false } } }),
+    });
+    (global as unknown as { fetch: jest.Mock }).fetch = fetchMock;
+
+    await expect(listDedicatedAccountTransactions("CUS_42")).resolves.toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("follows Paystack transaction pages for customers with long histories", async () => {
+    const firstPage = Array.from({ length: 100 }, (_, index) => ({
+      reference: `dva-${index}`,
+      amount: 1000,
+      currency: "NGN",
+      channel: "dedicated_nuban",
+      status: "success",
+    }));
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ status: true, data: { id: 42, dedicated_account: { active: true } } }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ status: true, data: firstPage, meta: { pageCount: 2 } }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          status: true,
+          data: [{ reference: "dva-last", amount: 1500, currency: "NGN", channel: "dedicated_nuban", status: "success" }],
+          meta: { pageCount: 2 },
+        }),
+      });
+    (global as unknown as { fetch: jest.Mock }).fetch = fetchMock;
+
+    const transactions = await listDedicatedAccountTransactions("CUS_42");
+    expect(transactions).toHaveLength(101);
+    expect(transactions?.at(-1)?.reference).toBe("dva-last");
+    expect(String(fetchMock.mock.calls[2]![0])).toContain("page=2");
   });
 });
