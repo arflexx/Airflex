@@ -17,6 +17,10 @@ import { generateDataExportProcessor, purgeExpiredDataExports } from "./processo
 import { purgeExpiredAuditLogs }          from "./auditLogRetention";
 import { schedule, ONE_DAY_MS }           from "./cron";
 import { checkKycDocumentExpiry } from "./kycExpiry";
+import {
+  getVirtualAccountReconciliationIntervalMs,
+  reconcileVirtualAccountDeposits,
+} from "./virtualAccountReconciliation";
 
 /** Initialise the queue service and register all processors. */
 export function initJobQueue(): void {
@@ -37,6 +41,16 @@ export function initJobQueue(): void {
   schedule({ name: "audit-log-retention",   intervalMs: ONE_DAY_MS, run: () => purgeExpiredAuditLogs() });
   schedule({ name: "data-export-cleanup",   intervalMs: ONE_DAY_MS, run: () => purgeExpiredDataExports() });
   schedule({ name: "kyc-document-expiry", intervalMs: ONE_DAY_MS, run: checkKycDocumentExpiry });
+
+  // The Paystack customer transaction API is only available when credentials
+  // are configured; reconciliation itself is read-only and safe to rerun.
+  if (process.env["PAYSTACK_SECRET_KEY"]) {
+    schedule({
+      name: "virtual-account-reconciliation",
+      intervalMs: getVirtualAccountReconciliationIntervalMs(),
+      run: reconcileVirtualAccountDeposits,
+    });
+  }
 }
 
 // Re-export queue primitives so route/service files only import from here
