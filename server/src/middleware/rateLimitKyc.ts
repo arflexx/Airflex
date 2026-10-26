@@ -15,16 +15,21 @@ import { AuthenticatedRequest } from "./authenticate";
  * DB-backed (not in-memory) means the limit holds across restarts and
  * multiple server instances.
  *
- * Keyed on the authenticated user's ID (not phone/IP) since this endpoint is
- * already behind `authenticate` — the caller's identity is exactly what
- * should be rate limited.
+ * Keyed on the authenticated user's ID, with the request IP as a fallback
+ * when this middleware is reused before authentication.
  */
 
 /** KYC submissions allowed per user per window. */
-export const KYC_MAX_SUBMISSIONS = 3;
+function positiveInteger(value: string | undefined, fallback: number): number {
+  if (!value?.trim()) return fallback;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+export const KYC_MAX_SUBMISSIONS = positiveInteger(process.env["KYC_MAX_SUBMISSIONS"], 3);
 
 /** Window length in minutes. */
-export const KYC_WINDOW_MINUTES = 60;
+export const KYC_WINDOW_MINUTES = positiveInteger(process.env["KYC_WINDOW_MINUTES"], 60);
 
 export interface KycRateLimitState {
   allowed: boolean;
@@ -40,24 +45,32 @@ export interface KycRateLimitState {
  * is about to be rejected — otherwise a caller past the limit could keep
  * retrying for free and the window would never fill.
  */
-export async function checkKycRateLimit(userId: string): Promise<KycRateLimitState> {
+export async function checkKycRateLimit(
+  userId: string | null,
+  ipAddress: string | null = null
+): Promise<KycRateLimitState> {
+  if (!userId && !ipAddress) {
+    throw new Error("A user ID or IP address is required for KYC rate limiting.");
+  }
   const client = await pool.connect();
 
   try {
     await client.query("BEGIN");
 
     await client.query(
-      `INSERT INTO kyc_submission_attempts (user_id, requested_at) VALUES ($1, NOW())`,
-      [userId]
+      `INSERT INTO kyc_submission_attempts (user_id, ip_address, requested_at)
+       VALUES ($1::uuid, $2::inet, NOW())`,
+      [userId, userId ? null : ipAddress]
     );
 
     const { rows } = await client.query<{ attempts: string; oldest: string | null }>(
       `SELECT COUNT(*)::text AS attempts,
               MIN(requested_at)::text AS oldest
        FROM kyc_submission_attempts
-       WHERE user_id = $1
-         AND requested_at > NOW() - ($2 || ' minutes')::interval`,
-      [userId, String(KYC_WINDOW_MINUTES)]
+       WHERE (($1::uuid IS NOT NULL AND user_id = $1::uuid)
+          OR ($1::uuid IS NULL AND ip_address = $2::inet))
+         AND requested_at > NOW() - ($3 || ' minutes')::interval`,
+      [userId, ipAddress, String(KYC_WINDOW_MINUTES)]
     );
 
     await client.query("COMMIT");
@@ -102,16 +115,15 @@ export async function rateLimitKyc(
   next: NextFunction
 ): Promise<void> {
   const userId = (req as AuthenticatedRequest).user?.sub;
+  const ipAddress = req.ip || req.socket.remoteAddress || null;
 
-  if (!userId) {
-    // authenticate should already have rejected this request; nothing to
-    // rate-limit without an identity.
+  if (!userId && !ipAddress) {
     next();
     return;
   }
 
   try {
-    const state = await checkKycRateLimit(userId);
+    const state = await checkKycRateLimit(userId ?? null, ipAddress);
 
     res.setHeader("X-RateLimit-Limit", String(KYC_MAX_SUBMISSIONS));
     res.setHeader("X-RateLimit-Remaining", String(state.remaining));
