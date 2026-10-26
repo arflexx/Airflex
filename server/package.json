@@ -13,6 +13,7 @@
     "test:watch": "jest --watch",
     "generate:openapi": "ts-node scripts/generate-openapi.ts",
     "check:openapi": "ts-node scripts/generate-openapi.ts && git diff --exit-code openapi.json",
+    "check:route-spec": "ts-node scripts/check-openapi-routes.ts",
     "db:migrate": "ts-node src/db/migrate.ts",
     "db:migrate:rollback": "ts-node src/db/migrate.ts rollback"
   },
@@ -54,6 +55,7 @@
     "jest": "29.7.0",
     "supertest": "7.0.0",
     "ts-jest": "29.2.3",
+    "ts-node": "10.9.2",
     "ts-node-dev": "2.0.0",
     "tsc-alias": "1.8.10",
     "tsconfig-paths": "4.2.0",
