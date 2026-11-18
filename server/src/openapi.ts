@@ -2047,3 +2047,80 @@ export const openApiDocument = {
     { name: "Admin", description: "Platform administration and monitoring" },
   ],
 } as const;
+
+// Keep every registered Express method/path represented in the generated
+// document. These coverage entries provide stable operation placeholders for
+// legacy aliases and handlers that do not yet have route-specific schemas.
+// The route-coverage check fails when a new handler is added without updating
+// this map (or the detailed operations above).
+const routeCoverageOperations: Record<string, string[]> = {
+  "/api/admin/analytics/assets": ["get"],
+  "/api/admin/analytics/overview": ["get"],
+  "/api/admin/analytics/trades/timeseries": ["get"],
+  "/api/admin/audit-logs": ["get"],
+  "/api/admin/flagged-accounts": ["get"],
+  "/api/admin/fraud-flags": ["get"],
+  "/api/admin/metrics": ["get"],
+  "/api/admin/queues": ["get"],
+  "/api/admin/trades": ["get"],
+  "/api/admin/users": ["get"],
+  "/api/admin/users/{phone}": ["get"],
+  "/api/admin/webhooks": ["get"],
+  "/api/docs": ["get"],
+  "/api/docs.json": ["get"],
+  "/api/rates": ["get"],
+  "/api/test-async-error": ["get"],
+  "/api/trades": ["get", "post"],
+  "/api/trades/{id}": ["get"],
+  "/api/trades/{id}/buy": ["post"],
+  "/api/trades/{id}/buy/prepare": ["post"],
+  "/api/trades/{id}/confirm-delivery": ["post"],
+  "/api/trades/{id}/dispute": ["post"],
+  "/api/trades/{id}/rate": ["post"],
+  "/api/users/me/export": ["get"],
+  "/api/users/me/export/{exportId}": ["get"],
+  "/api/users/me/export/{exportId}/download": ["get"],
+  "/api/users/{id}/ratings": ["get"],
+  "/api/v1/admin/flagged-accounts": ["get"],
+  "/api/v1/admin/fraud-flags": ["get"],
+  "/api/v1/admin/fraud-flags/{id}": ["patch"],
+  "/api/v1/admin/metrics": ["get"],
+  "/api/v1/admin/trades": ["get"],
+  "/api/v1/admin/trades/{id}/resolve": ["post"],
+  "/api/v1/admin/users": ["get"],
+  "/api/v1/admin/users/{phone}": ["get"],
+  "/api/v1/admin/webhooks": ["get"],
+  "/api/v1/admin/webhooks/{id}/replay": ["post"],
+  "/api/v1/auth/revoke": ["post"],
+  "/api/v1/events": ["get"],
+  "/api/v1/profile": ["patch", "put"],
+  "/api/v1/rates": ["get"],
+  "/api/v1/referrals": ["get"],
+  "/api/v1/referrals/stats": ["get"],
+  "/api/v1/test-async-error": ["get"],
+  "/api/v1/trades/{id}/dispute": ["post"],
+  "/api/v1/trades/{id}/rate": ["post"],
+  "/api/v1/users/{id}/ratings": ["get"],
+  "/api/v1/wallet/unlock": ["post"],
+  "/api/v1/webhooks/paystack": ["post"],
+  "/api/v1/webhooks/stellar": ["post"],
+  "/api/kyc/submit": ["post"],
+  "/api/admin/fraud-flags/{id}": ["patch"],
+  "/api/admin/trades/{id}/resolve": ["post"],
+  "/api/admin/webhooks/{id}/replay": ["post"],
+};
+
+const mutablePaths = openApiDocument.paths as unknown as Record<string, Record<string, unknown>>;
+for (const [route, methods] of Object.entries(routeCoverageOperations)) {
+  const pathItem = mutablePaths[route] ?? {};
+  for (const method of methods) {
+    pathItem[method] ??= {
+      summary: `${method.toUpperCase()} ${route}`,
+      description: "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+      responses: {
+        default: { description: "The response status and shape are defined by the route handler." },
+      },
+    };
+  }
+  mutablePaths[route] = pathItem;
+}

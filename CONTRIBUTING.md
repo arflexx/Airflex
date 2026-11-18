@@ -426,6 +426,9 @@ without inspecting the URL path.
 The canonical OpenAPI 3.0 spec lives at [`docs/openapi.yaml`](./docs/openapi.yaml).
 Update it whenever you add or modify an endpoint. The spec is the contract
 between the server and all consumers (frontend, mobile, third-party integrations).
+Server CI also checks the methods and paths mounted in `server/src/routes/index.ts`
+against `server/openapi.json`; update the route operations and regenerate the JSON
+whenever a route is added, removed, or moved.
 
 ---
 
