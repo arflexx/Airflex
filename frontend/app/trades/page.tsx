@@ -1,4 +1,5 @@
 import { getTranslations } from "next-intl/server";
+import ErrorBoundary from "../../components/ErrorBoundary";
 import MarketplaceListings from "../../components/MarketplaceListings";
 import type { Metadata } from "next";
 
@@ -18,7 +19,9 @@ export async function generateMetadata(): Promise<Metadata> {
 export default async function TradesPage() {
   return (
     <div className="mx-auto max-w-7xl px-4 py-12 sm:px-6 lg:px-8">
-      <MarketplaceListings fetchOnMount />
+      <ErrorBoundary context={{ section: "MarketplaceListings.page" }}>
+        <MarketplaceListings fetchOnMount />
+      </ErrorBoundary>
     </div>
   );
 }
