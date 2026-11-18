@@ -114,6 +114,32 @@ describe("UI Primitives", () => {
   });
 
   describe("Modal", () => {
+    it("names an untitled dialog and keeps keyboard focus inside", async () => {
+      render(
+        <>
+          <button type="button">Outside action</button>
+          <Modal isOpen onClose={jest.fn()} ariaLabel="Authentication dialog">
+            <button type="button">Continue</button>
+          </Modal>
+        </>
+      );
+
+      const dialog = screen.getByRole("dialog", { name: "Authentication dialog" });
+      const closeButton = screen.getByRole("button", { name: "Close dialog" });
+      const continueButton = screen.getByRole("button", { name: "Continue" });
+      expect(dialog).toHaveAttribute("aria-modal", "true");
+      await waitFor(() => expect(closeButton).toHaveFocus());
+
+      fireEvent.keyDown(closeButton, { key: "Tab", shiftKey: true });
+      expect(continueButton).toHaveFocus();
+      fireEvent.keyDown(continueButton, { key: "Tab" });
+      expect(closeButton).toHaveFocus();
+
+      screen.getByRole("button", { name: "Outside action" }).focus();
+      fireEvent.keyDown(screen.getByRole("button", { name: "Outside action" }), { key: "Tab" });
+      expect(closeButton).toHaveFocus();
+    });
+
     it("restores focus to the trigger after closing", () => {
       function ModalHarness() {
         const [open, setOpen] = React.useState(false);

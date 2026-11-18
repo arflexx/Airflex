@@ -16,6 +16,9 @@ export interface ModalProps {
    */
   title?: React.ReactNode;
 
+  /** Accessible name used when the dialog has no visible title. */
+  ariaLabel?: string;
+
   /**
    * Optional description text displayed under the title.
    */
@@ -52,6 +55,7 @@ export function Modal({
   isOpen,
   onClose,
   title,
+  ariaLabel,
   description,
   children,
   footer,
@@ -74,13 +78,25 @@ export function Modal({
 
       // Accessible Focus Trap
       if (e.key === "Tab" && modalRef.current) {
-        const focusableElements = modalRef.current.querySelectorAll<HTMLElement>(
-          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-        );
-        if (!focusableElements.length) return;
-
+        const focusableElements = Array.from(
+          modalRef.current.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), [href]:not([aria-disabled="true"]), input:not([type="hidden"]):not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"]):not([aria-disabled="true"])'
+          )
+        ).filter((element) => !element.closest('[hidden], [aria-hidden="true"]'));
         const firstElement = focusableElements[0];
         const lastElement = focusableElements[focusableElements.length - 1];
+
+        if (!firstElement || !lastElement) {
+          e.preventDefault();
+          modalRef.current.focus();
+          return;
+        }
+
+        if (!modalRef.current.contains(document.activeElement)) {
+          e.preventDefault();
+          (e.shiftKey ? lastElement : firstElement).focus();
+          return;
+        }
 
         if (e.shiftKey) {
           if (document.activeElement === firstElement) {
@@ -108,7 +124,7 @@ export function Modal({
       requestAnimationFrame(() => {
         if (modalRef.current) {
           const focusable = modalRef.current.querySelector<HTMLElement>(
-            'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+            'button:not([disabled]), [href]:not([aria-disabled="true"]), input:not([type="hidden"]):not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"]):not([aria-disabled="true"])'
           );
           focusable ? focusable.focus() : modalRef.current.focus();
         }
@@ -146,6 +162,7 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-labelledby={title ? titleId : undefined}
+        aria-label={!title ? ariaLabel ?? "Dialog" : undefined}
         aria-describedby={description ? descId : undefined}
         tabIndex={-1}
         className={`relative z-10 w-full ${maxWidth} rounded-2xl border border-gray-100 bg-white p-6 shadow-2xl transition-all outline-none dark:border-gray-700 dark:bg-gray-800`}
