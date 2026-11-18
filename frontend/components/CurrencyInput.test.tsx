@@ -1,12 +1,15 @@
 import React from "react";
 import { render, screen, fireEvent } from "@testing-library/react";
+import { axe, toHaveNoViolations } from "jest-axe";
 import { CurrencyInput } from "./CurrencyInput";
+
+expect.extend(toHaveNoViolations);
 
 describe("CurrencyInput Component", () => {
   it("renders input prefixed with ₦ symbol and formats thousands separator", () => {
     render(<CurrencyInput value={50000} onChange={jest.fn()} id="test-input" />);
 
-    const input = screen.getByRole("textbox") as HTMLInputElement;
+    const input = screen.getByRole("spinbutton") as HTMLInputElement;
     expect(input.value).toBe("50,000");
     expect(screen.getByText("₦")).toBeInTheDocument();
   });
@@ -15,7 +18,7 @@ describe("CurrencyInput Component", () => {
     const handleChange = jest.fn();
     render(<CurrencyInput value={0} onChange={handleChange} id="test-input" />);
 
-    const input = screen.getByRole("textbox");
+    const input = screen.getByRole("spinbutton");
     fireEvent.change(input, { target: { value: "₦ 50,000abc" } });
 
     expect(handleChange).toHaveBeenCalledWith(50000);
@@ -25,7 +28,7 @@ describe("CurrencyInput Component", () => {
     const handleChange = jest.fn();
     render(<CurrencyInput value={0} onChange={handleChange} id="test-input" />);
 
-    const input = screen.getByRole("textbox");
+    const input = screen.getByRole("spinbutton");
     fireEvent.paste(input, {
       clipboardData: { getData: () => "1,234.56abc" },
     });
@@ -44,13 +47,28 @@ describe("CurrencyInput Component", () => {
     const handleChange = jest.fn();
     render(<CurrencyInput value={500} onChange={handleChange} id="test-input" />);
 
-    const input = screen.getByRole("textbox");
+    const input = screen.getByRole("spinbutton");
 
     fireEvent.keyDown(input, { key: "ArrowUp" });
     expect(handleChange).toHaveBeenCalledWith(600);
 
     fireEvent.keyDown(input, { key: "ArrowDown" });
     expect(handleChange).toHaveBeenCalledWith(400);
+  });
+
+  it("exposes its name, bounds, current value, and announced validation", async () => {
+    const { container } = render(
+      <CurrencyInput value={50} min={100} max={500} onChange={jest.fn()} id="accessible-amount" />
+    );
+    const input = screen.getByRole("spinbutton", { name: "Amount in Nigerian naira" });
+
+    expect(input).toHaveAttribute("aria-valuemin", "100");
+    expect(input).toHaveAttribute("aria-valuemax", "500");
+    expect(input).toHaveAttribute("aria-valuenow", "50");
+    expect(input).toHaveAttribute("aria-valuetext", "₦50");
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByRole("alert")).toHaveAttribute("aria-live", "assertive");
+    expect(await axe(container)).toHaveNoViolations();
   });
 });
 

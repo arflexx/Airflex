@@ -303,3 +303,220 @@ Seller confirms delivery of the traded asset. Returns 202 immediately; `release_
 
 ---
 
+
+# Trades API Reference
+
+Manage P2P airtime and data exchange trade offers.
+
+## Create Trade
+
+Create a new trade offer.
+
+### Request
+
+`POST /api/v1/trades`
+
+```bash
+curl -X POST http://localhost:3001/api/v1/trades \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "asset_type": "MTN_AIRTIME",
+    "amount": 500,
+    "counterparty_address": "GBXRX2W5V3Z4Q42C3F6Q7QW8E9R0T1Y2U3I4O5P6A7S8D9F0G1H2J3K4"
+  }'
+```
+
+### Responses
+
+#### 201 Created
+```json
+{
+  "id": "c3029f63-1234-4ef5-9f5e-9a28c3104e11",
+  "seller_id": "b1028e52-4111-4bc4-8e4d-8a17b2093d00",
+  "buyer_id": null,
+  "asset_type": "MTN_AIRTIME",
+  "amount": 500,
+  "status": "Active",
+  "contract_listing_id": "listing_stellar_9981",
+  "escrow_tx_hash": null,
+  "expires_at": "2026-12-31T23:59:59Z",
+  "created_at": "2026-10-01T10:00:00Z",
+  "updated_at": "2026-10-01T10:00:00Z"
+}
+```
+
+#### 400 Bad Request
+```json
+{
+  "error": "Invalid request body format"
+}
+```
+
+#### 422 Unprocessable Entity
+```json
+{
+  "error": "Validation failed",
+  "details": {
+    "amount": ["Amount must be greater than zero"]
+  }
+}
+```
+
+---
+
+## List Trades
+
+Retrieve paginated trade offers.
+
+### Request
+
+`GET /api/v1/trades?page=1&limit=20&status=Active`
+
+### Responses
+
+#### 200 OK
+```json
+{
+  "trades": [
+    {
+      "id": "c3029f63-1234-4ef5-9f5e-9a28c3104e11",
+      "seller_id": "b1028e52-4111-4bc4-8e4d-8a17b2093d00",
+      "buyer_id": null,
+      "asset_type": "MTN_AIRTIME",
+      "amount": 500,
+      "status": "Active",
+      "contract_listing_id": "listing_stellar_9981",
+      "escrow_tx_hash": null,
+      "expires_at": "2026-12-31T23:59:59Z",
+      "created_at": "2026-10-01T10:00:00Z",
+      "updated_at": "2026-10-01T10:00:00Z"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 20,
+    "total": 1,
+    "totalPages": 1
+  }
+}
+```
+
+#### 400 Bad Request
+```json
+{
+  "error": "Invalid query parameters provided"
+}
+```
+
+#### 422 Unprocessable Entity
+```json
+{
+  "error": "Validation failed",
+  "details": {
+    "page": ["Expected number, received NaN"]
+  }
+}
+```
+
+---
+
+## Get Trade by ID
+
+Retrieve specific trade details.
+
+### Request
+
+`GET /api/v1/trades/c3029f63-1234-4ef5-9f5e-9a28c3104e11`
+
+### Responses
+
+#### 200 OK
+```json
+{
+  "id": "c3029f63-1234-4ef5-9f5e-9a28c3104e11",
+  "seller_id": "b1028e52-4111-4bc4-8e4d-8a17b2093d00",
+  "buyer_id": "a2917d41-3333-4ab3-7d3c-7a06a1982c99",
+  "asset_type": "MTN_AIRTIME",
+  "amount": 500,
+  "status": "Locked",
+  "contract_listing_id": "listing_stellar_9981",
+  "escrow_tx_hash": "3a82f6f1c29e0789123456789abcdef0123456789abcdef0123456789abcdef0",
+  "expires_at": "2026-12-31T23:59:59Z",
+  "created_at": "2026-10-01T10:00:00Z",
+  "updated_at": "2026-10-01T10:05:00Z"
+}
+```
+
+#### 400 Bad Request
+```json
+{
+  "error": "Invalid trade ID format"
+}
+```
+
+#### 404 Not Found
+```json
+{
+  "error": "Trade offer not found"
+}
+```
+
+---
+
+## Update Trade Status
+
+Update status of an existing trade offer.
+
+### Request
+
+`PATCH /api/v1/trades/c3029f63-1234-4ef5-9f5e-9a28c3104e11/status`
+
+```json
+{
+  "status": "Locked"
+}
+```
+
+### Responses
+
+#### 200 OK
+```json
+{
+  "id": "c3029f63-1234-4ef5-9f5e-9a28c3104e11",
+  "seller_id": "b1028e52-4111-4bc4-8e4d-8a17b2093d00",
+  "buyer_id": "a2917d41-3333-4ab3-7d3c-7a06a1982c99",
+  "asset_type": "MTN_AIRTIME",
+  "amount": 500,
+  "status": "Locked",
+  "contract_listing_id": "listing_stellar_9981",
+  "escrow_tx_hash": "3a82f6f1c29e0789123456789abcdef0123456789abcdef0123456789abcdef0",
+  "expires_at": "2026-12-31T23:59:59Z",
+  "created_at": "2026-10-01T10:00:00Z",
+  "updated_at": "2026-10-01T10:05:00Z"
+}
+```
+
+#### 400 Bad Request
+```json
+{
+  "error": "Invalid status transition"
+}
+```
+
+#### 404 Not Found
+```json
+{
+  "error": "Trade offer not found"
+}
+```
+
+#### 422 Unprocessable Entity
+```json
+{
+  "error": "Validation failed",
+  "details": {
+    "status": ["Invalid status value"]
+  }
+}
+```

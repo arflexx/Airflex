@@ -1,7 +1,10 @@
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import "@testing-library/jest-dom";
+import { axe, toHaveNoViolations } from "jest-axe";
 import Navbar from "./Navbar";
+
+expect.extend(toHaveNoViolations);
 
 let currentPathname = "/";
 
@@ -116,5 +119,44 @@ describe("Navbar Active Route Indicator (Issue #327)", () => {
     render(<Navbar initialDrawerOpen={true} />);
     const drawer = screen.getByRole("dialog", { name: "Navigation menu" });
     expect(drawer.className).toContain("translate-x-0");
+  });
+
+  it("keeps keyboard focus within the open drawer and restores it on Escape", () => {
+    render(<Navbar />);
+    const trigger = screen.getByRole("button", { name: "Open menu" });
+    fireEvent.click(trigger);
+
+    const drawer = screen.getByRole("dialog", { name: "Navigation menu" });
+    expect(within(drawer).getByRole("link", { name: "Marketplace" })).toHaveFocus();
+
+    const focusable = Array.from(
+      drawer.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])')
+    );
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    first?.focus();
+    fireEvent.keyDown(first as HTMLElement, { key: "Tab", shiftKey: true });
+    expect(last).toHaveFocus();
+
+    last?.focus();
+    fireEvent.keyDown(last as HTMLElement, { key: "Tab" });
+    expect(first).toHaveFocus();
+
+    fireEvent.keyDown(drawer, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Navigation menu" })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
+  it("has no axe accessibility violations when the navigation drawer is open", async () => {
+    const { container } = render(<Navbar initialDrawerOpen />);
+
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
+  it("keeps the closed navigation drawer out of the accessibility tree", async () => {
+    const { container } = render(<Navbar />);
+
+    expect(screen.queryByRole("dialog", { name: "Navigation menu" })).not.toBeInTheDocument();
+    expect(await axe(container)).toHaveNoViolations();
   });
 });

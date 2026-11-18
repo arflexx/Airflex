@@ -2,8 +2,10 @@
   "index": "Introduction",
   "getting-started": "Getting Started",
   "api-reference": "API Reference",
+  "kyc-onboarding": "KYC Onboarding",
   "contract-reference": "Contract Reference",
   "sdk-reference": "SDK Reference",
+  "escrow-dispute-flow": "Escrow Dispute Flow",
   "deployment": "Deployment",
   "contributing": "Contributing"
 }

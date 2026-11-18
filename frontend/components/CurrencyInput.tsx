@@ -116,6 +116,7 @@ export function CurrencyInput({
           id={id}
           name={name}
           type="text"
+          role="spinbutton"
           inputMode="numeric"
           value={displayValue}
           onChange={handleChange}
@@ -123,6 +124,11 @@ export function CurrencyInput({
           onPaste={handlePaste}
           placeholder={placeholder}
           disabled={disabled}
+          aria-label={rest["aria-label"] ?? "Amount in Nigerian naira"}
+          aria-valuemin={min ?? 0}
+          aria-valuemax={max}
+          aria-valuenow={numericValue}
+          aria-valuetext={`₦${displayValue || "0"}`}
           aria-invalid={isBelowMin || Boolean(errorText) ? "true" : undefined}
           aria-describedby={
             minErrorMessage || errorText ? `${id}-error` : rest["aria-describedby"]
@@ -133,7 +139,7 @@ export function CurrencyInput({
       </div>
 
       {(minErrorMessage || errorText) && (
-        <p id={`${id}-error`} role="alert" className="text-xs font-medium text-red-600 dark:text-red-400">
+        <p id={`${id}-error`} role="alert" aria-live="assertive" className="text-xs font-medium text-red-600 dark:text-red-400">
           {minErrorMessage || errorText}
         </p>
       )}

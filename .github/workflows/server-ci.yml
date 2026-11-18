@@ -57,6 +57,12 @@ jobs:
       - name: Type-check
         run: pnpm tsc --noEmit
 
+      - name: Check generated OpenAPI document
+        run: pnpm check:openapi
+
+      - name: Check registered routes against OpenAPI
+        run: pnpm check:route-spec
+
       - name: Test
         id: tests
         continue-on-error: true

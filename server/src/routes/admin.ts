@@ -337,6 +337,16 @@ router.post(
  * from O(n) correlated lookups to O(1) sequential scans regardless of page size.
  * `transactions(user_id)` is indexed by migration 010 (added alongside this
  * change) so the aggregation scan uses the index rather than a full table scan.
+ *
+ * Issue #480: the grouped subqueries above still aggregated *every* row in
+ * `transactions` and `trade_offers` on each request, so latency grew with
+ * total platform activity even though only one page of users is returned.
+ * The page is now selected first (`page_users` CTE) and both aggregates are
+ * restricted to that page with a batched `IN (SELECT id FROM page_users)`,
+ * which lets Postgres use the user_id / seller_id / buyer_id indexes from
+ * migration 010. The handler still issues exactly two queries per request
+ * (page + total count) regardless of page size, and the response shape and
+ * ordering are unchanged.
  */
 router.get(
   "/users",
@@ -362,31 +372,39 @@ router.get(
       balance: number;
       tradeCount: number;
     }>(
-      `SELECT
-         u.id,
-         u.phone,
-         u.created_at AS "registrationDate",
+      `WITH page_users AS (
+         SELECT id, phone, created_at
+         FROM users
+         ORDER BY created_at DESC
+         LIMIT $1 OFFSET $2
+       )
+       SELECT
+         pu.id,
+         pu.phone,
+         pu.created_at AS "registrationDate",
          COALESCE(tx_agg.net_balance, 0)::float8          AS balance,
          COALESCE(tr_agg.trade_count, 0)::int             AS "tradeCount"
-       FROM users u
+       FROM page_users pu
        LEFT JOIN (
          SELECT
            user_id,
            SUM(CASE WHEN direction = 'credit' THEN amount ELSE -amount END) AS net_balance
          FROM transactions
+         WHERE user_id IN (SELECT id FROM page_users)
          GROUP BY user_id
-       ) tx_agg ON tx_agg.user_id = u.id
+       ) tx_agg ON tx_agg.user_id = pu.id
        LEFT JOIN (
          SELECT participant_id, COUNT(*) AS trade_count
          FROM (
-           SELECT seller_id AS participant_id FROM trade_offers WHERE seller_id IS NOT NULL
+           SELECT seller_id AS participant_id FROM trade_offers
+           WHERE seller_id IN (SELECT id FROM page_users)
            UNION ALL
-           SELECT buyer_id  AS participant_id FROM trade_offers WHERE buyer_id  IS NOT NULL
+           SELECT buyer_id  AS participant_id FROM trade_offers
+           WHERE buyer_id  IN (SELECT id FROM page_users)
          ) participation
          GROUP BY participant_id
-       ) tr_agg ON tr_agg.participant_id = u.id
-       ORDER BY u.created_at DESC
-       LIMIT $1 OFFSET $2`,
+       ) tr_agg ON tr_agg.participant_id = pu.id
+       ORDER BY pu.created_at DESC`,
       [limit, offset]
     );
 

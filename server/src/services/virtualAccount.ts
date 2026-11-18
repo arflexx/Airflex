@@ -109,7 +109,96 @@ interface PaystackCustomerResponse {
   data: {
     customer_code: string;
     email: string;
+    id?: number;
+    dedicated_account?: { active?: boolean | number } | null;
   };
+}
+
+export interface PaystackDvaTransaction {
+  reference: string;
+  amount: number;
+  currency: string;
+  channel: string;
+  status: string;
+}
+
+interface PaystackTransactionListResponse {
+  status: boolean;
+  data: PaystackDvaTransaction[];
+  meta?: { pageCount?: number };
+}
+
+/**
+ * Lists successful NGN deposits for an active dedicated virtual account.
+ * Paystack exposes customer transactions rather than a current DVA balance;
+ * callers can reconcile these payment references against the local deposit
+ * ledger without changing wallet balances.
+ */
+export async function listDedicatedAccountTransactions(
+  customerCode: string
+): Promise<PaystackDvaTransaction[] | null> {
+  const paystackKey = process.env["PAYSTACK_SECRET_KEY"];
+  if (!paystackKey) throw new Error("PAYSTACK_SECRET_KEY is not set");
+
+  const headers = { Authorization: `Bearer ${paystackKey}` };
+  const customerResponse = await paystackFetch(
+    "fetch customer for reconciliation",
+    `https://api.paystack.co/customer/${encodeURIComponent(customerCode)}`,
+    { method: "GET", headers }
+  );
+  if (!customerResponse.ok) {
+    throw new Error(`Paystack customer lookup failed [${customerResponse.status}]`);
+  }
+
+  const customer = (await customerResponse.json()) as PaystackCustomerResponse;
+  const customerId = customer.data?.id;
+  const accountActive = customer.data?.dedicated_account?.active;
+  if (accountActive !== true && accountActive !== 1) return null;
+  if (!Number.isSafeInteger(customerId) || !customerId || customerId < 1) {
+    throw new Error("Paystack customer response is missing a valid customer ID");
+  }
+
+  const pageSize = 100;
+  const maxPages = 1_000;
+  const transactions: PaystackDvaTransaction[] = [];
+  for (let page = 1; page <= maxPages; page++) {
+    const url = new URL("https://api.paystack.co/transaction");
+    url.searchParams.set("customer", String(customerId));
+    url.searchParams.set("status", "success");
+    url.searchParams.set("perPage", String(pageSize));
+    url.searchParams.set("page", String(page));
+
+    const response = await paystackFetch("list customer transactions", url.toString(), {
+      method: "GET",
+      headers,
+    });
+    if (!response.ok) {
+      throw new Error(`Paystack transaction lookup failed [${response.status}]`);
+    }
+
+    const result = (await response.json()) as PaystackTransactionListResponse;
+    if (!result.status || !Array.isArray(result.data)) {
+      throw new Error("Paystack returned an invalid customer transaction response");
+    }
+    transactions.push(
+      ...result.data.filter(
+        (transaction) =>
+          transaction.status === "success" &&
+          transaction.channel === "dedicated_nuban" &&
+          transaction.currency === "NGN" &&
+          typeof transaction.reference === "string" &&
+          Number.isSafeInteger(transaction.amount) &&
+          transaction.amount >= 0
+      )
+    );
+
+    const pageCount = result.meta?.pageCount;
+    if (pageCount !== undefined ? page >= pageCount : result.data.length < pageSize) {
+      return transactions;
+    }
+  }
+
+  throw new Error(`Paystack transaction history exceeded the ${maxPages}-page safety limit`);
 }
 
 interface PaystackDVAResponse {

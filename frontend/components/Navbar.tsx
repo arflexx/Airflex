@@ -19,7 +19,7 @@
  * a single `<Navbar />` import — no props required.
  */
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, type KeyboardEvent } from "react";
 import { usePathname } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { getUser, clearToken, isAuthenticated } from "../app/lib/auth";
@@ -213,27 +213,43 @@ export default function Navbar({
     setDrawerOpen(false);
   }, [pathname]);
 
-  // ---- Escape key closes drawer -------------------------------------------
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape" && drawerOpen) {
-        setDrawerOpen(false);
-        hamburgerRef.current?.focus();
-      }
-    }
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [drawerOpen]);
-
-  // ---- trap focus inside drawer -------------------------------------------
+  // ---- focus the first navigation item when the drawer opens ---------------
   useEffect(() => {
     if (!drawerOpen) return;
-    // Focus the first focusable element inside the drawer
-    const first = drawerRef.current?.querySelector<HTMLElement>(
-      'a, button, [tabindex]:not([tabindex="-1"])'
-    );
-    first?.focus();
+    drawerRef.current?.querySelector<HTMLElement>('nav a[href]')?.focus();
   }, [drawerOpen]);
+
+  function closeDrawer() {
+    setDrawerOpen(false);
+    hamburgerRef.current?.focus();
+  }
+
+  function handleDrawerKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeDrawer();
+      return;
+    }
+
+    if (event.key !== "Tab" || !drawerRef.current) return;
+
+    const focusable = Array.from(
+      drawerRef.current.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      )
+    ).filter((element) => element.getAttribute("aria-hidden") !== "true");
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const active = document.activeElement;
+
+    if (event.shiftKey && (active === first || !drawerRef.current.contains(active))) {
+      event.preventDefault();
+      last?.focus();
+    } else if (!event.shiftKey && (active === last || !drawerRef.current.contains(active))) {
+      event.preventDefault();
+      first?.focus();
+    }
+  }
 
   // ---- logout -------------------------------------------------------------
   function handleLogout() {
@@ -383,19 +399,18 @@ export default function Navbar({
         <div
           aria-hidden="true"
           className="fixed inset-0 z-30 bg-black/40 md:hidden"
-          onClick={() => setDrawerOpen(false)}
+          onClick={closeDrawer}
         />
       )}
 
-      <div
+      {drawerOpen && <div
         id="mobile-drawer"
         ref={drawerRef}
         role="dialog"
         aria-modal="true"
         aria-label={t("navMenu")}
-        className={`fixed inset-y-0 right-0 z-50 w-72 max-w-full transform bg-white shadow-2xl transition-transform duration-200 ease-in-out md:hidden dark:bg-gray-900 ${
-          drawerOpen ? "translate-x-0" : "translate-x-full"
-        }`}
+        onKeyDown={handleDrawerKeyDown}
+        className="fixed inset-y-0 right-0 z-50 w-72 max-w-full transform bg-white shadow-2xl transition-transform duration-200 ease-in-out md:hidden dark:bg-gray-900 translate-x-0"
       >
         {/* Drawer header */}
         <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4 dark:border-gray-700">
@@ -411,7 +426,7 @@ export default function Navbar({
           </a>
           <button
             type="button"
-            onClick={() => { setDrawerOpen(false); hamburgerRef.current?.focus(); }}
+            onClick={closeDrawer}
             aria-label={t("closeMenu")}
             className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-gray-500 transition-colors hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 dark:text-gray-400 dark:hover:bg-gray-800"
           >
@@ -427,6 +442,7 @@ export default function Navbar({
               href={href}
               aria-current={isActive(href) ? "page" : undefined}
               className={`${drawerLinkBase} ${isActive(href) ? drawerLinkActive : drawerLinkDefault}`}
+              onClick={() => setDrawerOpen(false)}
             >
               {t(labelKey)}
             </a>
@@ -475,6 +491,7 @@ export default function Navbar({
             ) : (
               <a
                 href="/auth/signup"
+                onClick={() => setDrawerOpen(false)}
                 className="flex w-full items-center justify-center rounded-xl bg-violet-600 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"
               >
                 {t("signIn")}
@@ -482,7 +499,7 @@ export default function Navbar({
             )}
           </div>
         )}
-      </div>
+      </div>}
     </>
   );
 }

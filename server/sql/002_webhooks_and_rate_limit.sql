@@ -47,13 +47,16 @@ CREATE INDEX IF NOT EXISTS idx_payment_events_received ON payment_events (receiv
 
 CREATE TABLE IF NOT EXISTS otp_requests (
     id           BIGSERIAL PRIMARY KEY,
-    phone        VARCHAR(32)  NOT NULL,
+    phone        VARCHAR(320) NOT NULL,
+    ip           VARCHAR(64),
     requested_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
--- The limiter's only query is "count rows for this phone since T".
+-- The limiter counts rows by phone and IP over the same sliding window.
 CREATE INDEX IF NOT EXISTS idx_otp_requests_phone_time
     ON otp_requests (phone, requested_at DESC);
+CREATE INDEX IF NOT EXISTS idx_otp_requests_ip_time
+    ON otp_requests (ip, requested_at DESC);
 
 -- ---------------------------------------------------------------------------
 -- Columns the deposit path expects

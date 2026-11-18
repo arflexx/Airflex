@@ -5,13 +5,15 @@
  *
  * Uses next-intl's locale-aware router so navigation preserves the current
  * page while switching locale (e.g. `/wallet` → `/yo/wallet`). The choice is
- * persisted in the `NEXT_LOCALE` cookie by the i18n middleware.
+ * persisted to LocalStorage via the storage helper for client-side persistence
+ * across sessions.
  */
 
 import { useState, useRef, useEffect, useTransition } from "react";
 import { useLocale } from "next-intl";
 import { useRouter, usePathname } from "../i18n/navigation";
 import { routing } from "../i18n/routing";
+import { saveLocale } from "../lib/storage";
 
 const LOCALE_LABELS: Record<(typeof routing.locales)[number], string> = {
   en: "English",
@@ -45,6 +47,8 @@ export default function LanguageSwitcher() {
       return;
     }
     setOpen(false);
+    // Persist the selected locale to LocalStorage
+    saveLocale(next);
     startTransition(() => {
       router.replace(pathname, { locale: next });
     });
