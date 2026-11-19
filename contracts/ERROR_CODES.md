@@ -31,6 +31,7 @@ next integer, because deployed callers decode by discriminant.
 | `15` | `PauseCooldownNotExpired` | `unpause` was called before the 5-minute pause cooldown elapsed. | Escrow |
 | `15` | `StorageLimitExceeded` | The seller has reached the maximum permitted number of active listings in storage. | Marketplace |
 | `16` | `DuplicateFill` | The buyer already holds an active (unreleased, unrefunded) sub-escrow on this trade — one active fill per buyer per trade (issue #294). | Escrow |
+| `18` | `DISPUTE_COOLDOWN_ACTIVE` (`DisputeCooldownActive`) | `flag_dispute` was called on this trade again before `dispute_cooldown_seconds` (default `3600`, set at `initialize`) had elapsed since the previous dispute flag (issue #642). | Escrow |
 
 ## Escrow Contract — Canonical Error Code Table
 
@@ -55,6 +56,8 @@ New codes are always appended; existing values are never changed.
 | `14` | `NotAParty` | Caller is not the seller or any buyer on this trade. |
 | `15` | `PauseCooldownNotExpired` | Pause cooldown window has not elapsed before unpause. |
 | `16` | `InvalidCategory` | `asset_type` symbol is not on the admin-managed allowed categories list. |
+| `17` | `DuplicateFill` | The buyer already holds an active (unreleased, unrefunded) sub-escrow on this trade. |
+| `18` | `DisputeCooldownActive` | `flag_dispute` was called again on this trade before `dispute_cooldown_seconds` had elapsed since the previous flag. |
 
 ## Handling Errors
 

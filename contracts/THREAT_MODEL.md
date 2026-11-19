@@ -52,6 +52,14 @@ This document outlines the threat modeling analysis for AirFlex Soroban smart co
 
 ---
 
+### 6. Dispute Spam / Griefing via Repeated `flag_dispute` Calls (Mitigated — Issue #642)
+* **Threat Vector**: Either trading party calls `flag_dispute` repeatedly on the same trade — re-flagging immediately after the first call — to spam the dispute path, exhaust the counterparty's ability to respond in time, or game the timing of admin dispute resolution.
+* **Impact**: Medium — Griefing / denial-of-service against the counterparty and the admin resolution queue. No direct fund loss, but it degrades trust in the dispute mechanism and can be used to pressure a counterparty.
+* **Mitigation**:
+  * A per-trade `dispute_cooldown_seconds` window (default `3600`, set once at `initialize`) gates every `flag_dispute` call, tracked via a `DataKey::LastDisputeAt(trade_id)` ledger timestamp.
+  * A repeat call inside the cooldown window reverts with `ContractError::DisputeCooldownActive` (error code `18`, see [ERROR_CODES.md](./ERROR_CODES.md)) instead of silently succeeding or re-emitting dispute events.
+  * Once the cooldown has elapsed, a further call is accepted as a legitimate re-escalation (bumping the last-flagged timestamp) rather than being rejected outright, so a dispute that is still genuinely unresolved isn't permanently stuck.
+
 ---
 
 ### 7. Secret Key Transmitted in Trade Request Body (Resolved — Issue #245)

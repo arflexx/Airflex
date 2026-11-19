@@ -9,6 +9,7 @@ import {
   Transaction,
   Address,
   nativeToScVal,
+  scValToNative,
   Contract,
 } from "@stellar/stellar-sdk";
 import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
@@ -632,6 +633,162 @@ export async function resolveDispute(params: {
   return response.hash;
 }
 
+// ---------------------------------------------------------------------------
+// Escrow event processing (issue #639)
+// ---------------------------------------------------------------------------
+// The escrow contract publishes a canonical `EscrowCreated` / `EscrowReleased`
+// / `EscrowRefunded` / `EscrowDisputed` event for every state transition (see
+// contracts/escrow/README.md#events-issue-639), each carrying
+// `(escrow_id, actor, amount, timestamp)`. Indexers, audit tooling, and the
+// backend oracle can subscribe to these events via Soroban RPC's `getEvents`
+// instead of polling `get_trade` after every trade action. The helpers below
+// fetch and parse them.
+
+/** The four canonical escrow state-transition event topics (issue #639). */
+export type EscrowEventTopic =
+  | "EscrowCreated"
+  | "EscrowReleased"
+  | "EscrowRefunded"
+  | "EscrowDisputed";
+
+const ESCROW_EVENT_TOPICS: ReadonlySet<string> = new Set<EscrowEventTopic>([
+  "EscrowCreated",
+  "EscrowReleased",
+  "EscrowRefunded",
+  "EscrowDisputed",
+]);
+
+/** A parsed, typed escrow state-transition event (issue #639). */
+export interface EscrowStateTransitionEvent {
+  /** Which canonical state transition this event represents. */
+  topic: EscrowEventTopic;
+  /** On-chain trade ID (the escrow's `DataKey::Trade` key). */
+  escrowId: string;
+  /** Address that triggered (or is the recipient subject of) the transition. */
+  actor: string;
+  /** Amount, in stroops, associated with the transition. */
+  amount: string;
+  /** Contract-recorded ledger timestamp (unix seconds) of the transition. */
+  timestamp: string;
+  /** Soroban RPC ledger sequence the event was emitted in. */
+  ledger: number;
+  /** Hash of the transaction that triggered the event. */
+  txHash: string;
+  /** Opaque Soroban RPC pagination cursor for this individual event. */
+  id: string;
+}
+
+/**
+ * Parses a single raw Soroban RPC event into a typed
+ * `EscrowStateTransitionEvent`, or returns `null` when the event isn't one of
+ * the four canonical state-transition topics (issue #639) — e.g. it's one of
+ * the contract's pre-existing short-form topics (`created`, `locked`, …), or
+ * belongs to an unrelated invocation. `getEvents` returns every event a
+ * contract emits, so callers always need this filter, not just a fetch.
+ */
+function parseEscrowEvent(
+  event: SorobanRpc.Api.EventResponse
+): EscrowStateTransitionEvent | null {
+  const topicScVal = event.topic[0];
+  if (!topicScVal) {
+    return null;
+  }
+
+  let topicName: string;
+  try {
+    topicName = scValToNative(topicScVal) as string;
+  } catch {
+    return null;
+  }
+
+  if (!ESCROW_EVENT_TOPICS.has(topicName)) {
+    return null;
+  }
+
+  try {
+    const [escrowId, actor, amount, timestamp] = scValToNative(event.value) as [
+      bigint | number | string,
+      string,
+      bigint | number | string,
+      bigint | number | string
+    ];
+
+    return {
+      topic: topicName as EscrowEventTopic,
+      escrowId: String(escrowId),
+      actor: String(actor),
+      amount: String(amount),
+      timestamp: String(timestamp),
+      ledger: event.ledger,
+      txHash: event.txHash,
+      id: event.id,
+    };
+  } catch {
+    // Malformed/unexpected value shape — skip rather than throw, so one bad
+    // event doesn't take down an entire batch for an indexer/poller.
+    return null;
+  }
+}
+
+/**
+ * Fetches and parses the canonical escrow state-transition events (issue
+ * #639) emitted by the escrow contract from `startLedger` onward (inclusive),
+ * up to the latest ledger Soroban RPC has retained.
+ *
+ * Intended for the backend oracle / indexers: callers should persist the
+ * highest `ledger` they've processed and pass `lastLedger + 1` as
+ * `startLedger` on the next call to process events incrementally rather than
+ * re-scanning the whole retention window every time.
+ *
+ * @param startLedger first ledger sequence (inclusive) to scan for events.
+ */
+export async function fetchEscrowEvents(
+  startLedger: number
+): Promise<EscrowStateTransitionEvent[]> {
+  const contractAddress = ESCROW_CONTRACT_ID;
+  if (!contractAddress) {
+    throw new Error(
+      "ESCROW_CONTRACT_ID is not set. Deploy the escrow contract or set the env variable."
+    );
+  }
+
+  const tracer = getTracer();
+  return tracer.startActiveSpan("soroban.fetch_escrow_events", async (span: Span) => {
+    span.setAttribute("soroban.contract_id", contractAddress);
+    span.setAttribute("soroban.start_ledger", startLedger);
+
+    try {
+      const response = await sorobanServer.getEvents({
+        startLedger,
+        filters: [
+          {
+            type: "contract",
+            contractIds: [contractAddress],
+          },
+        ],
+      });
+
+      const events: EscrowStateTransitionEvent[] = [];
+      for (const rawEvent of response.events) {
+        const parsed = parseEscrowEvent(rawEvent);
+        if (parsed) {
+          events.push(parsed);
+        }
+      }
+
+      span.setAttribute("soroban.events_found", events.length);
+      return events;
+    } catch (err) {
+      span.recordException(err as Error);
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { SpanStatusCode } = require("@opentelemetry/api");
+      span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+      throw err;
+    } finally {
+      span.end();
+    }
+  });
+}
 
 /**
  * Polls Soroban RPC until a submitted transaction reaches a terminal state.
