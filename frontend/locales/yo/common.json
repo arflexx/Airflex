@@ -156,7 +156,11 @@
     "offerHasExpired": "Ìpèsè yìí ti parí.",
     "timeRemaining": "Àkókò tó kù: {time}",
     "offerExpiredAria": "Ìpèsè yìí ti parí",
-    "buyAria": "Ra {asset} tó jẹ́ ₦{amount} láti ọwọ́ {seller}"
+    "buyAria": "Ra {asset} tó jẹ́ ₦{amount} láti ọwọ́ {seller}",
+    "errorTradeNotFound": "This trade is no longer available.",
+    "errorTradeNotAvailable": "This trade is no longer available for purchase.",
+    "errorTradeNoListing": "This trade has no associated contract listing and cannot be purchased.",
+    "errorSelfBuyForbidden": "You cannot buy your own trade listing."
   },
   "Sell": {
     "metaTitle": "Ta Airtime",

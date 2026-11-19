@@ -23,7 +23,8 @@ import {
 } from "../services/tradeVerification";
 import { NotificationService } from "../services/notifications";
 import { asyncHandler } from "../utils/asyncHandler";
-import type { TradeOffer } from "../types/trade";
+import { TradeErrorCode, type TradeOffer } from "../types/trade";
+import { rateLimitTrade } from "../middleware/rateLimitTrade";
 import {
   createTradeSchema,
   buyTradeSchema,
@@ -94,6 +95,7 @@ router.get(
     if (!parsed.success) {
       res.status(400).json({
         error: "Invalid query parameters",
+        code: TradeErrorCode.INVALID_QUERY,
         details: parsed.error.flatten().fieldErrors,
       });
       return;
@@ -192,6 +194,10 @@ router.get(
 router.post(
   "/",
   authenticate,
+  // Dedicated per-user limit on trade creation, on top of the global
+  // fraud-detection velocity check — prevents a single user from bursting
+  // POST requests within the same window (issue #617 / #614).
+  rateLimitTrade,
   validate(createTradeSchema),
   tracedStage("create", async (req, res) => {
     const { assetType, amount, expiresInHours } = req.body as CreateTradeInput;
@@ -223,7 +229,7 @@ router.post(
     );
 
     if (!kycRows.length) {
-      res.status(404).json({ error: "User not found" });
+      res.status(404).json({ error: "User not found", code: TradeErrorCode.USER_NOT_FOUND });
       return;
     }
 
@@ -232,6 +238,7 @@ router.post(
         error:
           "KYC verification is required before creating a trade listing. " +
           "Submit your KYC documents via POST /api/kyc/submit.",
+        code: TradeErrorCode.KYC_REQUIRED,
       });
       return;
     }
@@ -245,7 +252,7 @@ router.post(
     );
 
     if (!walletRows.length || !walletRows[0]?.stellar_secret_key) {
-      res.status(400).json({ error: "Seller wallet not found" });
+      res.status(400).json({ error: "Seller wallet not found", code: TradeErrorCode.WALLET_NOT_FOUND });
       return;
     }
 
@@ -338,7 +345,7 @@ router.get(
     );
 
     if (!rows.length) {
-      res.status(404).json({ error: "Trade offer not found" });
+      res.status(404).json({ error: "Trade offer not found", code: TradeErrorCode.TRADE_NOT_FOUND });
       return;
     }
 
@@ -383,7 +390,7 @@ async function loadBuyableTrade(
   );
 
   if (!rows.length) {
-    res.status(404).json({ error: "Trade offer not found" });
+    res.status(404).json({ error: "Trade offer not found", code: TradeErrorCode.TRADE_NOT_FOUND });
     return null;
   }
 
@@ -392,17 +399,24 @@ async function loadBuyableTrade(
   if (trade.status !== "Active") {
     res.status(400).json({
       error: `Trade is not available for purchase (status: ${trade.status})`,
+      code: TradeErrorCode.TRADE_NOT_AVAILABLE,
     });
     return null;
   }
 
   if (!trade.contract_listing_id) {
-    res.status(400).json({ error: "Trade has no associated contract listing" });
+    res.status(400).json({
+      error: "Trade has no associated contract listing",
+      code: TradeErrorCode.TRADE_NO_LISTING,
+    });
     return null;
   }
 
   if (trade.seller_id === buyerId) {
-    res.status(400).json({ error: "Seller cannot buy their own trade" });
+    res.status(400).json({
+      error: "Seller cannot buy their own trade",
+      code: TradeErrorCode.TRADE_SELF_BUY_FORBIDDEN,
+    });
     return null;
   }
 
@@ -523,7 +537,10 @@ router.post(
       await triggerVerification(id!, sellerId);
     } catch (err) {
       if (err instanceof VerificationError) {
-        res.status(err.statusCode).json({ error: err.message });
+        res.status(err.statusCode).json({
+          error: err.message,
+          code: err.code ?? TradeErrorCode.TRADE_INVALID_STATE,
+        });
         return;
       }
       throw err; // Re-throw unexpected errors to global handler
@@ -562,7 +579,7 @@ router.post(
     );
 
     if (!tradeRows.length) {
-      res.status(404).json({ error: "Trade offer not found" });
+      res.status(404).json({ error: "Trade offer not found", code: TradeErrorCode.TRADE_NOT_FOUND });
       return;
     }
 
@@ -570,18 +587,22 @@ router.post(
 
     // Viewer must be buyer or seller
     if (trade.seller_id !== userId && trade.buyer_id !== userId) {
-      res.status(403).json({ error: "Only the buyer or seller can dispute this trade" });
+      res.status(403).json({
+        error: "Only the buyer or seller can dispute this trade",
+        code: TradeErrorCode.TRADE_FORBIDDEN_DISPUTE,
+      });
       return;
     }
 
     if (trade.status === "Disputed") {
-      res.status(409).json({ error: "Trade is already disputed" });
+      res.status(409).json({ error: "Trade is already disputed", code: TradeErrorCode.TRADE_ALREADY_DISPUTED });
       return;
     }
 
     if (trade.status !== "Locked") {
       res.status(400).json({
         error: `Only locked trades can be disputed (current status: ${trade.status})`,
+        code: TradeErrorCode.TRADE_NOT_LOCKED,
       });
       return;
     }
@@ -596,7 +617,10 @@ router.post(
     );
 
     if (!updated.length) {
-      res.status(409).json({ error: "Trade is no longer in a locked state" });
+      res.status(409).json({
+        error: "Trade is no longer in a locked state",
+        code: TradeErrorCode.TRADE_STATE_CONFLICT,
+      });
       return;
     }
 
@@ -634,19 +658,25 @@ router.post(
     );
 
     if (!trades.length) {
-      res.status(404).json({ error: "Trade not found" });
+      res.status(404).json({ error: "Trade not found", code: TradeErrorCode.TRADE_NOT_FOUND });
       return;
     }
 
     const trade = trades[0]!;
 
     if (trade.status !== "Completed") {
-      res.status(400).json({ error: "Only completed trades can be rated" });
+      res.status(400).json({
+        error: "Only completed trades can be rated",
+        code: TradeErrorCode.TRADE_NOT_COMPLETED,
+      });
       return;
     }
 
     if (trade.buyer_id !== reviewerId) {
-      res.status(403).json({ error: "Only the buyer can rate this trade" });
+      res.status(403).json({
+        error: "Only the buyer can rate this trade",
+        code: TradeErrorCode.TRADE_FORBIDDEN_RATE,
+      });
       return;
     }
 
@@ -679,7 +709,10 @@ router.post(
     } catch (err: unknown) {
       const pgCode = (err as { code?: string }).code;
       if (pgCode === "23505") {
-        res.status(409).json({ error: "This trade has already been rated" });
+        res.status(409).json({
+          error: "This trade has already been rated",
+          code: TradeErrorCode.TRADE_ALREADY_RATED,
+        });
         return;
       }
       throw err;
