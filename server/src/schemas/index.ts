@@ -33,11 +33,13 @@ export {
   resolveDisputeSchema,
   reviewFraudFlagSchema,
   auditLogQuerySchema,
+  updateKycStatusSchema,
   AUDIT_ACTIONS,
   AUDIT_TARGET_TYPES,
   type ResolveDisputeInput,
   type ReviewFraudFlagInput,
   type AuditLogQueryInput,
+  type UpdateKycStatusInput,
   type AuditAction,
   type AuditTargetType,
 } from "./admin.schemas";

@@ -5,6 +5,13 @@ resolver = "2"
 [workspace.dependencies]
 soroban-sdk = "22.0.7"
 
+# Deny panicking unwrap()/expect() in production contract code (issue #640).
+# `cargo clippy` does not compile `#[cfg(test)]` modules for the default
+# `--lib` target, so test code is naturally exempt from these lints.
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+
 [profile.release]
 opt-level = "z"
 overflow-checks = true

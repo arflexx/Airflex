@@ -76,16 +76,20 @@ async function sendDeletionConfirmationSms(
 // ---------------------------------------------------------------------------
 
 /**
- * Returns the authenticated user's profile metadata.
+ * Returns the authenticated user's profile metadata (issue #74).
  *
  * Response shape:
  * {
  *   data: {
  *     id: string
  *     maskedPhone: string       // e.g. "+234 *** *** 5678"
- *     createdAt: string         // ISO timestamp
+ *     createdAt: string         // ISO timestamp (registration date)
+ *     role: string              // "user" | "admin" | "super_admin"
  *     totalTradesCompleted: number
  *     stellarPublicKey: string
+ *     kycStatus: string         // "unverified" | "pending" | "verified"
+ *     referralCode: string
+ *     virtualAccountNumber: string
  *   }
  * }
  */
@@ -102,8 +106,11 @@ router.get(
       stellar_public_key: string | null;
       kyc_status: string | null;
       referral_code: string | null;
+      role: string | null;
+      virtual_account_number: string | null;
     }>(
-      `SELECT id, phone, created_at, stellar_public_key, kyc_status, referral_code
+      `SELECT id, phone, created_at, stellar_public_key, kyc_status, referral_code,
+              role, virtual_account_number
        FROM users
        WHERE id = $1
        LIMIT 1`,
@@ -128,13 +135,15 @@ router.get(
 
     res.status(200).json({
       data: {
-        id:                   user.id,
-        maskedPhone:          maskPhone(user.phone),
-        createdAt:            user.created_at,
+        id:                    user.id,
+        maskedPhone:           maskPhone(user.phone),
+        createdAt:             user.created_at,
+        role:                  user.role ?? "user",
         totalTradesCompleted,
-        stellarPublicKey:     user.stellar_public_key ?? "",
-        kycStatus:            user.kyc_status ?? "unverified",
-        referralCode:         user.referral_code ?? "",
+        stellarPublicKey:      user.stellar_public_key ?? "",
+        kycStatus:             user.kyc_status ?? "unverified",
+        referralCode:          user.referral_code ?? "",
+        virtualAccountNumber:  user.virtual_account_number ?? "",
       },
     });
   }
