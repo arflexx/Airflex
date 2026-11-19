@@ -9,6 +9,17 @@ on:
   pull_request:
     branches: [main]
 
+# ---------------------------------------------------------------------------
+# Supply-chain pinning
+# ---------------------------------------------------------------------------
+# Every `uses:` action is pinned to a full commit SHA (never a mutable tag or
+# a branch name such as `@stable`/`@latest`). This prevents supply-chain
+# attacks where a tag is moved to point at malicious code. The comment on each
+# pinned action records the human-readable release the SHA corresponds to.
+# Future upgrades MUST replace the SHA with a new commit SHA (never a tag or
+# branch ref). See .github/dependabot.yml for the pinning strategy.
+#
+
 # Cancel in-progress runs for the same branch/PR when a new push arrives,
 # saving minutes on superseded commits.
 concurrency:
@@ -33,13 +44,13 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
 
       - name: Set up Node.js 20
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20"
           cache: "pnpm"
@@ -58,7 +69,7 @@ jobs:
 
       # Upload the compiled artefact so other jobs / releases can use it
       - name: Upload server build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: server-dist
           path: server/dist/
@@ -77,13 +88,13 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
 
       - name: Set up Node.js 20
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20"
           cache: "pnpm"
@@ -106,7 +117,7 @@ jobs:
         run: pnpm build
 
       - name: Upload frontend build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: frontend-build
           path: frontend/.next/
@@ -125,19 +136,21 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # Rust toolchain pinned to match the Soroban SDK requirement.
       # The `wasm32v1-none` target is required for `stellar contract build`.
+      # Pinned to a commit SHA (was `dtolnay/rust-toolchain@stable`, a mutable
+      # branch ref) to satisfy the supply-chain pinning policy.
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable channel
         with:
           targets: wasm32v1-none, wasm32-unknown-unknown
           components: rustfmt, clippy
 
       # Cache the Cargo registry and build artifacts to speed up runs.
       - name: Cache Cargo
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry
@@ -164,7 +177,7 @@ jobs:
         run: cargo build --release --target wasm32v1-none
 
       - name: Upload WASM artefact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: escrow-wasm
           path: contracts/target/wasm32v1-none/release/airflex_escrow.wasm
@@ -180,10 +193,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Node.js 20
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20"
 
@@ -193,7 +206,7 @@ jobs:
         run: npm audit --audit-level=high
 
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable channel
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
