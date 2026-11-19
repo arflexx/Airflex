@@ -31,6 +31,33 @@ pub const MAX_EXPIRY_SECS: u64 = 30 * 24 * 60 * 60; // 30 days = 2,592,000 secon
 pub const DISPUTE_WINDOW_SECS: u64 = 24 * 60 * 60; // 24 hours = 86,400 seconds
 
 // ---------------------------------------------------------------------------
+// Deposit amount bounds (issue #506)
+// ---------------------------------------------------------------------------
+
+/// Minimum deposit amount in stroops (1 XLM = 10,000,000 stroops).
+///
+/// Enforced in `deposit_to_escrow` to prevent dust attacks: a buyer sending a
+/// 1-stroop fill consumes a sub-escrow storage slot and a fill-counter entry
+/// for a negligible economic contribution, which could be used to spam listings
+/// or grief sellers.
+///
+/// Set to 1_000_000 stroops (0.1 XLM) — small enough to be inclusive for
+/// micro-trade use-cases while rejecting non-economical dust fills.
+pub const MIN_DEPOSIT_AMOUNT: i128 = 1_000_000; // 0.1 XLM in stroops
+
+/// Maximum deposit amount in stroops.
+///
+/// Enforced in `deposit_to_escrow` to prevent integer overflow edge cases
+/// and to cap the single-fill exposure that a compromised signing key could
+/// lock. `i128::MAX` is 170,141,183,460,469,231,731,687,303,715,884,105,727,
+/// which is far beyond any realistic trade size; using a capped maximum makes
+/// the invariant explicit and auditable.
+///
+/// Set to 1_000_000_000_000_000 stroops (100,000,000 XLM) — safely within
+/// `i128` and above any foreseeable single-trade maximum on this platform.
+pub const MAX_DEPOSIT_AMOUNT: i128 = 1_000_000_000_000_000; // 100,000,000 XLM in stroops
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -508,6 +535,16 @@ impl EscrowContract {
         }
 
         if fill_amount <= 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+
+        // Reject dust fills below the minimum to prevent spam / storage exhaustion
+        // (issue #506). Reject over-sized fills to guard against overflow edge
+        // cases and cap single-fill exposure.
+        if fill_amount < MIN_DEPOSIT_AMOUNT {
+            return Err(ContractError::InvalidAmount);
+        }
+        if fill_amount > MAX_DEPOSIT_AMOUNT {
             return Err(ContractError::InvalidAmount);
         }
 
@@ -1882,6 +1919,118 @@ mod test {
         let result = client.try_get_admin();
         assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
     }
+
+    // -----------------------------------------------------------------------
+    // Input validation — deposit amount bounds (issue #506)
+    //
+    // Tests that `deposit_to_escrow` enforces MIN_DEPOSIT_AMOUNT and
+    // MAX_DEPOSIT_AMOUNT. Each test includes both a negative case (rejected)
+    // and a positive case (accepted) to confirm the boundary is correctly placed.
+    // -----------------------------------------------------------------------
+
+    /// A deposit below `MIN_DEPOSIT_AMOUNT` (dust) must be rejected with
+    /// `InvalidAmount`. A deposit at exactly `MIN_DEPOSIT_AMOUNT` must succeed.
+    #[test]
+    fn test_deposit_below_minimum_rejected() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let trade_id = client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &symbol_short!("AIRTIME"),
+            &(1_000_000 + 86_400),
+        );
+
+        // 1 stroop — far below MIN_DEPOSIT_AMOUNT (1_000_000)
+        let result = client.try_deposit_to_escrow(&buyer, &trade_id, &1i128);
+        assert_eq!(
+            result,
+            Err(Ok(ContractError::InvalidAmount)),
+            "1-stroop deposit must be rejected with InvalidAmount"
+        );
+
+        // MIN_DEPOSIT_AMOUNT - 1 — one stroop below the floor
+        let result = client.try_deposit_to_escrow(&buyer, &trade_id, &(MIN_DEPOSIT_AMOUNT - 1));
+        assert_eq!(
+            result,
+            Err(Ok(ContractError::InvalidAmount)),
+            "deposit one stroop below MIN_DEPOSIT_AMOUNT must be rejected"
+        );
+
+        // Exactly MIN_DEPOSIT_AMOUNT — must succeed (positive case)
+        client.deposit_to_escrow(&buyer, &trade_id, &MIN_DEPOSIT_AMOUNT);
+        let trade = client.get_trade(&trade_id);
+        assert_eq!(
+            trade.filled_amount, MIN_DEPOSIT_AMOUNT,
+            "deposit at exactly MIN_DEPOSIT_AMOUNT must be accepted"
+        );
+    }
+
+    /// A deposit above `MAX_DEPOSIT_AMOUNT` must be rejected with `InvalidAmount`.
+    /// A deposit at exactly `MAX_DEPOSIT_AMOUNT` (when the listing is large enough)
+    /// must succeed.
+    #[test]
+    fn test_deposit_above_maximum_rejected() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        // Create a listing sized at MAX_DEPOSIT_AMOUNT so we can test the exact boundary
+        let sac = soroban_sdk::token::StellarAssetClient::new(&env, &token);
+        // Mint enough to cover MAX_DEPOSIT_AMOUNT + 1 for the buyer
+        sac.mint(&buyer, &(MAX_DEPOSIT_AMOUNT + 1));
+
+        let trade_id = client.create_listing(
+            &seller,
+            &token,
+            &MAX_DEPOSIT_AMOUNT,
+            &symbol_short!("AIRTIME"),
+            &(1_000_000 + 86_400),
+        );
+
+        // MAX_DEPOSIT_AMOUNT + 1 — one stroop above the ceiling
+        let result = client.try_deposit_to_escrow(&buyer, &trade_id, &(MAX_DEPOSIT_AMOUNT + 1));
+        assert_eq!(
+            result,
+            Err(Ok(ContractError::InvalidAmount)),
+            "deposit one stroop above MAX_DEPOSIT_AMOUNT must be rejected"
+        );
+
+        // Exactly MAX_DEPOSIT_AMOUNT — must succeed (positive case)
+        client.deposit_to_escrow(&buyer, &trade_id, &MAX_DEPOSIT_AMOUNT);
+        let trade = client.get_trade(&trade_id);
+        assert_eq!(
+            trade.filled_amount, MAX_DEPOSIT_AMOUNT,
+            "deposit at exactly MAX_DEPOSIT_AMOUNT must be accepted"
+        );
+    }
+
+    /// Existing tests with amounts between MIN and MAX must continue to pass —
+    /// confirms the new bounds do not break backward compatibility for normal
+    /// trade sizes. All standard test amounts (200_0000000 to 500_0000000)
+    /// are within [MIN_DEPOSIT_AMOUNT, MAX_DEPOSIT_AMOUNT].
+    #[test]
+    fn test_deposit_normal_amount_within_bounds_accepted() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let trade_id = client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &symbol_short!("DATA"),
+            &(1_000_000 + 86_400),
+        );
+
+        // 500 XLM — well within bounds
+        client.deposit_to_escrow(&buyer, &trade_id, &500_0000000i128);
+
+        let trade = client.get_trade(&trade_id);
+        assert_eq!(trade.filled_amount, 500_0000000i128);
+        assert_eq!(trade.status, TradeStatus::Locked);
+    }
+}
 
     #[test]
     fn test_event_topic_lengths_and_long_topic_handling() {
