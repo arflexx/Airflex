@@ -54,6 +54,20 @@ This document outlines the threat modeling analysis for AirFlex Soroban smart co
 
 ---
 
+### 6. Marketplace Authorization Replay Attacks
+
+* **Threat Vector**: A signed off-chain purchase authorization (for example a seller- or platform-issued voucher permitting a buyer to purchase a listing at a given price) is captured by an attacker or reused by the buyer, then replayed — against the same listing, against a *different* listing, or after the original listing has been cancelled — to force a second payment release or to hijack a listing the authorization was never meant for.
+* **Attack Scenario**: A buyer legitimately authorizes a purchase of listing A with nonce `N`. The signature is observed (mempool, a compromised relayer, or a shared co-signer). The attacker resubmits the same signed authorization, either against listing A again (if it was refunded and re-listed) or against a different listing B, expecting the contract to honour it a second time.
+* **Likelihood**: Medium — requires access to a captured authorization, but no special on-chain privileges.
+* **Impact**: High — double-spend of a single authorization, unintended purchases, and loss of the one-time guarantee buyers and sellers rely on for off-chain co-signed trades.
+* **Mitigation**:
+  * **`deposit_to_escrow`** relies on Soroban's native `buyer.require_auth()`, which binds the buyer's signature to the exact invocation (contract id, function, and *all arguments*, including `listing_id`). The same authorization therefore cannot be replayed against a different listing — the arguments differ and the host rejects the signature.
+  * **`purchase_with_auth(env, buyer, listing_id, auth_nonce)`** adds explicit, defense-in-depth replay protection for the off-chain-signed authorization flow: every call requires a strictly-increasing per-buyer `auth_nonce` (stored under `DataKey::BuyerNonce`). Because the nonce is part of the signed arguments, the authorization is single-use — replaying it is rejected with `ContractError::InvalidNonce` *before any funds move*. This also defeats replay *after* a listing is cancelled, since the consumed nonce can never be reused regardless of listing state.
+  * The nonce is only consumed on a successful settlement, so a transient failure (e.g. an expired listing) does not burn the buyer's next valid nonce.
+  * Verified by `test_replay_of_used_authorization_rejected` in `contracts/marketplace/src/lib.rs`.
+
+---
+
 ### 7. Secret Key Transmitted in Trade Request Body (Resolved — Issue #245)
 * **Threat Vector**: The original `POST /api/v1/trades/:id/buy` endpoint accepted a `buyerSecretKey` field in the JSON body and forwarded it to `depositToEscrow`. The key appeared in access logs, was visible to any process with HTTP-body access, and gave the server full, unaudited control over the buyer's funds.
 * **Impact**: Critical — Full compromise of every buyer's Stellar wallet from a single log-file leak. Any platform operator with log access could drain all buyer accounts.

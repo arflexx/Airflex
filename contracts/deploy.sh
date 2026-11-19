@@ -10,6 +10,12 @@
 #   --contract    escrow | marketplace | all  (default: all)
 #   --initialize  yes | no  (default: yes)
 #   --commit      yes | no  — commit deployments.json after deploy (default: yes)
+#   --dry-run     Validate inputs and keypair format, then print the deploy
+#                 plan and exit 0 WITHOUT making any network calls, building,
+#                 or writing deployments.json.
+#   --force       Re-deploy a contract even if deployments.json already holds a
+#                 non-empty address for it on the target network (overrides the
+#                 idempotency skip).
 #   --help        Print this help message
 #
 # Required environment variables:
@@ -20,6 +26,9 @@
 #   SOROBAN_RPC_URL           Override default RPC endpoint
 #
 # Examples:
+#   # Validate keys + config without deploying anything
+#   SOROBAN_DEPLOYER_SECRET=S... SOROBAN_ADMIN_ADDRESS=G... ./contracts/deploy.sh --dry-run
+#
 #   # Deploy all contracts to testnet
 #   SOROBAN_DEPLOYER_SECRET=S... SOROBAN_ADMIN_ADDRESS=G... ./contracts/deploy.sh
 #
@@ -41,6 +50,8 @@ NETWORK="testnet"
 CONTRACT="all"
 INITIALIZE="yes"
 COMMIT="yes"
+DRY_RUN="no"
+FORCE="no"
 
 # Script is expected to be run from the repo root or contracts/ directory.
 # Resolve the contracts/ directory relative to this script's location.
@@ -56,6 +67,8 @@ while [[ $# -gt 0 ]]; do
     --contract)    CONTRACT="$2";   shift 2 ;;
     --initialize)  INITIALIZE="$2"; shift 2 ;;
     --commit)      COMMIT="$2";     shift 2 ;;
+    --dry-run)     DRY_RUN="yes";   shift 1 ;;
+    --force)       FORCE="yes";     shift 1 ;;
     --help)
       sed -n '/^# Usage:/,/^# ====/p' "$0" | sed 's/^# \?//'
       exit 0
@@ -65,7 +78,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ---------------------------------------------------------------------------
-# Validation
+# Validation — argument ranges
 # ---------------------------------------------------------------------------
 if [[ "$NETWORK" != "testnet" && "$NETWORK" != "mainnet" ]]; then
   echo "ERROR: --network must be 'testnet' or 'mainnet'" >&2
@@ -77,6 +90,21 @@ if [[ "$CONTRACT" != "escrow" && "$CONTRACT" != "marketplace" && "$CONTRACT" != 
   exit 1
 fi
 
+if [[ "$INITIALIZE" != "yes" && "$INITIALIZE" != "no" ]]; then
+  echo "ERROR: --initialize must be 'yes' or 'no'" >&2
+  exit 1
+fi
+
+if [[ "$COMMIT" != "yes" && "$COMMIT" != "no" ]]; then
+  echo "ERROR: --commit must be 'yes' or 'no'" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Validation — required environment variables (non-empty)
+# ---------------------------------------------------------------------------
+# Done before any network call so a missing key fails fast and never leaves
+# deployments.json in an inconsistent state (Issue #511).
 if [[ -z "${SOROBAN_DEPLOYER_SECRET:-}" ]]; then
   echo "ERROR: SOROBAN_DEPLOYER_SECRET environment variable is not set" >&2
   exit 1
@@ -85,6 +113,57 @@ fi
 if [[ -z "${SOROBAN_ADMIN_ADDRESS:-}" ]]; then
   echo "ERROR: SOROBAN_ADMIN_ADDRESS environment variable is not set" >&2
   exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Validation — keypair format (Stellar base32 patterns)
+# ---------------------------------------------------------------------------
+# Stellar secret keys:  'S' followed by 55 base32 chars [A-Z2-7]  = 56 total
+# Stellar public keys:  'G' followed by 55 base32 chars [A-Z2-7]  = 56 total
+# This validates format/pattern only (not the checksum); the Soroban CLI
+# itself rejects a key that cannot derive a valid account when used.
+if [[ ! "${SOROBAN_DEPLOYER_SECRET}" =~ ^S[A-Z2-7]{55}$ ]]; then
+  echo "ERROR: SOROBAN_DEPLOYER_SECRET is not a valid Stellar secret key" >&2
+  echo "       (expected 'S' + 55 base32 characters [A-Z2-7], 56 total)" >&2
+  exit 1
+fi
+
+if [[ ! "${SOROBAN_ADMIN_ADDRESS}" =~ ^G[A-Z2-7]{55}$ ]]; then
+  echo "ERROR: SOROBAN_ADMIN_ADDRESS is not a valid Stellar public key" >&2
+  echo "       (expected 'G' + 55 base32 characters [A-Z2-7], 56 total)" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Network configuration (local string assignment only — no network call yet)
+# ---------------------------------------------------------------------------
+if [[ "$NETWORK" == "mainnet" ]]; then
+  RPC_URL="${SOROBAN_RPC_URL:-https://mainnet.stellar.validationcloud.io/v1/}"
+  NETWORK_PASSPHRASE="Public Global Stellar Network ; September 2015"
+  STELLAR_EXPERT_BASE="https://stellar.expert/explorer/public/contract"
+else
+  RPC_URL="${SOROBAN_RPC_URL:-https://soroban-testnet.stellar.org}"
+  NETWORK_PASSPHRASE="Test SDF Network ; September 2015"
+  STELLAR_EXPERT_BASE="https://stellar.expert/explorer/testnet/contract"
+fi
+
+# ---------------------------------------------------------------------------
+# Dry run — validate everything, then stop before any network call (Issue #511)
+# ---------------------------------------------------------------------------
+if [[ "$DRY_RUN" == "yes" ]]; then
+  echo ""
+  echo "=== AirFlex Soroban Deploy — DRY RUN (no network calls) ==="
+  echo "  Network:       ${NETWORK}"
+  echo "  Contract:      ${CONTRACT}"
+  echo "  Initialize:    ${INITIALIZE}"
+  echo "  Commit:        ${COMMIT}  (skipped in dry-run)"
+  echo "  Force redeploy: ${FORCE}"
+  echo "  RPC URL:       ${RPC_URL}"
+  echo "  Deployer key:  ${SOROBAN_DEPLOYER_SECRET:0:4}…${SOROBAN_DEPLOYER_SECRET: -4}  (format OK)"
+  echo "  Admin address: ${SOROBAN_ADMIN_ADDRESS}  (format OK)"
+  echo ""
+  echo "All pre-flight checks passed. Re-run without --dry-run to deploy."
+  exit 0
 fi
 
 # Mainnet guard — require explicit acknowledgement
@@ -98,19 +177,6 @@ if [[ "$NETWORK" == "mainnet" ]]; then
     echo "Aborted." >&2
     exit 1
   fi
-fi
-
-# ---------------------------------------------------------------------------
-# Network configuration
-# ---------------------------------------------------------------------------
-if [[ "$NETWORK" == "mainnet" ]]; then
-  RPC_URL="${SOROBAN_RPC_URL:-https://mainnet.stellar.validationcloud.io/v1/}"
-  NETWORK_PASSPHRASE="Public Global Stellar Network ; September 2015"
-  STELLAR_EXPERT_BASE="https://stellar.expert/explorer/public/contract"
-else
-  RPC_URL="${SOROBAN_RPC_URL:-https://soroban-testnet.stellar.org}"
-  NETWORK_PASSPHRASE="Test SDF Network ; September 2015"
-  STELLAR_EXPERT_BASE="https://stellar.expert/explorer/testnet/contract"
 fi
 
 echo ""
@@ -156,6 +222,24 @@ deploy_contract() {
     exit 1
   fi
 
+  # Idempotency (Issue #511): if deployments.json already records a non-empty
+  # address for this contract on this network, skip the deploy unless --force.
+  # Re-running after a failed deploy (which never wrote JSON) therefore deploys
+  # fresh, never producing duplicate or contradictory entries.
+  local EXISTING_ID
+  EXISTING_ID=$(node -e "
+    const fs = require('fs');
+    try {
+      const data = JSON.parse(fs.readFileSync('${DEPLOYMENTS_FILE}', 'utf8'));
+      process.stdout.write((data['${NETWORK}'] && data['${NETWORK}']['${CONTRACT_NAME}']) || '');
+    } catch { process.stdout.write(''); }
+  ")
+  if [[ -n "$EXISTING_ID" && "$FORCE" != "yes" ]]; then
+    echo ">> ${CONTRACT_NAME} already deployed on ${NETWORK} (${EXISTING_ID}); skipping."
+    echo "   (use --force to redeploy)"
+    return 0
+  fi
+
   echo ""
   echo ">> Deploying ${CONTRACT_NAME} contract..."
 
@@ -164,6 +248,14 @@ deploy_contract() {
     --wasm "${WASM_PATH}" \
     --source deployer \
     --network "${NETWORK}")
+
+  # On-chain confirmation: a real deploy returns a 'C…' contract id. If the
+  # CLI produced anything else (or nothing), the on-chain step failed, so we
+  # abort BEFORE touching deployments.json.
+  if [[ -z "$CONTRACT_ID" || ! "$CONTRACT_ID" =~ ^C[A-Z2-7]{55}$ ]]; then
+    echo "ERROR: ${CONTRACT_NAME} deploy did not return a valid contract id (got '${CONTRACT_ID}')" >&2
+    exit 1
+  fi
 
   echo "   Deployed ${CONTRACT_NAME}: ${CONTRACT_ID}"
 
@@ -179,16 +271,25 @@ deploy_contract() {
     echo "   Initialized."
   fi
 
-  # Update deployments.json using Node.js (available everywhere)
+  # Update deployments.json atomically — only AFTER a confirmed on-chain
+  # deploy + initialize. A temp file in the same directory is written first,
+  # then renamed into place, so a crash mid-write cannot leave a half-written
+  # (inconsistent) deployments.json.
   echo ">> Updating deployments.json..."
+  local TMP_FILE
+  TMP_FILE="$(mktemp "${DEPLOYMENTS_FILE}.XXXXXX")"
   node -e "
     const fs = require('fs');
     const path = '${DEPLOYMENTS_FILE}';
-    const data = JSON.parse(fs.readFileSync(path, 'utf8'));
+    let data;
+    try { data = JSON.parse(fs.readFileSync(path, 'utf8')); }
+    catch { data = {}; }
+    data['${NETWORK}'] = data['${NETWORK}'] || {};
     data['${NETWORK}']['${CONTRACT_NAME}'] = '${CONTRACT_ID}';
-    fs.writeFileSync(path, JSON.stringify(data, null, 2) + '\n');
-    console.log('   deployments.json updated.');
+    fs.writeFileSync('${TMP_FILE}', JSON.stringify(data, null, 2) + '\n');
   "
+  mv -f "${TMP_FILE}" "${DEPLOYMENTS_FILE}"
+  echo "   deployments.json updated."
 
   echo "   Stellar Expert: ${STELLAR_EXPERT_BASE}/${CONTRACT_ID}"
 }

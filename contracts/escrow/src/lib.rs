@@ -45,6 +45,21 @@ pub enum TradeStatus {
     Cancelled,
 }
 
+/// Outcome an arbitrator assigns to a disputed trade (Issue #508).
+///
+/// `Release` — the seller prevails: every still-escrowed sub-escrow is released
+/// to the seller and the trade completes.
+/// `Refund`  — the buyer prevails: every still-escrowed sub-escrow is returned
+/// to its buyer and the trade is cancelled.
+///
+/// See `AUDIT_PREP.md` → `TradeStatus` state machine.
+#[contracttype]
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum DisputeResolution {
+    Release,
+    Refund,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct TradeOffer {
@@ -121,6 +136,9 @@ fn topic_cancelled() -> Symbol {
 } // 9 chars (max limit for symbol_short!)
 fn topic_disputed() -> Symbol {
     symbol_short!("disputed")
+} // 8 chars
+fn topic_resolved() -> Symbol {
+    symbol_short!("resolved")
 } // 8 chars
 fn topic_contract() -> Symbol {
     symbol_short!("contract")
@@ -963,6 +981,112 @@ impl EscrowContract {
             .set(&DataKey::Trade(trade_id), &trade);
         env.events()
             .publish((topic_disputed(),), (trade_id, caller));
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_dispute — arbitrator (admin) settles a disputed trade (Issue #508)
+    // -----------------------------------------------------------------------
+
+    /// Settles a `Disputed` trade, releasing every still-escrowed sub-escrow
+    /// either back to its buyer (`Refund`) or to the seller (`Release`).
+    ///
+    /// Mirrors the state machine documented in `AUDIT_PREP.md`:
+    ///   `Disputed --> Completed : resolve_dispute(Release) [Admin]`
+    ///   `Disputed --> Cancelled : resolve_dispute(Refund)  [Admin]`
+    ///
+    /// Authorisation is gated on the contract admin (the platform's
+    /// arbitration key) via `admin.require_auth()`, so a caller that is not
+    /// the arbitrator cannot move escrowed funds — the host rejects the
+    /// invocation before any state changes (see
+    /// `test_non_arbitrator_cannot_resolve_dispute`).
+    pub fn resolve_dispute(
+        env: Env,
+        trade_id: u64,
+        resolution: DisputeResolution,
+    ) -> Result<(), ContractError> {
+        require_not_paused(&env)?;
+
+        let admin = get_admin(&env)?;
+        admin.require_auth();
+
+        let mut trade: TradeOffer = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Trade(trade_id))
+            .ok_or(ContractError::TradeNotFound)?;
+
+        if trade.status != TradeStatus::Disputed {
+            return Err(ContractError::WrongStatus);
+        }
+
+        let fill_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TradeFillCounter(trade_id))
+            .unwrap_or(0);
+        if fill_count == 0 {
+            return Err(ContractError::TradeNotFound);
+        }
+
+        let token_client = token::Client::new(&env, &trade.token);
+
+        // Settle every still-escrowed sub-escrow in the direction the
+        // arbitrator ruled. Fills already settled before the dispute (if any)
+        // are left untouched.
+        for i in 1..=fill_count {
+            if let Some(mut sub) = env
+                .storage()
+                .persistent()
+                .get::<_, SubEscrow>(&DataKey::SubEscrow(trade_id, i))
+            {
+                if sub.released || sub.refunded {
+                    continue;
+                }
+
+                let recipient = match &resolution {
+                    DisputeResolution::Refund => sub.buyer.clone(),
+                    DisputeResolution::Release => trade.seller.clone(),
+                };
+                token_client.transfer(
+                    &env.current_contract_address(),
+                    &recipient,
+                    &sub.amount,
+                );
+
+                match &resolution {
+                    DisputeResolution::Refund => sub.refunded = true,
+                    DisputeResolution::Release => sub.released = true,
+                }
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::SubEscrow(trade_id, i), &sub);
+
+                env.events()
+                    .publish((topic_resolved(),), (trade_id, i, recipient));
+            }
+        }
+
+        // Transition the whole trade per the documented state machine:
+        // Release -> Completed, Refund -> Cancelled.
+        trade.status = match &resolution {
+            DisputeResolution::Release => TradeStatus::Completed,
+            DisputeResolution::Refund => TradeStatus::Cancelled,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::Trade(trade_id), &trade);
+
+        match &resolution {
+            DisputeResolution::Release => {
+                env.events()
+                    .publish((topic_completed(),), (trade_id, trade.seller.clone()));
+            }
+            DisputeResolution::Refund => {
+                env.events().publish((topic_cancelled(),), (trade_id,));
+            }
+        }
+
         Ok(())
     }
 
@@ -2619,5 +2743,117 @@ mod fuzz {
 
         client.flag_dispute(&buyer, &trade_id);
         assert_eq!(client.get_trade(&trade_id).status, TradeStatus::Disputed);
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #508 — escrow dispute resolution
+    // -----------------------------------------------------------------------
+
+    /// Fully fills a trade and raises a dispute on it, returning the disputed
+    /// trade id. Reused by the `resolve_dispute` tests below.
+    fn disputed_trade(
+        env: &Env,
+        client: &EscrowContractClient<'static>,
+        seller: &Address,
+        buyer: &Address,
+        token: &Address,
+    ) -> u64 {
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+        let trade_id = client.create_listing(
+            seller,
+            token,
+            &500_0000000i128,
+            &symbol_short!("AIRTIME"),
+            &(1_000_000 + 86_400),
+        );
+        client.deposit_to_escrow(buyer, &trade_id, &500_0000000i128);
+        assert_eq!(client.get_trade(&trade_id).status, TradeStatus::Locked);
+        client.flag_dispute(buyer, &trade_id);
+        assert_eq!(client.get_trade(&trade_id).status, TradeStatus::Disputed);
+        trade_id
+    }
+
+    /// Raising a dispute on a fully-filled trade transitions its state to
+    /// `Disputed`.
+    #[test]
+    fn test_flag_dispute_transitions_to_disputed() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let trade_id = client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &symbol_short!("AIRTIME"),
+            &(1_000_000 + 86_400),
+        );
+        client.deposit_to_escrow(&buyer, &trade_id, &500_0000000i128);
+        assert_eq!(client.get_trade(&trade_id).status, TradeStatus::Locked);
+
+        client.flag_dispute(&buyer, &trade_id);
+
+        assert_eq!(client.get_trade(&trade_id).status, TradeStatus::Disputed);
+    }
+
+    /// The arbitrator can resolve a dispute in favour of the seller: all
+    /// escrowed funds are released to the seller and the trade completes.
+    #[test]
+    fn test_resolve_dispute_in_favour_of_seller_releases_funds() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        let trade_id = disputed_trade(&env, &client, &seller, &buyer, &token);
+
+        let token_client = TokenClient::new(&env, &token);
+        let seller_before = token_client.balance(&seller);
+        let contract_before = token_client.balance(&client.address);
+
+        client.resolve_dispute(&trade_id, &DisputeResolution::Release);
+
+        // Funds moved seller-ward; escrow drained; trade completed.
+        assert_eq!(token_client.balance(&seller), seller_before + 500_0000000i128);
+        assert_eq!(
+            token_client.balance(&client.address),
+            contract_before - 500_0000000i128
+        );
+        assert_eq!(client.get_trade(&trade_id).status, TradeStatus::Completed);
+    }
+
+    /// The arbitrator can resolve a dispute in favour of the buyer: all
+    /// escrowed funds are returned to the buyer and the trade is cancelled.
+    #[test]
+    fn test_resolve_dispute_in_favour_of_buyer_refunds_funds() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        let trade_id = disputed_trade(&env, &client, &seller, &buyer, &token);
+
+        let token_client = TokenClient::new(&env, &token);
+        // 100e9 minted minus the 5e9 locked in escrow.
+        assert_eq!(
+            token_client.balance(&buyer),
+            100_000_000_000i128 - 500_0000000i128
+        );
+
+        client.resolve_dispute(&trade_id, &DisputeResolution::Refund);
+
+        // Funds returned to the buyer; escrow drained; trade cancelled.
+        assert_eq!(token_client.balance(&buyer), 100_000_000_000i128);
+        assert_eq!(token_client.balance(&client.address), 0i128);
+        assert_eq!(client.get_trade(&trade_id).status, TradeStatus::Cancelled);
+    }
+
+    /// A non-arbitrator cannot resolve a dispute: once blanket auth mocking is
+    /// disabled, the admin's `require_auth()` inside `resolve_dispute` is
+    /// enforced for real, so a buyer invoking the call is rejected with a host
+    /// auth error before any funds move.
+    #[test]
+    #[should_panic(expected = "HostError: Error(Auth, InvalidAction)")]
+    fn test_non_arbitrator_cannot_resolve_dispute() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        let trade_id = disputed_trade(&env, &client, &seller, &buyer, &token);
+
+        // Disable blanket auth mocking so `admin.require_auth()` is enforced
+        // for real. The buyer (not the admin) is invoking the call, so the
+        // admin's authorisation is absent and the host rejects it.
+        env.set_auths(&[]);
+
+        client.resolve_dispute(&trade_id, &DisputeResolution::Release);
     }
 }

@@ -18,6 +18,10 @@ pub enum DataKey {
     Paused,
     PausedAt,
     ActiveListingCount(Address),
+    /// Last authorization nonce consumed by a buyer — used by
+    /// `purchase_with_auth` to make signed purchase authorizations single-use
+    /// and replay-proof (Issue #512).
+    BuyerNonce(Address),
 }
 
 pub const EMERGENCY_TIMELOCK_SECS: u64 = 72 * 60 * 60; // 72 hours = 259,200 seconds
@@ -104,6 +108,9 @@ pub enum ContractError {
     FillAlreadyProcessed = 13,
     NotAParty = 14,
     StorageLimitExceeded = 15,
+    /// A replayed or out-of-order authorization nonce was supplied to
+    /// `purchase_with_auth` (Issue #512).
+    InvalidNonce = 16,
 }
 
 // ---------------------------------------------------------------------------
@@ -230,6 +237,49 @@ fn decrement_active_listing_count(env: &Env, seller: &Address) {
             17_280 * 30,
         );
     }
+}
+
+/// Core escrow-locking logic shared by `deposit_to_escrow` and
+/// `purchase_with_auth`. Callers handle `require_not_paused` and
+/// `buyer.require_auth()` (and, for the authorized path, nonce validation)
+/// before delegating here — this performs only the listing lookup, the
+/// status/expiry checks, the token transfer, and the `Active → Sold`
+/// transition (Issue #512).
+fn deposit_inner(env: &Env, buyer: &Address, listing_id: u64) -> Result<(), ContractError> {
+    let mut listing: Listing = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Listing(listing_id))
+        .ok_or(ContractError::TradeNotFound)?;
+
+    if listing.status != ListingStatus::Active {
+        return Err(ContractError::WrongStatus);
+    }
+
+    let now = env.ledger().timestamp();
+    if now >= listing.expires_at {
+        return Err(ContractError::TradeExpired);
+    }
+
+    if *buyer == listing.seller {
+        return Err(ContractError::Unauthorized);
+    }
+
+    let token_client = token::Client::new(env, &listing.token);
+    token_client.transfer(buyer, &env.current_contract_address(), &listing.price);
+
+    listing.status = ListingStatus::Sold;
+    listing.buyer = Some(buyer.clone());
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::Listing(listing_id), &listing);
+
+    decrement_active_listing_count(env, &listing.seller);
+
+    env.events()
+        .publish((topic_sold(),), (listing_id, buyer.clone(), listing.price));
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -405,40 +455,47 @@ impl MarketplaceContract {
     ) -> Result<(), ContractError> {
         require_not_paused(&env)?;
         buyer.require_auth();
+        deposit_inner(&env, &buyer, listing_id)
+    }
 
-        let mut listing: Listing = env
+    /// Purchase a listing using a one-time, replay-protected authorization
+    /// (Issue #512).
+    ///
+    /// `auth_nonce` must be strictly greater than the last nonce this `buyer`
+    /// has consumed. Because `buyer.require_auth()` binds the buyer's signature
+    /// to this exact invocation — function name and all arguments, including
+    /// `auth_nonce` — the resulting authorization is single-use. Replaying the
+    /// same signed authorization, whether against this listing, a different
+    /// listing, or after the listing has been cancelled, is rejected with
+    /// `ContractError::InvalidNonce` before any funds move. See
+    /// `THREAT_MODEL.md` → Marketplace Authorization Replay Attacks.
+    pub fn purchase_with_auth(
+        env: Env,
+        buyer: Address,
+        listing_id: u64,
+        auth_nonce: u64,
+    ) -> Result<(), ContractError> {
+        require_not_paused(&env)?;
+        buyer.require_auth();
+
+        // Reject a replayed / out-of-order authorization before any funds move.
+        let last_nonce: u64 = env
             .storage()
-            .persistent()
-            .get(&DataKey::Listing(listing_id))
-            .ok_or(ContractError::TradeNotFound)?;
-
-        if listing.status != ListingStatus::Active {
-            return Err(ContractError::WrongStatus);
+            .instance()
+            .get(&DataKey::BuyerNonce(buyer.clone()))
+            .unwrap_or(0);
+        if auth_nonce <= last_nonce {
+            return Err(ContractError::InvalidNonce);
         }
 
-        let now = env.ledger().timestamp();
-        if now >= listing.expires_at {
-            return Err(ContractError::TradeExpired);
-        }
-
-        if buyer == listing.seller {
-            return Err(ContractError::Unauthorized);
-        }
-
-        let token_client = token::Client::new(&env, &listing.token);
-        token_client.transfer(&buyer, &env.current_contract_address(), &listing.price);
-
-        listing.status = ListingStatus::Sold;
-        listing.buyer = Some(buyer.clone());
+        // Settle the purchase first; only consume the nonce on success so a
+        // transient failure (e.g. an expired listing) does not burn the buyer's
+        // next valid nonce.
+        deposit_inner(&env, &buyer, listing_id)?;
 
         env.storage()
-            .persistent()
-            .set(&DataKey::Listing(listing_id), &listing);
-
-        decrement_active_listing_count(&env, &listing.seller);
-
-        env.events()
-            .publish((topic_sold(),), (listing_id, buyer, listing.price));
+            .instance()
+            .set(&DataKey::BuyerNonce(buyer.clone()), &auth_nonce);
         Ok(())
     }
 
@@ -1757,5 +1814,68 @@ mod test {
         // Seller attempts to cancel Sold listing
         let result_wrong_status = client.try_cancel_listing(&seller, &listing_id);
         assert_eq!(result_wrong_status, Err(Ok(ContractError::WrongStatus)));
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #512 — marketplace authorization replay protection
+    // -----------------------------------------------------------------------
+
+    /// Replaying a previously used purchase authorization is rejected: after
+    /// the buyer consumes `auth_nonce = 1` on listing #1, supplying `1` again
+    /// against a fresh listing #2 fails with `InvalidNonce` before any funds
+    /// move, and a brand-new nonce (`2`) succeeds.
+    #[test]
+    fn test_replay_of_used_authorization_rejected() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        // Listing #1 — a legitimate one-time purchase with nonce 1.
+        let listing_id = client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &AssetCategory::Airtime,
+            &symbol_short!("MTN"),
+            &1000i128,
+            &(1_000_000 + 86_400),
+        );
+        client.purchase_with_auth(&buyer, &listing_id, &1u64);
+        assert_eq!(client.get_listing(&listing_id).status, ListingStatus::Sold);
+
+        let token_client = TokenClient::new(&env, &token);
+        // 100e9 minted minus the 5e9 locked for listing #1.
+        assert_eq!(
+            token_client.balance(&buyer),
+            100_000_000_000i128 - 500_0000000i128
+        );
+
+        // Listing #2 — fresh and Active. An attacker replays nonce 1.
+        let listing_id2 = client.create_listing(
+            &seller,
+            &token,
+            &300_0000000i128,
+            &AssetCategory::Data,
+            &symbol_short!("GLO"),
+            &500i128,
+            &(1_000_000 + 86_400),
+        );
+
+        let result = client.try_purchase_with_auth(&buyer, &listing_id2, &1u64);
+        assert_eq!(result, Err(Ok(ContractError::InvalidNonce)));
+
+        // The replay moved no funds and left listing #2 still Active.
+        assert_eq!(client.get_listing(&listing_id2).status, ListingStatus::Active);
+        assert_eq!(
+            token_client.balance(&buyer),
+            100_000_000_000i128 - 500_0000000i128
+        );
+
+        // A fresh authorization (nonce 2) on listing #2 succeeds.
+        client.purchase_with_auth(&buyer, &listing_id2, &2u64);
+        assert_eq!(client.get_listing(&listing_id2).status, ListingStatus::Sold);
+        assert_eq!(
+            token_client.balance(&buyer),
+            100_000_000_000i128 - 500_0000000i128 - 300_0000000i128
+        );
     }
 }

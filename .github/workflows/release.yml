@@ -3,13 +3,49 @@ name: Release
 # ---------------------------------------------------------------------------
 # Triggers
 # ---------------------------------------------------------------------------
-# Runs only when a version tag (v*.*.*) is pushed.
+# On a version-tag push (v*.*.*) the new server build is deployed to the
+# *inactive* blue/green slot, health-checked in place, and only then promoted
+# to production by repointing the production custom domain (Issue #516).
+#
+# Manual dispatch supports:
+#   action   = deploy | rollback
+#   target   = "" | blue | green   (force a specific slot; empty = auto-swap)
+#   ref      = optional git ref to deploy (manual deploy only)
+#
 # Typical flow:
 #   git tag v1.2.0 && git push origin v1.2.0
+#
+# Required repository variables (vars.*):
+#   RAILWAY_PROJECT_ID        Railway project id
+#   RAILWAY_BLUE_SERVICE      Railway service id for the blue slot
+#   RAILWAY_GREEN_SERVICE     Railway service id for the green slot
+#   RAILWAY_BLUE_URL          Public URL of the blue slot (for health checks)
+#   RAILWAY_GREEN_URL         Public URL of the green slot (for health checks)
+#   RAILWAY_PRODUCTION_DOMAIN Production custom domain that is repointed at cutover
+#   RAILWAY_ACTIVE_COLOR      Current production slot: "blue" or "green" (managed here)
+#
+# Required repository secret:
+#   RAILWAY_TOKEN             Railway API token (authenticates the Railway CLI)
 on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Action to perform"
+        type: choice
+        options: ["deploy", "rollback"]
+        default: "deploy"
+      target:
+        description: "Force deploy/rollback to a specific slot (empty = auto blue/green swap)"
+        type: choice
+        options: ["", "blue", "green"]
+        default: ""
+      ref:
+        description: "Git ref to deploy (manual deploy only; ignored on tag push)"
+        type: string
+        default: ""
 
 # One release at a time — don't allow parallel release runs.
 concurrency:
@@ -19,14 +55,16 @@ concurrency:
 # ---------------------------------------------------------------------------
 # Jobs
 # ---------------------------------------------------------------------------
+
 jobs:
 
   # -------------------------------------------------------------------------
-  # 1. Build all artefacts
+  # 1. Build all artefacts (only when a new build is actually being deployed)
   # -------------------------------------------------------------------------
   build:
     name: Build artefacts
     runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.action == 'deploy') }}
 
     steps:
       - name: Checkout
@@ -100,12 +138,199 @@ jobs:
           retention-days: 30
 
   # -------------------------------------------------------------------------
-  # 2. Create GitHub Release
+  # 2. Blue/green deploy (Railway) — Issue #516
+  # -------------------------------------------------------------------------
+  # The new server version is deployed to the *inactive* slot (staging),
+  # health-checked in place, and only then promoted to production by
+  # repointing the production custom domain. If the health check fails, the
+  # domain is never moved — production stays on the previous slot, which is
+  # the automatic rollback. (Manual rollback is the separate `rollback` job
+  # below — a single domain reassignment + active-color variable update, with
+  # no build dependency so it works even if the current branch does not
+  # build.)
+  deploy:
+    name: Blue/Green deploy (Railway)
+    runs-on: ubuntu-latest
+    needs: build
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.action == 'deploy') }}
+    permissions:
+      contents: read
+      variables: write
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Read current active color
+        id: active
+        run: |
+          ACTIVE="$(gh variable get RAILWAY_ACTIVE_COLOR 2>/dev/null || echo '')"
+          if [[ -z "$ACTIVE" ]]; then ACTIVE="blue"; fi
+          echo "active_color=$ACTIVE" >> "$GITHUB_OUTPUT"
+          echo "Current active (production) color: $ACTIVE"
+
+      - name: Select target slot
+        id: select
+        run: |
+          ACTIVE="${{ steps.active.outputs.active_color }}"
+          FORCE_TARGET="${{ inputs.target }}"
+          if [[ -n "$FORCE_TARGET" ]]; then
+            TARGET="$FORCE_TARGET"
+          elif [[ "$ACTIVE" == "blue" ]]; then
+            TARGET="green"
+          else
+            TARGET="blue"
+          fi
+          echo "target_color=$TARGET" >> "$GITHUB_OUTPUT"
+          echo "Target slot: $TARGET (active: $ACTIVE)"
+
+      - name: Resolve target service id + URL
+        id: meta
+        run: |
+          TARGET="${{ steps.select.outputs.target_color }}"
+          if [[ "$TARGET" == "blue" ]]; then
+            SERVICE="${{ vars.RAILWAY_BLUE_SERVICE }}"
+            URL="${{ vars.RAILWAY_BLUE_URL }}"
+          else
+            SERVICE="${{ vars.RAILWAY_GREEN_SERVICE }}"
+            URL="${{ vars.RAILWAY_GREEN_URL }}"
+          fi
+          echo "service=$SERVICE" >> "$GITHUB_OUTPUT"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      # ── Deploy the new build to the (inactive) target slot ───────────────
+      - name: Deploy to ${{ steps.select.outputs.target_color }} slot
+        run: |
+          railway link --project "${{ vars.RAILWAY_PROJECT_ID }}" --service "${{ steps.meta.outputs.service }}" --environment production
+          railway up
+
+      # ── Health check the new slot BEFORE any traffic cut-over ───────────
+      # Capped at 3 minutes so total deploy duration stays within the +5 min
+      # budget versus the previous in-place strategy.
+      - name: Health check ${{ steps.select.outputs.target_color }} slot
+        run: |
+          URL="${{ steps.meta.outputs.url }}/health"
+          echo "Polling $URL ..."
+          DEADLINE=$(( $(date +%s) + 180 ))
+          STATUS="000"
+          while [[ $(date +%s) -lt $DEADLINE ]]; do
+            STATUS="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$URL" || echo 000)"
+            echo "  -> HTTP $STATUS"
+            if [[ "$STATUS" == "200" ]]; then break; fi
+            sleep 5
+          done
+          if [[ "$STATUS" != "200" ]]; then
+            echo "Health check FAILED for the target slot (last status: $STATUS)."
+            echo "Production remains on the previous slot — automatic rollback (no traffic cut-over)."
+            exit 1
+          fi
+          echo "Health check PASSED."
+
+      # ── Promote: cut production over to the healthy new slot ─────────────
+      - name: Promote ${{ steps.select.outputs.target_color }} to production
+        run: |
+          TARGET="${{ steps.select.outputs.target_color }}"
+          ACTIVE="${{ steps.active.outputs.active_color }}"
+          PROD_DOMAIN="${{ vars.RAILWAY_PRODUCTION_DOMAIN }}"
+          TARGET_SERVICE="${{ steps.meta.outputs.service }}"
+          if [[ "$ACTIVE" == "blue" ]]; then OLD_SERVICE="${{ vars.RAILWAY_BLUE_SERVICE }}"; else OLD_SERVICE="${{ vars.RAILWAY_GREEN_SERVICE }}"; fi
+          echo "Cutting over $PROD_DOMAIN: $ACTIVE -> $TARGET"
+          # Detach the prod domain from the old slot, then attach it to the new
+          # (healthy) one — a single config change is all production routing is.
+          railway link --project "${{ vars.RAILWAY_PROJECT_ID }}" --service "$OLD_SERVICE" --environment production
+          railway domain remove "$PROD_DOMAIN" 2>/dev/null || true
+          railway link --project "${{ vars.RAILWAY_PROJECT_ID }}" --service "$TARGET_SERVICE" --environment production
+          railway domain add "$PROD_DOMAIN"
+          gh variable set RAILWAY_ACTIVE_COLOR --body "$TARGET"
+          echo "Promotion complete. Production now served by $TARGET."
+
+  # -------------------------------------------------------------------------
+  # 3. Manual rollback (Railway) — Issue #516
+  # -------------------------------------------------------------------------
+  # Reverses the last cut-over by repointing production back to the other
+  # (previously active) slot. Deliberately has NO build dependency so it can be
+  # triggered even when the current branch does not build. Selecting a forced
+  # `target` lets an operator point production at a specific slot directly.
+  rollback:
+    name: Rollback (Railway)
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.action == 'rollback' }}
+    permissions:
+      contents: read
+      variables: write
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Read current active color
+        id: active
+        run: |
+          ACTIVE="$(gh variable get RAILWAY_ACTIVE_COLOR 2>/dev/null || echo '')"
+          if [[ -z "$ACTIVE" ]]; then ACTIVE="blue"; fi
+          echo "active_color=$ACTIVE" >> "$GITHUB_OUTPUT"
+          echo "Current active (production) color: $ACTIVE"
+
+      - name: Select rollback target (the inactive slot, or a forced slot)
+        id: select
+        run: |
+          ACTIVE="${{ steps.active.outputs.active_color }}"
+          FORCE_TARGET="${{ inputs.target }}"
+          if [[ -n "$FORCE_TARGET" ]]; then
+            TARGET="$FORCE_TARGET"
+          elif [[ "$ACTIVE" == "blue" ]]; then
+            TARGET="green"
+          else
+            TARGET="blue"
+          fi
+          echo "target_color=$TARGET" >> "$GITHUB_OUTPUT"
+          echo "Rollback target: $TARGET (active: $ACTIVE)"
+
+      - name: Resolve target service id
+        id: meta
+        run: |
+          TARGET="${{ steps.select.outputs.target_color }}"
+          if [[ "$TARGET" == "blue" ]]; then
+            SERVICE="${{ vars.RAILWAY_BLUE_SERVICE }}"
+          else
+            SERVICE="${{ vars.RAILWAY_GREEN_SERVICE }}"
+          fi
+          echo "service=$SERVICE" >> "$GITHUB_OUTPUT"
+
+      - name: Repoint production to ${{ steps.select.outputs.target_color }}
+        run: |
+          TARGET="${{ steps.select.outputs.target_color }}"
+          ACTIVE="${{ steps.active.outputs.active_color }}"
+          PROD_DOMAIN="${{ vars.RAILWAY_PRODUCTION_DOMAIN }}"
+          TARGET_SERVICE="${{ steps.meta.outputs.service }}"
+          if [[ "$ACTIVE" == "blue" ]]; then OLD_SERVICE="${{ vars.RAILWAY_BLUE_SERVICE }}"; else OLD_SERVICE="${{ vars.RAILWAY_GREEN_SERVICE }}"; fi
+          echo "Rolling back: $PROD_DOMAIN  $ACTIVE -> $TARGET (single config change)"
+          railway link --project "${{ vars.RAILWAY_PROJECT_ID }}" --service "$OLD_SERVICE" --environment production
+          railway domain remove "$PROD_DOMAIN" 2>/dev/null || true
+          railway link --project "${{ vars.RAILWAY_PROJECT_ID }}" --service "$TARGET_SERVICE" --environment production
+          railway domain add "$PROD_DOMAIN"
+          gh variable set RAILWAY_ACTIVE_COLOR --body "$TARGET"
+          echo "Rollback complete. Production now served by $TARGET."
+
+  # -------------------------------------------------------------------------
+  # 4. Create GitHub Release (tag pushes only)
   # -------------------------------------------------------------------------
   github-release:
     name: GitHub Release
     runs-on: ubuntu-latest
     needs: build
+    if: ${{ github.event_name == 'push' }}
     permissions:
       contents: write   # required to create releases and upload assets
 
