@@ -29,6 +29,7 @@ import { QueueService } from "../jobs";
 import { SseEmitter } from "../services/sseEmitter";
 import pool from "../db";
 import { resolveDispute } from "../services/stellar";
+import { invalidateTradesListCache } from "./trades";
 import {
   resolveDisputeSchema,
   reviewFraudFlagSchema,
@@ -275,6 +276,9 @@ router.post(
          RETURNING *`,
         [newStatus, id]
       );
+
+      // Status changed — invalidate the marketplace listing cache (issue #76).
+      await invalidateTradesListCache();
 
       // Same transaction as the status change: the audit row and the
       // resolution commit or roll back together.

@@ -4,6 +4,7 @@ import { SpanStatusCode } from "@opentelemetry/api";
 import { asStroops, fromStroops, toStroops } from "@airflex/shared/units";
 import pool from "../db";
 import { cache } from "../services/cache";
+import logger from "../utils/logger";
 import {
   setTradeAttributes,
   withSpan,
@@ -87,6 +88,35 @@ function tracedStage(
 // GET /api/v1/trades
 // ---------------------------------------------------------------------------
 
+/**
+ * Cache namespace for the marketplace listing feed (issue #76). Every
+ * filter/pagination combination is cached under this namespace's current
+ * generation, so `invalidateTradesListCache()` can expire every variant at
+ * once (new trade created, or an existing trade's status changes) without
+ * the underlying RESP client needing pattern-based deletion.
+ */
+const TRADES_LIST_CACHE_NAMESPACE = "trades:list";
+const TRADES_LIST_CACHE_TTL_SECONDS = 30;
+
+/**
+ * Exported so other routes that change a trade's status outside this file
+ * (e.g. admin dispute resolution in routes/admin.ts) can invalidate the same
+ * cache namespace instead of duplicating the cache key logic.
+ */
+export async function invalidateTradesListCache(): Promise<void> {
+  try {
+    await cache.bumpVersion(TRADES_LIST_CACHE_NAMESPACE);
+  } catch (err) {
+    // Cache invalidation is best-effort — a stale listing for up to the TTL
+    // window is acceptable, but a cache error must never fail the request
+    // that triggered it (trade creation / status change).
+    logger.warn(
+      { err: (err as Error).message },
+      "[trades] Failed to invalidate trades list cache"
+    );
+  }
+}
+
 router.get(
   "/",
   async (req, res) => {
@@ -101,6 +131,31 @@ router.get(
 
     const { page, limit, assetType, carrier, minAmount, maxAmount } = parsed.data;
     const offset = (page - 1) * limit;
+
+    // Redis-backed cache for this high-traffic read endpoint (issue #76).
+    // Keyed by the serialised query params plus the namespace's current
+    // generation, so any create/status-change invalidates every variant.
+    const cacheVersion = await cache.getVersion(TRADES_LIST_CACHE_NAMESPACE);
+    const cacheKey = `${TRADES_LIST_CACHE_NAMESPACE}:v${cacheVersion}:${JSON.stringify({
+      page,
+      limit,
+      assetType: assetType ?? null,
+      carrier: carrier ?? null,
+      minAmount: minAmount ?? null,
+      maxAmount: maxAmount ?? null,
+    })}`;
+
+    const cached = await cache.get(cacheKey);
+    if (cached !== null) {
+      logger.debug({ key: cacheKey }, "[trades] list cache hit");
+      try {
+        res.status(200).json(JSON.parse(cached));
+        return;
+      } catch {
+        // Corrupt cache entry — fall through and recompute from the DB.
+      }
+    }
+    logger.info({ key: cacheKey }, "[trades] list cache miss");
 
     const whereConditions: string[] = ["t.status = 'Active'", "t.expires_at > NOW()"];
     const queryParams: unknown[] = [];
@@ -173,7 +228,7 @@ router.get(
 
     const total = parseInt(countRows[0]?.count ?? "0", 10);
 
-    res.status(200).json({
+    const responseBody = {
       data: trades,
       pagination: {
         page,
@@ -181,7 +236,16 @@ router.get(
         total,
         totalPages: Math.ceil(total / limit),
       },
-    });
+    };
+
+    // Fire-and-forget: a cache write failure should never fail the request.
+    void cache
+      .set(cacheKey, JSON.stringify(responseBody), TRADES_LIST_CACHE_TTL_SECONDS)
+      .catch((err: Error) =>
+        logger.warn({ err: err.message, key: cacheKey }, "[trades] Failed to populate list cache")
+      );
+
+    res.status(200).json(responseBody);
   }
 );
 
@@ -300,6 +364,10 @@ router.post(
         24 * 60 * 60
       );
     }
+
+    // A new Active listing just appeared — the marketplace listing cache
+    // (issue #76) must not keep serving stale pre-creation results.
+    await invalidateTradesListCache();
 
     res.status(201).json(responseBody);
   })
@@ -480,6 +548,10 @@ router.post(
 
     setTradeAttributes({ status: updated[0]?.status });
 
+    // The listing just left the public "Active" feed — invalidate the
+    // marketplace listing cache (issue #76) so it isn't served stale.
+    await invalidateTradesListCache();
+
     // Notify the seller that their trade has been locked (best-effort)
     void NotificationService.send(trade.seller_id, "TRADE_LOCKED", {
       tradeId: id,
@@ -599,6 +671,9 @@ router.post(
       res.status(409).json({ error: "Trade is no longer in a locked state" });
       return;
     }
+
+    // Status changed — invalidate the marketplace listing cache (issue #76).
+    await invalidateTradesListCache();
 
     // Notify both participants (trade_dispute_opened, issue #490) and admins
     void NotificationService.notifyTradeDisputeOpened({
