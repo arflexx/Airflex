@@ -239,11 +239,27 @@ export default function TradeDetailClient({ trade }: Props) {
   async function handleBuy() {
     if (!canBuy) return;
 
+    // Optimistic UI (Issue #609): the status flips to "Locked" — this
+    // domain's equivalent of "accepted" — the instant the user clicks, rather
+    // than waiting for the full prepare → sign → submit round-trip. `status`
+    // (not `trade.status`) is what the rest of the component renders from, so
+    // this is purely local state; `previousStatus` lets any failure below
+    // restore exactly what was on screen before the click.
+    const previousStatus = status;
     setBuyError(null);
     setBuying(true);
+    setStatus("Locked");
+
+    /** Rolls the optimistic status back and surfaces the failure as a toast. */
+    function rollback(message: string) {
+      setStatus(previousStatus);
+      setBuyError(message);
+      setToast({ type: "error", message });
+    }
 
     const token = getToken();
     if (!token) {
+      setStatus(previousStatus);
       reauthenticate();
       return;
     }
@@ -256,7 +272,7 @@ export default function TradeDetailClient({ trade }: Props) {
       );
 
       if (!prepared.data) {
-        setBuyError(prepared.error ?? t("purchaseFailed"));
+        rollback(prepared.error ?? t("purchaseFailed"));
         return;
       }
 
@@ -274,19 +290,21 @@ export default function TradeDetailClient({ trade }: Props) {
           // The key lives in memory only, so a reload or a new tab lands here.
           // Re-authenticating is the way back in — there is nothing cached to
           // fall back on, by design.
+          setStatus(previousStatus);
           reauthenticate();
           return;
         }
         if (err instanceof UnlockFailedError) {
           if (err.status === 401) {
+            setStatus(previousStatus);
             reauthenticate();
             return;
           }
-          setBuyError(t("purchaseFailed"));
+          rollback(t("purchaseFailed"));
           return;
         }
         if (err instanceof AccountMismatchError) {
-          setBuyError(t("purchaseFailed"));
+          rollback(t("purchaseFailed"));
           return;
         }
         throw err;
@@ -303,12 +321,13 @@ export default function TradeDetailClient({ trade }: Props) {
       setConfirmed(true);
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
+        setStatus(previousStatus);
         reauthenticate();
       } else if (error instanceof ApiError) {
         const data = error.data as { error?: string } | undefined;
-        setBuyError(data?.error ?? t("purchaseFailed"));
+        rollback(data?.error ?? t("purchaseFailed"));
       } else {
-        setBuyError(t("networkError"));
+        rollback(t("networkError"));
       }
     } finally {
       setBuying(false);
