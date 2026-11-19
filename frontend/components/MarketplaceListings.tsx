@@ -391,7 +391,7 @@ export default function MarketplaceListings({
               {error}
             </div>
           ) : loading ? (
-            <TradeCardSkeleton count={8} />
+            <TradeCardSkeleton count={6} />
           ) : trades.length === 0 ? (
             <EmptyState t={t} hasActiveFilters={hasActiveFilters} onClear={handleClearFilters} />
           ) : (
