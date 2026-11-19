@@ -10,6 +10,7 @@ import {
   SW_CACHE_STRATEGY_VERSION,
   STATIC_CACHE_NAME,
   API_CACHE_NAME,
+  OFFLINE_FALLBACK_PATH,
   isHashedStatic,
   isCacheableGet,
   staticAssetRule,
@@ -136,5 +137,11 @@ describe("SW_CACHE_STRATEGY_VERSION", () => {
   it("is a non-empty version string", () => {
     expect(typeof SW_CACHE_STRATEGY_VERSION).toBe("string");
     expect(SW_CACHE_STRATEGY_VERSION.length).toBeGreaterThan(0);
+  });
+});
+
+describe("OFFLINE_FALLBACK_PATH (#613)", () => {
+  it("points at the /offline route next.config.js registers as the navigation fallback", () => {
+    expect(OFFLINE_FALLBACK_PATH).toBe("/offline");
   });
 });

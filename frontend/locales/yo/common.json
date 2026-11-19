@@ -238,5 +238,12 @@
       "sendNow": "Fi ránṣẹ́ báyìí",
       "discard": "Pa á rẹ́"
     }
+  },
+  "Offline": {
+    "heading": "O kò sí lórí ayélujára",
+    "body": "AirFlex nílò asopọ̀ ayélujára láti ṣí ojú ewé yìí. Ṣàyẹ̀wò nẹ́tìwọ̀kì rẹ kí o sì tún gbìyànjú — àwọn òwò àti wálẹ́ẹ̀tì rẹ wà láìléwu.",
+    "retry": "Gbìyànjú lẹ́ẹ̀kan si",
+    "reconnectingHeading": "Ń tún sopọ̀…",
+    "reconnectingBody": "Asopọ̀ nẹ́tìwọ̀kì ti padà. Ń mú ọ padà…"
   }
 }

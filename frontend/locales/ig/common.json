@@ -238,5 +238,12 @@
       "sendNow": "Ziga ugbu a",
       "discard": "Wepụ"
     }
+  },
+  "Offline": {
+    "heading": "Ị nọghị n'ịntanetị",
+    "body": "AirFlex chọrọ njikọ ịntanetị iji budata ibe a. Lelee netwọk gị ma nwaa ọzọ — azụmahịa gị na obere ego gị dị mma.",
+    "retry": "Nwaa ọzọ",
+    "reconnectingHeading": "Na-ejikọghachi…",
+    "reconnectingBody": "Emegharịla njikọ netwọk. Na-akpọghachi gị…"
   }
 }

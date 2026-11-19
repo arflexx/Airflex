@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import type { TradeOffer } from "../../../../server/src/types/trade";
-import TradeDetailClient from "./TradeDetailClient";
+import TradeDetailBoundary from "./TradeDetailBoundary";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -100,6 +100,8 @@ export default async function TradeDetailPage({ params }: PageProps) {
   // Delegate to Next.js global not-found.tsx if trade is absent
   if (!trade) notFound();
 
-  // trade is guaranteed non-null here — pass down to the interactive shell
-  return <TradeDetailClient trade={trade} />;
+  // trade is guaranteed non-null here — pass down to the interactive shell,
+  // wrapped so a runtime error in it shows an inline retry card instead of
+  // crashing the page (issue #611 / #608).
+  return <TradeDetailBoundary trade={trade} />;
 }
