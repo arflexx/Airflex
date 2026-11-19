@@ -13,17 +13,17 @@ import { Callout } from "nextra/components";
   [`/openapi.json`](/openapi.json).
 </Callout>
 
-Authenticated user profile and trade history.
+User profile and account management
 
-## `GET /api/profile` 🔒
+## `GET /api/v1/profile` 🔒
 
-**Get authenticated profile**
+**Get own profile**
 
-Returns profile metadata for the authenticated user, including a masked phone number and completed-trade count.
+Returns the authenticated user's profile metadata. Phone is masked.
 
 **Responses**
 
-**`200`** — OK
+**`200`** — Profile data.
 
 ```json
 {
@@ -31,64 +31,307 @@ Returns profile metadata for the authenticated user, including a masked phone nu
     "id": "550e8400-e29b-41d4-a716-446655440000",
     "maskedPhone": "+234 *** *** 5678",
     "createdAt": "2026-08-24T10:00:00.000Z",
-    "totalTradesCompleted": 1,
-    "stellarPublicKey": "string"
+    "totalTradesCompleted": 5,
+    "stellarPublicKey": "GABC1234...",
+    "kycStatus": "verified",
+    "referralCode": "K7QM2XWTHN4PZR8C"
   }
 }
 ```
 
-**`404`** — User not found
+**`400`** — Malformed request syntax or invalid parameters.
 
 ```json
 {
-  "error": "Human-readable message"
+  "error": "Invalid request parameters"
+}
+```
+
+**`401`** — Missing or invalid Bearer JWT.
+
+```json
+{
+  "error": "Missing or invalid Authorization header"
+}
+```
+
+**`404`** — The requested resource does not exist.
+
+```json
+{
+  "error": "Trade offer not found"
+}
+```
+
+**`429`** — Rate limit exceeded.
+
+```json
+{
+  "error": "Too many requests. Please slow down."
+}
+```
+
+**`500`** — Unexpected server error.
+
+```json
+{
+  "error": "Internal server error"
 }
 ```
 
 ---
 
-## `GET /api/profile/trades` 🔒
+## `DELETE /api/v1/profile` 🔒
 
-**Get trade history**
+**Request account deletion (GDPR/NDPR)**
 
-Returns the paginated trade history for the authenticated user, covering trades where the user was the seller or the buyer.
+Initiates a 30-day soft-delete grace period. The account is marked `pending_deletion`. After 30 days all PII is anonymised. All pending trades are cancelled and escrow refunds are triggered. A confirmation SMS is sent via Termii.
+
+**Responses**
+
+**`200`** — Deletion request accepted.
+
+```json
+{
+  "message": "Account deletion requested. Your account will be anonymised in 30 days.",
+  "scheduledDeletionAt": "2026-08-24T10:00:00.000Z"
+}
+```
+
+**`400`** — Account deletion already pending.
+
+```json
+{
+  "error": "Descriptive error message"
+}
+```
+
+**`401`** — Missing or invalid Bearer JWT.
+
+```json
+{
+  "error": "Missing or invalid Authorization header"
+}
+```
+
+**`404`** — The requested resource does not exist.
+
+```json
+{
+  "error": "Trade offer not found"
+}
+```
+
+**`429`** — Rate limit exceeded.
+
+```json
+{
+  "error": "Too many requests. Please slow down."
+}
+```
+
+**`500`** — Unexpected server error.
+
+```json
+{
+  "error": "Internal server error"
+}
+```
+
+---
+
+## `GET /api/v1/profile/trades` 🔒
+
+**Get own trade history**
+
+Returns paginated trade history for the authenticated user (as seller or buyer). Filterable by status.
 
 **Parameters**
 
 | Name | In | Type | Notes |
 |------|----|------|-------|
-| `page` | query | integer | optional (default `1`) |
-| `limit` | query | integer | optional (max 50, default `10`) |
-| `status` | query | string | optional (default `All`, one of `All`, `Active`, `Locked`, `Completed`, `Cancelled`) |
+| `page` | query | integer | optional (min 1, default `1`) |
+| `limit` | query | integer | optional (min 1, max 50, default `10`) |
+| `status` | query | string | optional (default `All`, one of `All`, `Active`, `Locked`, `Completed`, `Cancelled`, `Disputed`) |
 
 
 **Responses**
 
-**`200`** — OK
+**`200`** — Paginated trade history.
 
 ```json
 {
   "data": [
     {
-      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
       "seller_id": "550e8400-e29b-41d4-a716-446655440000",
-      "buyer_id": "550e8400-e29b-41d4-a716-446655440000",
+      "seller_handle": "@airflex_2f9a",
+      "buyer_id": "b1ffcd88-8d1a-3de7-aa5c-5aa8ac270b22",
       "asset_type": "MTN_AIRTIME",
       "amount": 500,
       "status": "Active",
-      "contract_listing_id": "string",
-      "escrow_tx_hash": "string",
-      "expires_at": "2026-08-24T10:00:00.000Z",
-      "created_at": "2026-08-24T10:00:00.000Z",
-      "updated_at": "2026-08-24T10:00:00.000Z"
+      "contract_listing_id": "42",
+      "escrow_tx_hash": "abc123txhash",
+      "expires_at": "2026-08-02T12:00:00Z",
+      "created_at": "2026-08-01T12:00:00Z",
+      "updated_at": "2026-08-01T12:00:00Z"
     }
   ],
   "pagination": {
     "page": 1,
     "limit": 20,
-    "total": 42,
-    "totalPages": 3
+    "total": 100,
+    "totalPages": 5
   }
+}
+```
+
+**`400`** — Malformed request syntax or invalid parameters.
+
+```json
+{
+  "error": "Invalid request parameters"
+}
+```
+
+**`401`** — Missing or invalid Bearer JWT.
+
+```json
+{
+  "error": "Missing or invalid Authorization header"
+}
+```
+
+**`429`** — Rate limit exceeded.
+
+```json
+{
+  "error": "Too many requests. Please slow down."
+}
+```
+
+**`500`** — Unexpected server error.
+
+```json
+{
+  "error": "Internal server error"
+}
+```
+
+---
+
+## `GET /api/v1/profile/deletion-status` 🔒
+
+**Check account deletion status**
+
+Returns whether the account has a pending deletion request and when it is scheduled.
+
+**Responses**
+
+**`200`** — Deletion status.
+
+```json
+{
+  "pendingDeletion": true,
+  "scheduledDeletionAt": null
+}
+```
+
+**`400`** — Malformed request syntax or invalid parameters.
+
+```json
+{
+  "error": "Invalid request parameters"
+}
+```
+
+**`401`** — Missing or invalid Bearer JWT.
+
+```json
+{
+  "error": "Missing or invalid Authorization header"
+}
+```
+
+**`404`** — The requested resource does not exist.
+
+```json
+{
+  "error": "Trade offer not found"
+}
+```
+
+**`429`** — Rate limit exceeded.
+
+```json
+{
+  "error": "Too many requests. Please slow down."
+}
+```
+
+**`500`** — Unexpected server error.
+
+```json
+{
+  "error": "Internal server error"
+}
+```
+
+---
+
+## `POST /api/v1/profile/cancel-deletion` 🔒
+
+**Cancel pending account deletion**
+
+Cancels a pending 30-day deletion request within the grace window.
+
+**Responses**
+
+**`200`** — Deletion request cancelled successfully.
+
+```json
+{
+  "message": "Account deletion cancelled. Your account is restored."
+}
+```
+
+**`400`** — No pending deletion request to cancel.
+
+```json
+{
+  "error": "Descriptive error message"
+}
+```
+
+**`401`** — Missing or invalid Bearer JWT.
+
+```json
+{
+  "error": "Missing or invalid Authorization header"
+}
+```
+
+**`404`** — The requested resource does not exist.
+
+```json
+{
+  "error": "Trade offer not found"
+}
+```
+
+**`429`** — Rate limit exceeded.
+
+```json
+{
+  "error": "Too many requests. Please slow down."
+}
+```
+
+**`500`** — Unexpected server error.
+
+```json
+{
+  "error": "Internal server error"
 }
 ```
 
@@ -98,11 +341,11 @@ Returns the paginated trade history for the authenticated user, covering trades 
 
 **Request a GDPR data portability export**
 
-Starts asynchronous generation of a machine-readable JSON export of all personal data held about the caller: account details, KYC record, trade history, ratings, wallet ledger, withdrawals and referrals. Credentials and raw payment details are omitted or masked, and the export lists every redaction. The user is notified by SMS when it is ready. Limited to one request per user per 24 hours.
+Starts asynchronous generation of a machine-readable JSON export of all personal data held about the caller: account details, KYC record, trade history, ratings, wallet ledger, withdrawals and referrals (issue #539). Credentials and raw payment details are omitted or masked; the export lists every redaction. The user is notified by SMS when it is ready. Limited to one request per user per 24 hours.
 
 **Responses**
 
-**`202`** — Export accepted for generation
+**`202`** — Export accepted for generation.
 
 ```json
 {
@@ -112,8 +355,8 @@ Starts asynchronous generation of a machine-readable JSON export of all personal
     "status": "pending",
     "format": "json",
     "requestedAt": "2026-08-24T10:00:00.000Z",
-    "completedAt": "2026-08-24T10:00:00.000Z",
-    "expiresAt": "2026-08-24T10:00:00.000Z",
+    "completedAt": null,
+    "expiresAt": null,
     "statusUrl": "string",
     "download": {
       "url": "string",
@@ -123,15 +366,23 @@ Starts asynchronous generation of a machine-readable JSON export of all personal
 }
 ```
 
-**`401`** — Missing or invalid Authorization header
+**`400`** — Malformed request syntax or invalid parameters.
 
 ```json
 {
-  "error": "Human-readable message"
+  "error": "Invalid request parameters"
 }
 ```
 
-**`429`** — An export was already requested in the last 24 hours. Retry-After gives the seconds until a new request is allowed; `export` is the existing request.
+**`401`** — Missing or invalid Bearer JWT.
+
+```json
+{
+  "error": "Missing or invalid Authorization header"
+}
+```
+
+**`429`** — An export was already requested in the last 24 hours. The Retry-After header gives the seconds until a new request is allowed; `export` is the existing request.
 
 ```json
 {
@@ -142,14 +393,22 @@ Starts asynchronous generation of a machine-readable JSON export of all personal
     "status": "pending",
     "format": "json",
     "requestedAt": "2026-08-24T10:00:00.000Z",
-    "completedAt": "2026-08-24T10:00:00.000Z",
-    "expiresAt": "2026-08-24T10:00:00.000Z",
+    "completedAt": null,
+    "expiresAt": null,
     "statusUrl": "string",
     "download": {
       "url": "string",
       "expiresAt": "2026-08-24T10:00:00.000Z"
     }
   }
+}
+```
+
+**`500`** — Unexpected server error.
+
+```json
+{
+  "error": "Internal server error"
 }
 ```
 
@@ -170,7 +429,7 @@ Returns the caller's export request. Once ready, `download.url` is a signed URL 
 
 **Responses**
 
-**`200`** — Export status
+**`200`** — Export status.
 
 ```json
 {
@@ -179,8 +438,8 @@ Returns the caller's export request. Once ready, `download.url` is a signed URL 
     "status": "pending",
     "format": "json",
     "requestedAt": "2026-08-24T10:00:00.000Z",
-    "completedAt": "2026-08-24T10:00:00.000Z",
-    "expiresAt": "2026-08-24T10:00:00.000Z",
+    "completedAt": null,
+    "expiresAt": null,
     "statusUrl": "string",
     "download": {
       "url": "string",
@@ -190,27 +449,35 @@ Returns the caller's export request. Once ready, `download.url` is a signed URL 
 }
 ```
 
-**`400`** — Malformed export id
+**`400`** — Malformed export id.
 
 ```json
 {
-  "error": "Human-readable message"
+  "error": "Descriptive error message"
 }
 ```
 
-**`401`** — Missing or invalid Authorization header
+**`401`** — Missing or invalid Bearer JWT.
 
 ```json
 {
-  "error": "Human-readable message"
+  "error": "Missing or invalid Authorization header"
 }
 ```
 
-**`404`** — Data export not found
+**`404`** — The requested resource does not exist.
 
 ```json
 {
-  "error": "Human-readable message"
+  "error": "Trade offer not found"
+}
+```
+
+**`429`** — Rate limit exceeded.
+
+```json
+{
+  "error": "Too many requests. Please slow down."
 }
 ```
 
@@ -233,17 +500,41 @@ Returns the export as a JSON attachment. Authorised by the HMAC signature in the
 
 **Responses**
 
-**`200`** — The export document
+**`200`** — The export document.
 
 ```json
 {}
 ```
 
-**`404`** — Download link is invalid or has expired
+**`400`** — Malformed request syntax or invalid parameters.
 
 ```json
 {
-  "error": "Human-readable message"
+  "error": "Invalid request parameters"
+}
+```
+
+**`404`** — The requested resource does not exist.
+
+```json
+{
+  "error": "Trade offer not found"
+}
+```
+
+**`429`** — Rate limit exceeded.
+
+```json
+{
+  "error": "Too many requests. Please slow down."
+}
+```
+
+**`500`** — Unexpected server error.
+
+```json
+{
+  "error": "Internal server error"
 }
 ```
 

@@ -19,26 +19,67 @@ Crate: `airflex-escrow`
 
 ### `initialize`
 
-Sets the admin address and seeds the trade counter.
-Can only be called once (panics if already initialised).
+Sets the admin address, seeds the trade counter, whitelists initial payment tokens,
+and registers default asset categories (AIRTIME, DATA).
+
+Pre-conditions:
+- Contract has not been previously initialized.
+- Admin address must authorize the call (`admin.require_auth()`).
+
+Post-conditions:
+- Admin stored in contract instance storage.
+- Trade counter initialized to 0 and paused state to false.
+- Initial payment tokens and default categories whitelisted.
 
 ```rust
-pub fn initialize(env: Env, admin: Address)
+pub fn initialize(
+        env: Env,
+        admin: Address,
+        allowed_tokens: Vec<Address>,
+    ) -> Result<(), ContractError>
+```
+
+---
+
+### `pause`
+
+Halts all state-mutating operations. Only callable by admin.
+Emits a `topics: ["contract", "paused"]` event.
+
+```rust
+pub fn pause(env: Env) -> Result<(), ContractError>
+```
+
+---
+
+### `unpause`
+
+Resumes normal operations. Only callable by admin.
+Emits a `topics: ["contract", "unpaused"]` event.
+
+```rust
+pub fn unpause(env: Env) -> Result<(), ContractError>
 ```
 
 ---
 
 ### `create_listing`
 
-Registers a new trade offer on the ledger.
+Registers a new trade offer on the ledger for airtime or data.
 
-* `seller`     — seller's Stellar address (must sign)
-* `token`      — address of the payment token contract (e.g. USDC)
-* `amount`     — token amount the buyer must pay (in base units)
-* `asset_type` — short symbol describing what is being sold
-* `expires_at` — Unix timestamp after which the trade is void
+Pre-conditions:
+- Contract must not be paused.
+- `seller` must authenticate transaction (`seller.require_auth()`).
+- `amount > 0`.
+- `token` must be in the approved `AllowedToken` set.
+- `asset_type` must be in the approved `AllowedCategory` set.
+- `expires_at > ledger.timestamp()` and within `MAX_EXPIRY_SECS` (30 days).
 
-Returns the new trade ID.
+Post-conditions:
+- Trade stored with `TradeStatus::Open`.
+- Trade counter incremented.
+- `trade_created` event emitted.
+- Returns new trade ID.
 
 ```rust
 pub fn create_listing(
@@ -48,7 +89,66 @@ pub fn create_listing(
         amount: i128,
         asset_type: Symbol,
         expires_at: u64,
-    ) -> u64
+    ) -> Result<u64, ContractError>
+```
+
+---
+
+### `add_allowed_token`
+
+Adds `token` to the set of tokens listings may be created/filled in.
+Emits a `topics: ["token", "allowed"]` event carrying the token
+address, so off-chain indexers and admin tooling can observe changes
+to the allow-list without polling every token individually.
+
+```rust
+pub fn add_allowed_token(env: Env, token: Address) -> Result<(), ContractError>
+```
+
+---
+
+### `remove_allowed_token`
+
+Removes `token` from the set of allowed tokens. Emits a
+`topics: ["token", "removed"]` event carrying the token address —
+previously this state change was silent on-chain.
+
+```rust
+pub fn remove_allowed_token(env: Env, token: Address) -> Result<(), ContractError>
+```
+
+---
+
+### `add_category`
+
+Adds `category` to the set of allowed asset category symbols.
+Only callable by admin. Emits a `topics: ["category", "allowed"]` event.
+
+```rust
+pub fn add_category(env: Env, category: Symbol) -> Result<(), ContractError>
+```
+
+---
+
+### `remove_category`
+
+Removes `category` from the set of allowed asset category symbols.
+Only callable by admin. Emits a `topics: ["category", "removed"]` event.
+
+```rust
+pub fn remove_category(env: Env, category: Symbol) -> Result<(), ContractError>
+```
+
+---
+
+### `transfer_admin`
+
+Transfers admin ownership to a new address.
+Only callable by the current admin.
+Emits a `topics: ["admin", "transfer"]` event with `(old_admin, new_admin)`.
+
+```rust
+pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), ContractError>
 ```
 
 ---
@@ -57,11 +157,21 @@ pub fn create_listing(
 
 Locks the buyer's funds into the contract for a specific trade.
 
-Transfers `trade.amount` tokens from `buyer` → contract.
-Sets trade status to `Locked`.
+Transfers `fill_amount` tokens from `buyer` → contract.
+Sets trade status to `Locked` when fully filled, `PartiallyFilled` otherwise.
+
+At most one *active* sub-escrow per buyer per trade is allowed — a buyer
+holding an unreleased/unrefunded fill on this trade is rejected with
+`DuplicateFill` (issue #294), so no single buyer can fill a public
+listing repeatedly and monopolise it.
 
 ```rust
-pub fn deposit_to_escrow(env: Env, buyer: Address, trade_id: u64)
+pub fn deposit_to_escrow(
+        env: Env,
+        buyer: Address,
+        trade_id: u64,
+        fill_amount: i128,
+    ) -> Result<(), ContractError>
 ```
 
 ---
@@ -70,51 +180,131 @@ pub fn deposit_to_escrow(env: Env, buyer: Address, trade_id: u64)
 
 Releases escrowed funds to the seller once delivery is confirmed.
 
-Only the admin account can call this to prevent premature release.
+The admin address (set at `initialize`) must authorise this call via
+`require_auth()`. In production the admin is the platform server signing
+key that verifies off-chain delivery before releasing escrow.
 
 ```rust
-pub fn release_payment(env: Env, trade_id: u64)
+pub fn release_payment(env: Env, trade_id: u64, fill_id: u64) -> Result<(), ContractError>
+```
+
+---
+
+### `release_by_timelock`
+
+Releases escrowed funds to the seller after the dispute window has elapsed
+without a dispute being flagged.
+
+Requirements:
+- Contract must not be paused.
+- `caller` must be the seller or admin.
+- The trade must not be in `Disputed` status (returns `Err(ContractError::AlreadyDisputed)`).
+- The trade must be in `Locked` or `PartiallyFilled` status.
+- Current ledger timestamp must be >= `dispute_window_close_at` (returns `Err(ContractError::TimelockNotExpired)`).
+- The specified `fill_id` must not be already released or refunded.
+
+```rust
+pub fn release_by_timelock(
+        env: Env,
+        caller: Address,
+        trade_id: u64,
+        fill_id: u64,
+    ) -> Result<(), ContractError>
 ```
 
 ---
 
 ### `cancel_and_refund`
 
-Returns escrowed funds to the buyer and marks the trade Cancelled.
+Refunds the buyer or closes an unfulfilled trade, callable by buyer after expiry or admin.
 
-Can be called by:
-- The buyer, if the trade is Locked and has passed its expiry
-- The admin, at any point (for dispute resolution)
+Pre-conditions:
+- Contract must not be paused.
+- `caller` must authenticate transaction (`caller.require_auth()`).
+- If not admin, caller must be authorized party after `trade.expires_at`.
+- Trade status must not be `Completed`.
+
+Post-conditions:
+- Committed escrow tokens transferred back to buyer.
+- Trade status transitions to `TradeStatus::Cancelled`.
+- `trade_refunded` event emitted.
 
 ```rust
-pub fn cancel_and_refund(env: Env, caller: Address, trade_id: u64)
+pub fn cancel_and_refund(
+        env: Env,
+        caller: Address,
+        trade_id: u64,
+    ) -> Result<(), ContractError>
+```
+
+---
+
+### `close_expired_listing`
+
+Removes an unfilled listing after its expiry so its persistent storage
+can be reclaimed. Anyone may trigger this cleanup.
+
+```rust
+pub fn close_expired_listing(env: Env, trade_id: u64) -> Result<(), ContractError>
 ```
 
 ---
 
 ### `flag_dispute`
 
-Flags a Locked trade as Disputed so the admin can intervene.
+Escalates a fully-filled (`Locked`) trade to `Disputed`.
+
+`PartiallyFilled` trades are rejected with `WrongStatus`: delivery is
+only attempted once a trade is locked, so a buyer who deposited a
+single stroop has no delivery grievance yet and must not be able to
+freeze the seller's listing.
 
 ```rust
-pub fn flag_dispute(env: Env, caller: Address, trade_id: u64)
+pub fn flag_dispute(env: Env, caller: Address, trade_id: u64) -> Result<(), ContractError>
+```
+
+---
+
+### `emergency_withdraw`
+
+Recovers trapped funds in the event of a critical bug or settlement deadlock.
+
+Requirements:
+- Callable only by the admin.
+- Contract must be currently paused.
+- A 72-hour timelock must have elapsed since the contract was paused.
+- Emits a high-severity `emergency_withdrawal` event.
+
+```rust
+pub fn emergency_withdraw(
+        env: Env,
+        token: Address,
+        recipient: Address,
+        amount: i128,
+    ) -> Result<(), ContractError>
 ```
 
 ---
 
 ### `get_trade`
 
-Returns a trade offer by ID.
+Read-only query returning the current state of a trade offer.
+
+Pre-conditions:
+- Trade ID must exist in contract storage.
+
+Post-conditions:
+- Returns `TradeOffer` struct and extends entry TTL.
 
 ```rust
-pub fn get_trade(env: Env, trade_id: u64) -> TradeOffer
+pub fn get_trade(env: Env, trade_id: u64) -> Result<TradeOffer, ContractError>
 ```
 
 ---
 
 ### `trade_count`
 
-Returns the current trade counter (total trades ever created).
+Returns the total number of trade offers ever created.
 
 ```rust
 pub fn trade_count(env: Env) -> u64
@@ -124,9 +314,29 @@ pub fn trade_count(env: Env) -> u64
 
 ### `get_admin`
 
-Returns the admin address.
+Returns the currently configured administrative address for the contract.
 
 ```rust
-pub fn get_admin(env: Env) -> Address
+pub fn get_admin(env: Env) -> Result<Address, ContractError>
+```
+
+---
+
+### `is_paused`
+
+Returns whether the contract is currently paused.
+
+```rust
+pub fn is_paused(env: Env) -> bool
+```
+
+---
+
+### `get_dispute_window_close_at`
+
+Returns the Unix timestamp when the dispute window closes for `trade_id`.
+
+```rust
+pub fn get_dispute_window_close_at(env: Env, trade_id: u64) -> Result<u64, ContractError>
 ```
 

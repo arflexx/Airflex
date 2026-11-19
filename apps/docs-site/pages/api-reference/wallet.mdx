@@ -13,81 +13,145 @@ import { Callout } from "nextra/components";
   [`/openapi.json`](/openapi.json).
 </Callout>
 
-Stellar wallet balance and Naira bank withdrawals via Paystack.
+Stellar wallet and Paystack withdrawals
 
-## `GET /api/wallet` 🔒
+## `GET /api/v1/wallet` 🔒
 
 **Get wallet balance**
 
-Returns the authenticated user's Stellar public key and current XLM balance. The secret key is never included in the response.
+Returns the authenticated user's Stellar public key and current XLM balance fetched from Horizon. The secret key is never returned.
 
 **Responses**
 
-**`200`** — OK
+**`200`** — Wallet details.
 
 ```json
 {
-  "publicKey": "string",
+  "publicKey": "GABC1234...",
   "balance": "10000.0000000",
   "asset": "XLM",
   "network": "testnet"
 }
 ```
 
-**`404`** — Wallet not found / still provisioning
+**`400`** — Malformed request syntax or invalid parameters.
 
 ```json
 {
-  "error": "Human-readable message"
+  "error": "Invalid request parameters"
 }
 ```
 
-**`502`** — Unable to fetch balance from Horizon
+**`401`** — Missing or invalid Bearer JWT.
 
 ```json
 {
-  "error": "Human-readable message"
+  "error": "Missing or invalid Authorization header"
+}
+```
+
+**`404`** — The requested resource does not exist.
+
+```json
+{
+  "error": "Trade offer not found"
+}
+```
+
+**`429`** — Rate limit exceeded.
+
+```json
+{
+  "error": "Too many requests. Please slow down."
+}
+```
+
+**`500`** — Unexpected server error.
+
+```json
+{
+  "error": "Internal server error"
+}
+```
+
+**`502`** — Horizon RPC unavailable.
+
+```json
+{
+  "error": "Descriptive error message"
 }
 ```
 
 ---
 
-## `GET /api/wallet/banks` 🔒
+## `GET /api/v1/wallet/banks` 🔒
 
 **List Nigerian banks**
 
-Returns the Paystack bank list for the withdrawal bank-selection dropdown.
+Returns Paystack's list of Nigerian banks for account number resolution.
 
 **Responses**
 
-**`200`** — OK
+**`200`** — Bank list.
 
 ```json
 {
   "banks": [
     {
-      "code": "string",
-      "name": "string"
+      "code": "058",
+      "name": "Guaranty Trust Bank"
     }
   ]
 }
 ```
 
-**`502`** — Unable to fetch bank list from Paystack
+**`400`** — Malformed request syntax or invalid parameters.
 
 ```json
 {
-  "error": "Human-readable message"
+  "error": "Invalid request parameters"
+}
+```
+
+**`401`** — Missing or invalid Bearer JWT.
+
+```json
+{
+  "error": "Missing or invalid Authorization header"
+}
+```
+
+**`429`** — Rate limit exceeded.
+
+```json
+{
+  "error": "Too many requests. Please slow down."
+}
+```
+
+**`500`** — Unexpected server error.
+
+```json
+{
+  "error": "Internal server error"
+}
+```
+
+**`502`** — Paystack API unavailable.
+
+```json
+{
+  "error": "Descriptive error message"
 }
 ```
 
 ---
 
-## `GET /api/wallet/resolve-account` 🔒
+## `GET /api/v1/wallet/resolve-account` 🔒
 
-**Resolve a bank account name**
+**Resolve bank account name**
 
-Resolves a Nigerian bank account number to the account holder's name via Paystack.
+Resolves a Nigerian bank account number to the account holder name via Paystack.
 
 **Parameters**
 
@@ -99,52 +163,82 @@ Resolves a Nigerian bank account number to the account holder's name via Paystac
 
 **Responses**
 
-**`200`** — OK
+**`200`** — Account name resolved.
 
 ```json
 {
-  "account_name": "string"
+  "account_name": "JOHN DOE"
 }
 ```
 
-**`400`** — Missing or invalid query parameters
+**`400`** — Missing or invalid query parameters.
 
 ```json
 {
-  "error": "Human-readable message"
+  "error": "Descriptive error message"
 }
 ```
 
-**`502`** — Unable to resolve account via Paystack
+**`401`** — Missing or invalid Bearer JWT.
 
 ```json
 {
-  "error": "Human-readable message"
+  "error": "Missing or invalid Authorization header"
+}
+```
+
+**`429`** — Rate limit exceeded.
+
+```json
+{
+  "error": "Too many requests. Please slow down."
+}
+```
+
+**`500`** — Unexpected server error.
+
+```json
+{
+  "error": "Internal server error"
+}
+```
+
+**`502`** — Paystack API unavailable.
+
+```json
+{
+  "error": "Descriptive error message"
 }
 ```
 
 ---
 
-## `POST /api/wallet/withdraw` 🔒
+## `POST /api/v1/wallet/withdraw` 🔒
 
-**Withdraw to a bank account**
+**Withdraw to bank account**
 
-Submits a withdrawal request to a Nigerian bank account after validating the current wallet balance covers the amount.
+Initiates a withdrawal to a Nigerian bank account via Paystack.
+
+**Parameters**
+
+| Name | In | Type | Notes |
+|------|----|------|-------|
+| `Idempotency-Key` | header | string | **required** |
+
 
 **Request body**
 
 ```json
 {
-  "amount": 1.5,
-  "bank_code": "string",
-  "account_number": "string",
-  "account_name": "string"
+  "accountNumber": "0123456789",
+  "bankCode": "058",
+  "amount": 10000
 }
 ```
 
 **Responses**
 
-**`200`** — Withdrawal accepted
+**`200`** — Withdrawal initiated successfully.
 
 ```json
 {
@@ -152,27 +246,51 @@ Submits a withdrawal request to a Nigerian bank account after validating the cur
 }
 ```
 
-**`400`** — Missing fields, invalid amount, or insufficient balance
+**`400`** — Invalid input, missing or malformed Idempotency-Key, or insufficient balance.
 
 ```json
 {
-  "error": "Human-readable message"
+  "error": "Descriptive error message"
 }
 ```
 
-**`404`** — Wallet not found
+**`401`** — Missing or invalid Bearer JWT.
 
 ```json
 {
-  "error": "Human-readable message"
+  "error": "Missing or invalid Authorization header"
 }
 ```
 
-**`502`** — Unable to fetch current balance
+**`404`** — The requested resource does not exist.
 
 ```json
 {
-  "error": "Human-readable message"
+  "error": "Trade offer not found"
+}
+```
+
+**`422`** — The Idempotency-Key was already used with a different request body.
+
+```json
+{
+  "error": "Descriptive error message"
+}
+```
+
+**`429`** — Rate limit exceeded.
+
+```json
+{
+  "error": "Too many requests. Please slow down."
+}
+```
+
+**`500`** — Unexpected server error.
+
+```json
+{
+  "error": "Internal server error"
 }
 ```
 

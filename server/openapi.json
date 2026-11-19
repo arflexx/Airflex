@@ -107,9 +107,12 @@
         "properties": {
           "phone": {
             "type": "string",
-            "description": "E.164 or Nigerian local format (0XXXXXXXXXX). 10–15 digits.",
+            "description": "E.164 or Nigerian local format (0XXXXXXXXXX). 10\u201315 digits.",
             "example": "+2348012345678"
           }
+        },
+        "example": {
+          "phone": "+2348012345678"
         }
       },
       "VerifyOtpBody": {
@@ -130,6 +133,10 @@
             "pattern": "^\\d{6}$",
             "example": "123456"
           }
+        },
+        "example": {
+          "phone": "+2348012345678",
+          "otp": "123456"
         }
       },
       "AuthTokenResponse": {
@@ -141,7 +148,7 @@
         "properties": {
           "token": {
             "type": "string",
-            "description": "Signed JWT — valid for 7 days.",
+            "description": "Signed JWT \u2014 valid for 7 days.",
             "example": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
           },
           "user": {
@@ -172,7 +179,7 @@
               "type": "string",
               "example": "ABC23456789ABCDE"
             },
-            "description": "8 single-use backup codes. Present ONLY on the very first signup (issue #108) — never on later logins."
+            "description": "8 single-use backup codes. Present ONLY on the very first signup (issue #108) \u2014 never on later logins."
           }
         }
       },
@@ -190,6 +197,10 @@
             "description": "A single-use backup code issued at signup (issue #108).",
             "example": "ABC23456789ABCDE"
           }
+        },
+        "example": {
+          "phone": "+2348012345678",
+          "recoveryCode": "ABCD-1234-EFGH-5678"
         }
       },
       "RecoveryTokenResponse": {
@@ -202,7 +213,7 @@
         "properties": {
           "token": {
             "type": "string",
-            "description": "One-time JWT (15 min) scoped to recovery — present it to POST /api/v1/auth/recover/change-phone."
+            "description": "One-time JWT (15 min) scoped to recovery \u2014 present it to POST /api/v1/auth/recover/change-phone."
           },
           "message": {
             "type": "string"
@@ -226,9 +237,13 @@
           },
           "newPhone": {
             "type": "string",
-            "description": "E.164 or Nigerian local format (0XXXXXXXXXX). 10–15 digits.",
+            "description": "E.164 or Nigerian local format (0XXXXXXXXXX). 10\u201315 digits.",
             "example": "+2348098765432"
           }
+        },
+        "example": {
+          "newPhone": "+2348098765432",
+          "recoveryToken": "rec_token_sample_abc123"
         }
       },
       "RecoveryStatusResponse": {
@@ -371,6 +386,14 @@
             "maximum": 168,
             "example": 24
           }
+        },
+        "example": {
+          "assetCategory": "AIRTIME",
+          "assetType": "MTN",
+          "token": "CCBJ235OCBFZXBFSUUUT4PMG7RRCAXZXMUEB2L7CTTQ5NRSNO4P2SLNP",
+          "totalAmount": "50000000",
+          "price": "50000000",
+          "expiresAt": 1795123456
         }
       },
       "BuyTradeBody": {
@@ -384,6 +407,10 @@
             "description": "The escrow deposit envelope returned by `POST /api/v1/trades/{id}/buy/prepare`, signed by the buyer in their own browser. Base64 XDR. The buyer's secret key is never sent to this API.",
             "example": "AAAAAgAAAAD..."
           }
+        },
+        "example": {
+          "amount": "25000000",
+          "recipientPhone": "+2348012345678"
         }
       },
       "DisputeBody": {
@@ -399,6 +426,10 @@
             "description": "Why the trade is being disputed.",
             "example": "Seller did not deliver the airtime after payment was locked."
           }
+        },
+        "example": {
+          "reason": "Airtime not received within delivery window",
+          "evidence": "Telco reference ID MTN-9988771122 delivery timeout"
         }
       },
       "PrepareBuyResponse": {
@@ -421,7 +452,7 @@
           },
           "publicKey": {
             "type": "string",
-            "description": "Buyer's Stellar account — the envelope's source account.",
+            "description": "Buyer's Stellar account \u2014 the envelope's source account.",
             "example": "GBXYZ1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ"
           }
         }
@@ -1024,6 +1055,15 @@
           "application/json": {
             "schema": {
               "$ref": "#/components/schemas/ValidationErrorResponse"
+            },
+            "example": {
+              "error": "Validation failed",
+              "details": [
+                {
+                  "field": "phone",
+                  "message": "Must be a valid international phone number (+234...)"
+                }
+              ]
             }
           }
         }
@@ -1050,6 +1090,19 @@
             },
             "example": {
               "error": "Internal server error"
+            }
+          }
+        }
+      },
+      "BadRequest": {
+        "description": "Malformed request syntax or invalid parameters.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            },
+            "example": {
+              "error": "Invalid request parameters"
             }
           }
         }
@@ -1090,6 +1143,12 @@
                 }
               }
             }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -1142,6 +1201,12 @@
                 }
               }
             }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -1160,6 +1225,9 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/RequestOtpBody"
+              },
+              "example": {
+                "phone": "+2348012345678"
               }
             }
           }
@@ -1202,6 +1270,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
           }
         }
       }
@@ -1220,13 +1291,17 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/VerifyOtpBody"
+              },
+              "example": {
+                "phone": "+2348012345678",
+                "otp": "123456"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "OTP verified — JWT issued.",
+            "description": "OTP verified \u2014 JWT issued.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1260,6 +1335,9 @@
                 }
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -1278,13 +1356,17 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/RecoverBody"
+              },
+              "example": {
+                "phone": "+2348012345678",
+                "recoveryCode": "ABCD-1234-EFGH-5678"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Code accepted — one-time recovery token issued.",
+            "description": "Code accepted \u2014 one-time recovery token issued.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1311,6 +1393,9 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
           }
         }
       }
@@ -1329,13 +1414,17 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/ChangePhoneBody"
+              },
+              "example": {
+                "newPhone": "+2348098765432",
+                "recoveryToken": "rec_token_sample_abc123"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Phone number updated — verification prompt returned.",
+            "description": "Phone number updated \u2014 verification prompt returned.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1383,6 +1472,12 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -1415,6 +1510,12 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -1470,15 +1571,15 @@
                       "expires_at": "2026-08-02T12:00:00Z",
                       "created_at": "2026-08-01T12:00:00Z",
                       "updated_at": "2026-08-01T12:00:00Z"
-                }
+                    }
                   ],
                   "pagination": {
                     "page": 1,
                     "limit": 20,
                     "total": 1,
                     "totalPages": 1
-              }
-            }
+                  }
+                }
               }
             }
           },
@@ -1497,6 +1598,9 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       },
@@ -1528,6 +1632,14 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/CreateTradeBody"
+              },
+              "example": {
+                "assetCategory": "AIRTIME",
+                "assetType": "MTN",
+                "token": "CCBJ235OCBFZXBFSUUUT4PMG7RRCAXZXMUEB2L7CTTQ5NRSNO4P2SLNP",
+                "totalAmount": "50000000",
+                "price": "50000000",
+                "expiresAt": 1795123456
               }
             }
           }
@@ -1559,9 +1671,9 @@
                     "expires_at": "2026-08-02T12:00:00Z",
                     "created_at": "2026-08-01T12:00:00Z",
                     "updated_at": "2026-08-01T12:00:00Z"
+                  }
                 }
               }
-            }
             }
           },
           "400": {
@@ -1586,7 +1698,7 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ValidationErrorResponse"
-          },
+                },
                 "example": {
                   "errors": [
                     {
@@ -1600,6 +1712,9 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -1649,9 +1764,9 @@
                     "expires_at": "2026-08-02T12:00:00Z",
                     "created_at": "2026-08-01T12:00:00Z",
                     "updated_at": "2026-08-01T12:00:00Z"
+                  }
                 }
               }
-            }
             }
           },
           "404": {
@@ -1659,6 +1774,12 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -1704,9 +1825,9 @@
                     "xdr": "AAAAAgAAAAD...",
                     "networkPassphrase": "Test SDF Network ; September 2015",
                     "publicKey": "GBXYZ1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                  }
                 }
               }
-            }
             }
           },
           "400": {
@@ -1730,6 +1851,9 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -1763,13 +1887,17 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/BuyTradeBody"
+              },
+              "example": {
+                "amount": "25000000",
+                "recipientPhone": "+2348012345678"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Escrow deposit confirmed — trade is now Locked.",
+            "description": "Escrow deposit confirmed \u2014 trade is now Locked.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1794,9 +1922,9 @@
                     "expires_at": "2026-08-02T12:00:00Z",
                     "created_at": "2026-08-01T12:00:00Z",
                     "updated_at": "2026-08-01T12:30:00Z"
+                  }
                 }
               }
-            }
             }
           },
           "400": {
@@ -1824,7 +1952,7 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ValidationErrorResponse"
-          },
+                },
                 "example": {
                   "errors": [
                     {
@@ -1838,6 +1966,9 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -1867,7 +1998,7 @@
         ],
         "responses": {
           "202": {
-            "description": "Delivery confirmation accepted — payment release in progress.",
+            "description": "Delivery confirmation accepted \u2014 payment release in progress.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1915,6 +2046,9 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -1948,6 +2082,10 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/DisputeBody"
+              },
+              "example": {
+                "reason": "Airtime not delivered within 30 minutes",
+                "evidence": "Telco response code 404 unfulfilled"
               }
             }
           }
@@ -2012,6 +2150,9 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -2057,6 +2198,12 @@
                 }
               }
             }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -2099,6 +2246,12 @@
                 }
               }
             }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -2171,6 +2324,9 @@
                 }
               }
             }
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -2192,7 +2348,7 @@
             "name": "Idempotency-Key",
             "in": "header",
             "required": true,
-            "description": "Unique key per withdrawal (8–128 characters: letters, digits, '.', '_', ':', '-'). A retry with the same key and body returns the original response without debiting again.",
+            "description": "Unique key per withdrawal (8\u2013128 characters: letters, digits, '.', '_', ':', '-'). A retry with the same key and body returns the original response without debiting again.",
             "schema": {
               "type": "string",
               "minLength": 8,
@@ -2207,6 +2363,11 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/WithdrawBody"
+              },
+              "example": {
+                "accountNumber": "0123456789",
+                "bankCode": "058",
+                "amount": 10000
               }
             }
           }
@@ -2256,6 +2417,9 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -2291,6 +2455,12 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       },
@@ -2334,6 +2504,9 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       },
@@ -2343,6 +2516,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       },
@@ -2352,6 +2531,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -2421,6 +2606,12 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -2456,6 +2647,12 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -2507,6 +2704,9 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -2536,6 +2736,12 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -2565,6 +2771,12 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -2600,6 +2812,12 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -2635,6 +2853,12 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -2700,6 +2924,9 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -2735,6 +2962,12 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -2862,6 +3095,9 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -2939,6 +3175,9 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
           }
         }
       }
@@ -3000,6 +3239,9 @@
           },
           "404": {
             "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3056,6 +3298,12 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3067,6 +3315,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3078,6 +3332,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3089,6 +3349,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3100,6 +3366,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3111,6 +3383,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3122,6 +3400,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3133,6 +3417,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3144,6 +3434,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3155,6 +3451,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3166,6 +3468,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3177,6 +3485,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3188,6 +3502,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3199,6 +3519,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3210,6 +3536,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3221,6 +3553,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3232,6 +3570,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3243,6 +3587,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       },
@@ -3252,6 +3602,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3263,6 +3619,15 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
           }
         }
       }
@@ -3274,6 +3639,15 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
           }
         }
       }
@@ -3285,6 +3659,15 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
           }
         }
       }
@@ -3296,6 +3679,15 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
           }
         }
       }
@@ -3307,6 +3699,15 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
           }
         }
       }
@@ -3318,6 +3719,15 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
           }
         }
       }
@@ -3329,6 +3739,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3340,6 +3756,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3351,6 +3773,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3362,6 +3790,15 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
           }
         }
       }
@@ -3373,6 +3810,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3384,6 +3827,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3395,6 +3844,15 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
           }
         }
       }
@@ -3406,6 +3864,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3417,6 +3881,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3428,6 +3898,15 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
           }
         }
       }
@@ -3439,6 +3918,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3450,6 +3935,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3461,6 +3952,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3472,6 +3969,15 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
           }
         }
       }
@@ -3483,6 +3989,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3494,6 +4006,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3505,6 +4023,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3516,6 +4040,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3527,6 +4057,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3538,6 +4074,15 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
           }
         }
       }
@@ -3549,6 +4094,15 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
           }
         }
       }
@@ -3560,6 +4114,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3571,6 +4131,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3582,6 +4148,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3593,6 +4165,12 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -3604,6 +4182,15 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
           }
         }
       }
@@ -3615,6 +4202,15 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
           }
         }
       }
@@ -3626,6 +4222,15 @@
         "responses": {
           "default": {
             "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
           }
         }
       }

@@ -65,9 +65,13 @@ function renderParams(params) {
 
 function renderRequestBody(requestBody, spec) {
   if (!requestBody) return "";
-  const jsonContent = requestBody.content?.["application/json"];
+  const resolved = resolveSchema(requestBody, spec);
+  const jsonContent = resolved?.content?.["application/json"];
   if (!jsonContent) return "";
-  const example = buildExample(jsonContent.schema, spec);
+  const example =
+    jsonContent.example !== undefined
+      ? jsonContent.example
+      : buildExample(jsonContent.schema, spec);
   return [
     "**Request body**",
     "",
@@ -82,7 +86,7 @@ function resolveSchema(schema, spec) {
   if (schema?.$ref) {
     const refPath = schema.$ref.replace("#/", "").split("/");
     let node = spec;
-    for (const part of refPath) node = node[part];
+    for (const part of refPath) node = node?.[part];
     return node;
   }
   return schema;
@@ -120,14 +124,20 @@ function buildExample(schema, spec, depth = 0) {
 function renderResponses(responses, spec) {
   return Object.entries(responses)
     .map(([code, resp]) => {
-      const jsonContent = resp.content?.["application/json"];
-      const example = jsonContent ? buildExample(jsonContent.schema, spec) : null;
+      const resolvedResp = resolveSchema(resp, spec);
+      const jsonContent = resolvedResp?.content?.["application/json"];
+      const example =
+        jsonContent?.example !== undefined
+          ? jsonContent.example
+          : jsonContent
+          ? buildExample(jsonContent.schema, spec)
+          : null;
       const block = example
         ? ["```json", JSON.stringify(example, null, 2), "```"].join("\n")
-        : resp.content?.["text/event-stream"]
+        : resolvedResp?.content?.["text/event-stream"]
         ? "`text/event-stream` connection — see description above."
         : "_No body._";
-      return `**\`${code}\`** — ${resp.description}\n\n${block}`;
+      return `**\`${code}\`** — ${resolvedResp?.description ?? ""}\n\n${block}`;
     })
     .join("\n\n");
 }

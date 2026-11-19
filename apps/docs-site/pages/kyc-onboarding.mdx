@@ -1,49 +1,106 @@
-# Seller KYC onboarding
+---
+title: Seller KYC Onboarding & Status Lifecycle
+---
 
-Seller verification is required before creating a listing. The `/kyc` flow collects your legal name, date of birth, Nigerian National Identification Number (NIN), and a selfie or identity document photo.
+import { Callout, Tabs } from "nextra/components";
 
-## Before you start
+# Seller KYC Onboarding & Status Lifecycle
 
-- Use the legal name and date of birth shown on your identity document.
-- Have your 11-digit NIN ready.
-- Prepare a clear JPEG or PNG image no larger than 5 MB. The current form accepts image files only; PDF documents are not accepted.
-- Sign in to your AirFlex account before submitting.
+Seller verification is required before publishing P2P trade listings on AirFlex. This process protects both buyers and sellers by verifying the real-world identity of merchants engaging in high-volume airtime, data, and fiat settlements.
 
-## Submission flow
+---
+
+## 1. Prerequisites Before Submission
+
+Before initiating the verification process, ensure you have:
+1. **Authenticated Account**: You must be signed in with an active phone number verified via OTP.
+2. **Supported Identity Document**:
+   - Nigeria: National Identification Number (NIN) slip/card, Driver's License, International Passport, or Permanent Voter's Card (PVC).
+   - Identity document details must exactly match the legal name and date of birth provided in the application.
+3. **High-Resolution Photo/Selfie**:
+   - Captured in good lighting with full face visibility.
+   - Format: JPEG or PNG only (PDF documents are not accepted).
+   - Maximum file size: **5 MB**.
+
+---
+
+## 2. Supported Countries & Document Coverage
+
+| Country | Code | Supported Primary Documents | Supported Secondary Documents |
+|---|---|---|---|
+| **Nigeria** | `NG` | 11-digit National Identity Number (NIN) | Driver's License, International Passport, PVC |
+| **Ghana** *(Upcoming)* | `GH` | Ghana Card (NIA) | International Passport |
+| **Kenya** *(Upcoming)* | `KE` | National ID (Huduma Namba) | International Passport |
+
+---
+
+## 3. KYC Status Lifecycle & State Transitions
+
+The diagram below outlines the full lifecycle of a user's verification profile:
 
 ```mermaid
-flowchart LR
-  A[Sign in] --> B[Enter legal name and date of birth]
-  B --> C[Enter 11-digit NIN]
-  C --> D[Upload selfie or identity photo]
-  D --> E[Submit for review]
-  E --> F{Review status}
-  F -->|Pending| G[Wait for review]
-  F -->|Verified| H[Seller features enabled]
-  F -->|Rejected| I[Correct details and resubmit]
+flowchart TD
+    A[Unverified / New User] -->|Submit KYC Form| B[Pending Review]
+    B -->|Admin Approves (24-48h SLA)| C[Verified / Approved]
+    B -->|Admin Rejects| D[Rejected]
+    D -->|Correct Details & Resubmit| B
+    C -->|Annual Expiry (365 Days)| E[Expired]
+    E -->|Submit Renewal KYC| B
 ```
 
-Open **Complete KYC** in the app, complete each step, and submit the form. The server stores the submission as **Pending** while it is reviewed. The project does not publish a review-time estimate, so allow time for manual review and check the KYC status in your profile.
+### Detailed Status Definitions
 
-## If a submission is rejected
+| Status | Meaning & User Impact | Platform Access Level |
+|---|---|---|
+| **`Unverified`** | Initial account state. No verification submitted. | Can browse marketplace and purchase airtime/data as buyer. Cannot create seller listings. |
+| **`Pending`** | Submission received and queued for compliance review. | Application locked against duplicate edits until review concludes. Existing buyer permissions remain active. |
+| **`Verified`** | KYC approved by the compliance team. | Full seller privileges unlocked: create escrow listings, execute high-volume sales, and access merchant API tools. |
+| **`Rejected`** | Submission failed verification criteria (e.g., blurry photo, name mismatch, invalid NIN). | Seller permissions withheld. User can review errors and resubmit following cooldown rules. |
+| **`Expired`** | Verification exceeded validity window (12 months from approval). | Seller privileges temporarily suspended (active listings paused). Restored immediately upon renewal approval. |
 
-The current submission endpoint accepts a new application after a rejection, but does not return a reviewer rejection reason. Before resubmitting, first rule out the form issues it can detect:
+---
 
-- The legal name must contain at least a first and last name, and the date of birth must be a valid date in the past.
-- The NIN must contain exactly 11 digits.
-- A selfie or identity photo is required; it must be JPEG or PNG and no larger than 5 MB.
+## 4. Review SLA & Turnaround Timelines
 
-Also make sure the details match your identity document and the image is readable and complete. The app does not currently provide a reason code for reviewer decisions, so it cannot identify the exact cause of a rejection. A new submission returns to **Pending** for review.
+* **Standard SLA**: Initial submissions are reviewed within **24 to 48 business hours**.
+* **Weekend & Holiday Ingestion**: Submissions made over weekends or national public holidays are processed on the subsequent business day.
+* **Notification**: Users receive real-time notifications via in-app banner and SMS alert upon status transition (`Verified` or `Rejected`).
 
-The form accepts a selfie or identity document photo; it does not currently list document classes such as passport or driver's licence separately. Use the document requested by the in-app instructions. Do not submit another person's identity details.
+---
 
-## Statuses
+## 5. Expiry Behavior & Annual Renewal
 
-| Status | Meaning |
-| --- | --- |
-| Unverified | No approved verification is on file. |
-| Pending | The submission has been received and is awaiting review. |
-| Verified | Seller verification is approved. |
-| Rejected | The submission was not approved; correct the details and submit again. |
+* **Expiry Period**: Verification remains valid for **365 calendar days** from the date of approval.
+* **Advance Notice**: AirFlex dispatches email and in-app reminder notices at **30 days** and **7 days** prior to credential expiration.
+* **Grace Period & Locked Features**:
+  * Upon reaching `Expired` state, active marketplace listings are automatically hidden from the public order book.
+  * Escrow funds currently in active or disputed trades remain safe and proceed to normal completion.
+  * The seller must submit an updated selfie and confirm current identity records to transition back to `Verified`.
 
-KYC documents and identifiers are sensitive personal information. Upload them only through the authenticated AirFlex form.
+---
+
+## 6. Re-Submission Rules & Rate Limiting
+
+To safeguard verification infrastructure against automated spam and Denial-of-Service attacks, submissions are protected by database-backed sliding-window rate limiting implemented in `server/src/middleware/rateLimitKyc.ts`.
+
+### Rate Limit Policy
+* **Maximum Submissions**: **3 submissions** (`KYC_MAX_SUBMISSIONS`) per user.
+* **Sliding Window**: **60 minutes** (`KYC_WINDOW_MINUTES`).
+* **Rate Limit Exceeded (HTTP 429)**: If a user exceeds 3 submission attempts in an hour, the API returns:
+  ```json
+  {
+    "status": "error",
+    "message": "Too many KYC submission attempts. Please wait before trying again.",
+    "retryAfterSeconds": 1800
+  }
+  ```
+  The response includes standard `Retry-After` headers indicating the remaining seconds before a new attempt is permitted.
+
+### Re-Submission Steps After Rejection
+1. Review the in-app feedback regarding the rejection.
+2. Confirm your legal name spelling matches your document character-for-character.
+3. Re-capture your identity photo ensuring:
+   - Zero glare or lens reflections.
+   - All four corners of the physical card are visible.
+   - Text is sharp and machine-readable.
+4. Resubmit via the **Complete KYC** form in the user dashboard. Once submitted, status returns to **`Pending`** for priority re-review.

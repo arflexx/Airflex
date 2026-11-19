@@ -1,127 +1,190 @@
 ---
-title: Deployment
+title: Deployment & Production Runbook
 ---
 
 import { Callout, Tabs } from "nextra/components";
 
-# Deployment
+# Deployment & Production Runbook
 
-This page covers deploying all three parts of AirFlex: the API server, the
-escrow contract, and this documentation site.
+This guide covers deploying the AirFlex API server, Soroban smart contracts, and documentation site to production, alongside operational runbooks for secret rotation, zero-downtime deployments, rollbacks, and incident response.
 
-## API server
+---
 
-### Required environment variables
+## 1. Production Environment Variables Reference
 
-The server **will not start** if any of these are missing:
+The server verifies configuration at startup via `envSchema`. Missing required variables will cause process exit with error telemetry. All variables are tracked in [`server/.env.example`](https://github.com/arflexx/Airflex/blob/main/server/.env.example).
 
-| Variable | Description |
-|----------|-------------|
-| `JWT_SECRET` | Signs and verifies JWTs. Random string, at least 32 characters. |
-| `DATABASE_URL` | PostgreSQL connection string. |
-| `ESCROW_CONTRACT_ADDRESS` | Deployed Soroban escrow contract ID (starts with `C`). |
+### Required Minimum Variables
+| Variable | Category | Description |
+|---|---|---|
+| `DATABASE_URL` | Database | PostgreSQL connection string (`postgresql://user:pass@host:5432/db`). |
+| `JWT_SECRET` | Security | Minimum 32-character high-entropy secret for signing authentication tokens. |
+| `ESCROW_CONTRACT_ADDRESS` | Soroban | Deployed Soroban escrow contract address (starts with `C`). |
 
-### Full reference
+### Environment Variables Grouped by Subsystem
 
-<Tabs items={["Server", "Stellar", "Payments & messaging", "Auth"]}>
+<Tabs items={["Server & CORS", "Database & Redis", "Stellar & Soroban", "Security & Auth", "Payments & SMS"]}>
   <Tabs.Tab>
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `3001` | Port the Express server listens on. |
-| `NODE_ENV` | `development` | Set to `production` in deployed environments. |
-| `CORS_ORIGIN` | `*` | Allowed CORS origin. Set to your exact frontend domain in production — never leave it as `*` in a live environment. |
+| Variable | Default | Required in Prod | Description |
+|---|---|---|---|
+| `PORT` | `3001` | No | Port Express listens on. In Railway/Docker, usually mapped dynamically. |
+| `NODE_ENV` | `development` | Yes (`production`) | Enables production optimizations, strict error sanitization, and CORS enforcement. |
+| `CORS_ALLOWED_ORIGINS` | `http://localhost:3000` | Yes | Comma-separated allowlist of exact origins (e.g. `https://airflex.app,https://www.airflex.app`). Wildcard `*` is strictly rejected in production. |
   </Tabs.Tab>
   <Tabs.Tab>
-| Variable | Example | Description |
-|----------|---------|-------------|
-| `STELLAR_NETWORK` | `testnet` | Set to `mainnet` for the public network. Any other value uses testnet. |
-| `HORIZON_URL` | `https://horizon-testnet.stellar.org` | Horizon REST endpoint for account loading and tx submission. |
-| `SOROBAN_RPC_URL` | `https://soroban-testnet.stellar.org` | Soroban RPC endpoint for contract simulation/invocation. |
-| `ESCROW_CONTRACT_ADDRESS` | `CCBJ235OC...` | Contract ID of the deployed escrow contract. |
-
-**Mainnet endpoints:**
-```
-HORIZON_URL=https://horizon.stellar.org
-SOROBAN_RPC_URL=https://mainnet.stellar.validationcloud.io/v1/<API_KEY>
-```
+| Variable | Default / Example | Required in Prod | Description |
+|---|---|---|---|
+| `DATABASE_URL` | `postgresql://...` | Yes | Connection string for PostgreSQL database instance. |
+| `DATABASE_MAX_POOL` | `20` | No | Maximum concurrent connections in the pg connection pool. |
+| `REDIS_URL` | `redis://localhost:6379` | Yes (Recommended) | Redis endpoint for BullMQ background workers, trade queue, and distributed cache. |
   </Tabs.Tab>
   <Tabs.Tab>
-| Variable | Example | Description |
-|----------|---------|-------------|
-| `PAYSTACK_SECRET_KEY` | `sk_test_xxx` | Paystack secret key for deposits/withdrawals. `sk_test_` for test mode, `sk_live_` for production. |
-| `TERMII_API_KEY` | `TLxxx` | Termii API key for OTP delivery via SMS. |
+| Variable | Default / Example | Required in Prod | Description |
+|---|---|---|---|
+| `STELLAR_NETWORK` | `testnet` | Yes (`mainnet`) | Stellar network target (`testnet` or `mainnet`). |
+| `HORIZON_URL` | `https://horizon-testnet.stellar.org` | Yes | Horizon REST API for account sequence loading and transaction broadcast. |
+| `SOROBAN_RPC_URL` | `https://soroban-testnet.stellar.org` | Yes | JSON-RPC endpoint for contract simulation and invocation. |
+| `ESCROW_CONTRACT_ADDRESS` | `CCBJ235OC...` | Yes | Contract ID of deployed AirFlex Escrow contract. |
+| `MARKETPLACE_CONTRACT_ADDRESS` | `CA...` | No | Contract ID of deployed AirFlex Marketplace contract. |
+| `ADMIN_SECRET_KEY` | `S...` | Yes | Stellar secret key used by oracle worker to sign release transactions. |
   </Tabs.Tab>
   <Tabs.Tab>
-| Variable | Example | Description |
-|----------|---------|-------------|
-| `JWT_SECRET` | `a_long_random_string` | At least 32 characters. Never commit this value. Rotating it invalidates all active sessions. |
+| Variable | Default / Example | Required in Prod | Description |
+|---|---|---|---|
+| `JWT_SECRET` | `min_32_characters_secret` | Yes | Secret key used to sign and verify user session JWTs. |
+| `JWT_EXPIRES_IN` | `7d` | No | Token lifetime string (e.g., `24h`, `7d`). |
+| `ENCRYPTION_KEY` | `64_hex_chars` | Yes | AES-256 key used to encrypt seller secret keys at rest in database. |
+  </Tabs.Tab>
+  <Tabs.Tab>
+| Variable | Default / Example | Required in Prod | Description |
+|---|---|---|---|
+| `PAYSTACK_SECRET_KEY` | `sk_live_...` | Yes | Paystack secret key for fiat on/off-ramping and verification. |
+| `PAYSTACK_WEBHOOK_SECRET` | `whsec_...` | Yes | Secret token for validating HMAC-SHA512 webhook signatures. |
+| `TERMII_API_KEY` | `TL...` | Yes | API key for Termii SMS and OTP verification gateway. |
+| `TERMII_SENDER_ID` | `AirFlex` | No | Registered alphanumeric SMS sender ID. |
   </Tabs.Tab>
 </Tabs>
 
-<Callout type="warning">
-  `stellar_secret_key` values stored in the `wallets` table should be
-  encrypted at rest (e.g. envelope encryption via AWS KMS) before a
-  production launch. Never leave `CORS_ORIGIN` as `*` in a live environment.
-</Callout>
+---
 
-## Escrow contract
+## 2. Zero-Downtime Deployment Strategy on Railway
 
-```bash
-# Add the required WASM target
-rustup target add wasm32v1-none
+AirFlex uses Railway Nixpacks builds configured in `railway.json`.
 
-# Build from the contracts workspace root
-cd contracts
-stellar contract build
+```json
+{
+  "build": {
+    "builder": "NIXPACKS",
+    "buildCommand": "pnpm install --frozen-lockfile && pnpm build",
+    "watchPatterns": ["server/src/**"]
+  },
+  "deploy": {
+    "startCommand": "pnpm start",
+    "healthcheckPath": "/health",
+    "healthcheckTimeout": 100,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 3
+  }
+}
 ```
 
-Output: `contracts/target/wasm32v1-none/release/airflex_escrow.wasm`.
+### Rolling Deployment Workflow
+1. **Healthcheck Probe**: Railway starts the new deployment container and monitors `GET /health` (`healthcheckPath`).
+2. **Traffic Switch**: The existing running container continues serving ingress traffic until the new container returns `HTTP 200 {"status":"ok"}`.
+3. **Graceful Shutdown**: Once the new container is healthy, incoming requests are routed to the new instance, and the old container receives `SIGTERM`. The server closes idle connections and completes active requests within a 15-second grace window before exiting.
 
-The currently deployed testnet contract:
+---
 
-| | |
-|---|---|
-| **Network** | Stellar Testnet |
-| **Contract ID** | `CCBJ235OCBFZXBFSUUUT4PMG7RRCAXZXMUEB2L7CTTQ5NRSNO4P2SLNP` |
-| **SDK Version** | `soroban-sdk v22.0.11` |
+## 3. Secret Rotation Procedures (Without Downtime)
 
-Full deploy walkthrough: [`SOROBAN_DEPLOY_GUIDE.md`](https://github.com/arflexx/Airflex/blob/main/SOROBAN_DEPLOY_GUIDE.md).
-Contract CI (`cargo fmt`, `clippy`, tests, WASM build) runs automatically on
-every PR via [`.github/workflows/ci.yml`](https://github.com/arflexx/Airflex/blob/main/.github/workflows/ci.yml),
-and tagged releases (`v*.*.*`) are packaged via
-[`.github/workflows/release.yml`](https://github.com/arflexx/Airflex/blob/main/.github/workflows/release.yml).
+### A. JWT Secret (`JWT_SECRET`)
+To rotate the authentication signing key without abruptly terminating all user sessions:
+1. **Dual-Key Support**: Configure the server to accept a comma-separated list `JWT_SECRET=new_secret_key,old_secret_key`.
+2. **Signing vs. Verification**: The server signs all newly issued tokens using `new_secret_key` while verifying incoming tokens with either key.
+3. **Session Rollover**: Wait for the session duration (e.g., 7 days) until active tokens have transitioned.
+4. **Decommission**: Remove `old_secret_key` from the environment variable.
 
-## This documentation site
+### B. Database Credentials (`DATABASE_URL`)
+1. Create a secondary database user with identical role permissions in PostgreSQL:
+   ```sql
+   CREATE USER airflex_worker_v2 WITH PASSWORD 'new_secure_password';
+   GRANT airflex_app_role TO airflex_worker_v2;
+   ```
+2. Update `DATABASE_URL` in Railway dashboard.
+3. Railway triggers a rolling deployment. The new container connects using `airflex_worker_v2`, while old containers drain their pool connections.
+4. After verifying the release is active and old containers have shut down, revoke and drop the old database user.
 
-`apps/docs-site` deploys to Vercel at **docs.airflex.io** via
-[`.github/workflows/frontend-ci.yml`](https://github.com/arflexx/Airflex/blob/main/.github/workflows/frontend-ci.yml),
-which builds and deploys on every push to `main` that touches
-`apps/docs-site/**` (and posts a preview deployment on pull requests).
+### C. Oracle Signer Secret (`ADMIN_SECRET_KEY`)
+1. Generate a new Stellar keypair for the admin oracle.
+2. In the Soroban Escrow contract, call `transfer_admin(new_address)` from the current admin account.
+3. Update `ADMIN_SECRET_KEY` in Railway environment settings to the new private key.
+4. Verify `/health` and test oracle transaction signing on testnet/mainnet.
 
-### One-time setup
+---
 
-1. Create a new Vercel project pointed at this repo with **Root Directory**
-   set to `apps/docs-site`.
-2. Add `docs.airflex.io` as a domain on that Vercel project (Vercel →
-   Project → Settings → Domains) and point its DNS at Vercel per their
-   instructions.
-3. Add these repository secrets under **Settings → Secrets and variables →
-   Actions**:
+## 4. Rollback Runbook (Rapid Incident Recovery)
 
-   | Secret | Where to get it |
-   |--------|------------------|
-   | `VERCEL_TOKEN` | Vercel → Account Settings → Tokens |
-   | `VERCEL_ORG_ID` | `.vercel/project.json` after running `vercel link` locally, or Vercel → Team Settings |
-   | `VERCEL_PROJECT_ID_DOCS_SITE` | Same `.vercel/project.json`, or the project's Settings page |
+If a newly deployed release introduces critical regression, perform a rollback immediately:
 
-Once those secrets exist, the workflow handles builds and deploys — no
-manual `vercel deploy` needed after the first setup.
+### Option 1: Railway Web Console (1-Click Rollback)
+1. Navigate to **Railway Dashboard → Project → Service (server)**.
+2. Click on the **Deployments** tab.
+3. Locate the last known good deployment (prior green commit).
+4. Click the three dots `...` next to that deployment and select **Rollback to this deployment**.
+5. Railway routes traffic back to the previous deployment artifact in under 30 seconds without rebuilding.
 
-### Building locally
-
+### Option 2: Railway CLI Rollback
 ```bash
-cd apps/docs-site
-npm install
-npm run build   # runs the API/Contract reference generators first, then next build
-npm run start   # serve the production build on :3002
+# Authenticate Railway CLI
+railway login
+
+# Select environment
+railway environment production
+
+# Redeploy previous deployment ID
+railway rollback
 ```
+
+### Option 3: Git Revert (Permanent Fix)
+```bash
+git checkout main
+git pull origin main
+git revert HEAD -m "revert: rollback release due to incident"
+git push origin main
+```
+
+---
+
+## 5. Production Incident Response Runbook
+
+### Incident 1: Database Connection Failure / Pool Exhaustion
+* **Symptoms**: Logs show `error: connection timeout`, `remaining connection slots are reserved for non-replication superuser connections`, or `ETIMEDOUT`.
+* **Immediate Mitigation**:
+  1. Check connection counts in PostgreSQL:
+     ```sql
+     SELECT count(*), state FROM pg_stat_activity GROUP BY state;
+     ```
+  2. Terminate idle in transaction connections:
+     ```sql
+     SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE state = 'idle in transaction' AND state_change < current_timestamp - INTERVAL '5' MINUTE;
+     ```
+  3. Reduce `DATABASE_MAX_POOL` in environment if multiple server replicas exceed PostgreSQL `max_connections`.
+  4. Ensure connection pooling (e.g. PgBouncer) is active between Railway containers and database.
+
+### Incident 2: Redis Eviction / Queue Stalling
+* **Symptoms**: Trades remain in `Locked` status without oracle processing; BullMQ logs report `OOM command not allowed` or `Job stalled`.
+* **Immediate Mitigation**:
+  1. Inspect Redis memory usage: `redis-cli INFO memory`.
+  2. If memory limit reached, configure `maxmemory-policy volatile-lru` or upscale the Redis instance.
+  3. Restart the background worker queue process:
+     ```bash
+     railway restart --service worker
+     ```
+  4. Re-enqueue stalled jobs via BullMQ dashboard / maintenance script.
+
+### Incident 3: Stellar / Soroban RPC Outage
+* **Symptoms**: API returns `504 Gateway Timeout` or `Failed to simulate transaction` during escrow operations.
+* **Immediate Mitigation**:
+  1. Verify network status on Stellar Status page (`https://status.stellar.org`).
+  2. Switch `SOROBAN_RPC_URL` and `HORIZON_URL` to fallback backup providers (e.g., ValidationCloud, NowNodes, or Blockdaemon).
+  3. Trigger zero-downtime rolling config update in Railway.

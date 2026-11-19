@@ -6,19 +6,272 @@ import { Callout } from "nextra/components";
 
 # Marketplace Contract
 
-<Callout type="warning">
-  This contract does not exist in `contracts/` yet — only the
-  [Escrow](/contract-reference/escrow) contract is currently implemented.
-  This page is a placeholder so the site structure matches the intended
-  contract set.
+<Callout type="info">
+  Generated from the `///` doc comments in
+  [`contracts/marketplace/src/lib.rs`](https://github.com/arflexx/Airflex/blob/main/contracts/marketplace/src/lib.rs).
+  Run `npm run generate:contracts` in `apps/docs-site` after editing the
+  contract to refresh this page.
 </Callout>
 
-The marketplace contract is expected to handle listing discovery and
-matching logic that today lives partly in the [`GET /api/trades`](/api-reference/trades)
-endpoint and the `trade_offers` table (see [Getting Started](/getting-started#set-up-the-database)).
-Moving that logic on-chain is tracked on the project roadmap.
+Crate: `airflex-marketplace`
 
-Once `contracts/marketplace/src/lib.rs` exists with `///`-documented `pub fn`
-items, running `npm run generate:contracts` in `apps/docs-site` will replace
-this file automatically with the generated reference — remove this
-hand-written placeholder at that point.
+## Public Functions
+
+### `initialize`
+
+Sets the admin address and seeds the listing counter.
+Returns `Err(ContractError::AlreadyInitialized)` if called more than once.
+
+```rust
+pub fn initialize(env: Env, admin: Address) -> Result<(), ContractError>
+```
+
+---
+
+### `pause`
+
+Halts all state-mutating operations. Only callable by admin.
+Emits a `topics: ["contract", "paused"]` event.
+
+```rust
+pub fn pause(env: Env) -> Result<(), ContractError>
+```
+
+---
+
+### `unpause`
+
+Resumes normal operations. Only callable by admin.
+Emits a `topics: ["contract", "unpaused"]` event.
+
+```rust
+pub fn unpause(env: Env) -> Result<(), ContractError>
+```
+
+---
+
+### `transfer_admin`
+
+Transfers admin ownership to a new address.
+Only callable by the current admin.
+Emits a `topics: ["admin", "transfer"]` event with `(old_admin, new_admin)`.
+
+```rust
+pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), ContractError>
+```
+
+---
+
+### `create_listing`
+
+Posts a new airtime/data offer on the marketplace.
+
+Returns the new listing ID.
+
+```rust
+pub fn create_listing(
+        env: Env,
+        seller: Address,
+        token: Address,
+        price: i128,
+        asset_category: AssetCategory,
+        asset_type: Symbol,
+        quantity: i128,
+        expires_at: u64,
+    ) -> Result<u64, ContractError>
+```
+
+---
+
+### `deposit_to_escrow`
+
+Locks buyer funds into the contract for a specific listing.
+
+Transfers `listing.price` tokens from `buyer` → contract.
+Sets listing status to `Sold`.
+
+```rust
+pub fn deposit_to_escrow(
+        env: Env,
+        buyer: Address,
+        listing_id: u64,
+    ) -> Result<(), ContractError>
+```
+
+---
+
+### `release_payment`
+
+Releases escrowed funds to the seller once delivery is confirmed.
+Updates the seller's reputation on-chain.
+
+Only the admin account can call this.
+
+```rust
+pub fn release_payment(env: Env, listing_id: u64) -> Result<(), ContractError>
+```
+
+---
+
+### `cancel_and_refund`
+
+Returns escrowed funds to the buyer and marks the listing Cancelled.
+
+Only admin can call this directly in the marketplace contract.
+
+```rust
+pub fn cancel_and_refund(
+        env: Env,
+        buyer: Address,
+        listing_id: u64,
+    ) -> Result<(), ContractError>
+```
+
+---
+
+### `resolve_dispute`
+
+Admin resolves a disputed listing, transferring funds to the
+specified `recipient` (either the buyer for a refund or the seller
+for a release).
+
+```rust
+pub fn resolve_dispute(
+        env: Env,
+        listing_id: u64,
+        recipient: Address,
+    ) -> Result<(), ContractError>
+```
+
+---
+
+### `update_listing`
+
+Updates the price and expiration timestamp of an active listing.
+
+Only the original seller can call this, and only while the listing is `Active`.
+Emits an `updated` event.
+
+```rust
+pub fn update_listing(
+        env: Env,
+        seller: Address,
+        listing_id: u64,
+        new_price: i128,
+        new_expires_at: u64,
+    ) -> Result<(), ContractError>
+```
+
+---
+
+### `emergency_withdraw`
+
+Recovers trapped funds in the event of a critical bug or settlement deadlock.
+
+Requirements:
+- Callable only by the admin.
+- Contract must be currently paused.
+- A 72-hour timelock must have elapsed since the contract was paused.
+- Emits a high-severity `emergency_withdrawal` event.
+
+```rust
+pub fn emergency_withdraw(
+        env: Env,
+        token: Address,
+        recipient: Address,
+        amount: i128,
+    ) -> Result<(), ContractError>
+```
+
+---
+
+### `get_listing`
+
+Returns a listing by ID.
+
+```rust
+pub fn get_listing(env: Env, listing_id: u64) -> Result<Listing, ContractError>
+```
+
+---
+
+### `get_reputation`
+
+Returns the reputation record for a given address.
+
+```rust
+pub fn get_reputation(env: Env, user: Address) -> Reputation
+```
+
+---
+
+### `balance`
+
+Returns the balance of a token held by this contract.
+
+```rust
+pub fn balance(env: Env, token: Address) -> i128
+```
+
+---
+
+### `listing_count`
+
+Returns the current listing counter (total listings ever created).
+
+```rust
+pub fn listing_count(env: Env) -> u64
+```
+
+---
+
+### `get_admin`
+
+Returns the admin address.
+
+```rust
+pub fn get_admin(env: Env) -> Result<Address, ContractError>
+```
+
+---
+
+### `is_paused`
+
+Returns whether the contract is currently paused.
+
+```rust
+pub fn is_paused(env: Env) -> bool
+```
+
+---
+
+### `cancel_listing`
+
+Cancels an active listing before it is purchased, decrementing active count.
+
+Callable only by the listing seller while status is Active.
+
+```rust
+pub fn cancel_listing(env: Env, seller: Address, listing_id: u64) -> Result<(), ContractError>
+```
+
+---
+
+### `close_expired_listing`
+
+Closes an active listing that has passed its expiration timestamp, reclaiming active capacity.
+
+```rust
+pub fn close_expired_listing(env: Env, listing_id: u64) -> Result<(), ContractError>
+```
+
+---
+
+### `get_active_listing_count`
+
+Returns the active listing count currently held by a seller.
+
+```rust
+pub fn get_active_listing_count(env: Env, seller: Address) -> u32
+```
+

@@ -1,22 +1,23 @@
 {
-  "openapi": "3.0.3",
+  "openapi": "3.1.0",
   "info": {
     "title": "AirFlex API",
-    "version": "0.1.0",
-    "description": "REST API for the AirFlex P2P airtime & data marketplace. All request and response bodies are JSON. Authenticated endpoints require a Bearer JWT in the Authorization header.",
-    "license": { "name": "MIT" }
+    "version": "1.0.0",
+    "description": "Open-source P2P Airtime & Data Exchange Marketplace backed by the Stellar Network. All protected endpoints require a Bearer JWT obtained from POST /api/v1/auth/verify-otp.",
+    "contact": {
+      "name": "AirFlex Core Team",
+      "url": "https://github.com/arflexx/Airflex"
+    },
+    "license": {
+      "name": "MIT",
+      "url": "https://opensource.org/licenses/MIT"
+    }
   },
   "servers": [
-    { "url": "http://localhost:3001", "description": "Local development" }
-  ],
-  "tags": [
-    { "name": "Health", "description": "Server status." },
-    { "name": "Auth", "description": "Phone-number OTP authentication." },
-    { "name": "Trades", "description": "Create, browse, and settle P2P trade offers." },
-    { "name": "Wallet", "description": "Stellar wallet balance and Naira bank withdrawals via Paystack." },
-    { "name": "Profile", "description": "Authenticated user profile and trade history." },
-    { "name": "Events", "description": "Real-time trade status updates via Server-Sent Events." },
-    { "name": "Admin", "description": "Platform administration. The audit trail is readable by super-admins only." }
+    {
+      "url": "/",
+      "description": "Current server"
+    }
   ],
   "components": {
     "securitySchemes": {
@@ -24,576 +25,4245 @@
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "JWT",
-        "description": "JWT payload must contain `sub` (user id) and `stellarPublicKey`."
+        "description": "JWT issued by POST /api/v1/auth/verify-otp. Pass as `Authorization: Bearer <token>`."
       }
     },
     "schemas": {
-      "Error": {
+      "ErrorResponse": {
         "type": "object",
+        "required": [
+          "error"
+        ],
         "properties": {
-          "error": { "type": "string", "example": "Human-readable message" }
-        },
-        "required": ["error"]
+          "error": {
+            "type": "string",
+            "example": "Descriptive error message"
+          }
+        }
       },
-      "ValidationError": {
+      "ValidationErrorItem": {
         "type": "object",
+        "required": [
+          "field",
+          "message"
+        ],
         "properties": {
-          "error": { "type": "string", "example": "Validation failed" },
-          "details": {
-            "type": "object",
-            "additionalProperties": { "type": "array", "items": { "type": "string" } }
+          "field": {
+            "type": "string",
+            "example": "phone"
+          },
+          "message": {
+            "type": "string",
+            "example": "phone is required"
+          }
+        }
+      },
+      "ValidationErrorResponse": {
+        "type": "object",
+        "required": [
+          "errors"
+        ],
+        "properties": {
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValidationErrorItem"
+            }
+          }
+        }
+      },
+      "PaginationMeta": {
+        "type": "object",
+        "required": [
+          "page",
+          "limit",
+          "total",
+          "totalPages"
+        ],
+        "properties": {
+          "page": {
+            "type": "integer",
+            "example": 1
+          },
+          "limit": {
+            "type": "integer",
+            "example": 20
+          },
+          "total": {
+            "type": "integer",
+            "example": 100
+          },
+          "totalPages": {
+            "type": "integer",
+            "example": 5
+          }
+        }
+      },
+      "RequestOtpBody": {
+        "type": "object",
+        "required": [
+          "phone"
+        ],
+        "properties": {
+          "phone": {
+            "type": "string",
+            "description": "E.164 or Nigerian local format (0XXXXXXXXXX). 10\u201315 digits.",
+            "example": "+2348012345678"
           }
         },
-        "required": ["error"]
+        "example": {
+          "phone": "+2348012345678"
+        }
+      },
+      "VerifyOtpBody": {
+        "type": "object",
+        "required": [
+          "phone",
+          "otp"
+        ],
+        "properties": {
+          "phone": {
+            "type": "string",
+            "example": "+2348012345678"
+          },
+          "otp": {
+            "type": "string",
+            "minLength": 6,
+            "maxLength": 6,
+            "pattern": "^\\d{6}$",
+            "example": "123456"
+          }
+        },
+        "example": {
+          "phone": "+2348012345678",
+          "otp": "123456"
+        }
+      },
+      "AuthTokenResponse": {
+        "type": "object",
+        "required": [
+          "token",
+          "user"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "Signed JWT \u2014 valid for 7 days.",
+            "example": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+          },
+          "user": {
+            "type": "object",
+            "required": [
+              "id",
+              "phone",
+              "stellarPublicKey"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "phone": {
+                "type": "string",
+                "example": "+2348012345678"
+              },
+              "stellarPublicKey": {
+                "type": "string",
+                "example": "GABC1234..."
+              }
+            }
+          },
+          "recoveryCodes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "example": "ABC23456789ABCDE"
+            },
+            "description": "8 single-use backup codes. Present ONLY on the very first signup (issue #108) \u2014 never on later logins."
+          }
+        }
+      },
+      "RecoverBody": {
+        "type": "object",
+        "required": [
+          "recoveryCode"
+        ],
+        "properties": {
+          "recoveryCode": {
+            "type": "string",
+            "minLength": 16,
+            "maxLength": 16,
+            "pattern": "^[A-Za-z0-9]{16}$",
+            "description": "A single-use backup code issued at signup (issue #108).",
+            "example": "ABC23456789ABCDE"
+          }
+        },
+        "example": {
+          "phone": "+2348012345678",
+          "recoveryCode": "ABCD-1234-EFGH-5678"
+        }
+      },
+      "RecoveryTokenResponse": {
+        "type": "object",
+        "required": [
+          "token",
+          "message",
+          "expiresIn"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "One-time JWT (15 min) scoped to recovery \u2014 present it to POST /api/v1/auth/recover/change-phone."
+          },
+          "message": {
+            "type": "string"
+          },
+          "expiresIn": {
+            "type": "string",
+            "example": "15m"
+          }
+        }
+      },
+      "ChangePhoneBody": {
+        "type": "object",
+        "required": [
+          "token",
+          "newPhone"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "The one-time recovery JWT from POST /api/v1/auth/recover."
+          },
+          "newPhone": {
+            "type": "string",
+            "description": "E.164 or Nigerian local format (0XXXXXXXXXX). 10\u201315 digits.",
+            "example": "+2348098765432"
+          }
+        },
+        "example": {
+          "newPhone": "+2348098765432",
+          "recoveryToken": "rec_token_sample_abc123"
+        }
+      },
+      "RecoveryStatusResponse": {
+        "type": "object",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "remaining"
+            ],
+            "properties": {
+              "remaining": {
+                "type": "integer",
+                "description": "How many backup codes remain unused (issue #108).",
+                "example": 8
+              }
+            }
+          }
+        }
+      },
+      "TradeStatus": {
+        "type": "string",
+        "enum": [
+          "Active",
+          "Locked",
+          "Completed",
+          "Cancelled",
+          "Disputed"
+        ]
       },
       "TradeOffer": {
         "type": "object",
+        "required": [
+          "id",
+          "asset_type",
+          "amount",
+          "status",
+          "expires_at",
+          "created_at",
+          "updated_at"
+        ],
         "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "seller_id": { "type": "string", "format": "uuid" },
-          "buyer_id": { "type": "string", "format": "uuid", "nullable": true },
-          "asset_type": { "type": "string", "example": "MTN_AIRTIME" },
-          "amount": { "type": "number", "example": 500 },
-          "status": {
+          "id": {
             "type": "string",
-            "enum": ["Active", "Locked", "Completed", "Cancelled", "Disputed"]
+            "format": "uuid",
+            "example": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
           },
-          "contract_listing_id": { "type": "string", "nullable": true },
-          "escrow_tx_hash": { "type": "string", "nullable": true },
-          "expires_at": { "type": "string", "format": "date-time" },
-          "created_at": { "type": "string", "format": "date-time" },
-          "updated_at": { "type": "string", "format": "date-time" }
+          "seller_id": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "Seller UUID. Present on detail/create responses but omitted from the public listing feed, which exposes `seller_handle` instead (issue #330)."
+          },
+          "seller_handle": {
+            "type": "string",
+            "nullable": true,
+            "example": "@airflex_2f9a",
+            "description": "Opaque, deterministic seller label derived from the user id. Included on the public listing feed instead of `seller_id` (issue #330)."
+          },
+          "buyer_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "nullable": true,
+            "example": "b1ffcd88-8d1a-3de7-aa5c-5aa8ac270b22"
+          },
+          "asset_type": {
+            "type": "string",
+            "example": "MTN_AIRTIME"
+          },
+          "amount": {
+            "type": "number",
+            "example": 500
+          },
+          "status": {
+            "$ref": "#/components/schemas/TradeStatus"
+          },
+          "contract_listing_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "nullable": true,
+            "example": "42"
+          },
+          "escrow_tx_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "nullable": true,
+            "example": "abc123txhash"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-08-02T12:00:00Z"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-08-01T12:00:00Z"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-08-01T12:00:00Z"
+          }
         }
       },
-      "Pagination": {
+      "CreateTradeBody": {
         "type": "object",
+        "required": [
+          "assetType",
+          "amount",
+          "expiresInHours"
+        ],
         "properties": {
-          "page": { "type": "integer", "example": 1 },
-          "limit": { "type": "integer", "example": 20 },
-          "total": { "type": "integer", "example": 42 },
-          "totalPages": { "type": "integer", "example": 3 }
+          "assetType": {
+            "type": "string",
+            "maxLength": 50,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "example": "MTN_AIRTIME"
+          },
+          "amount": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000000000,
+            "example": 500000000,
+            "description": "Listing amount **in stroops** (the escrow contract's unit, 1 NGN = 1,000,000 stroops). The client converts exactly once with `toStroops()` from `@airflex/shared`; the server validates a positive integer and forwards it to the contract unchanged (issue #292)."
+          },
+          "expiresInHours": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 168,
+            "example": 24
+          }
+        },
+        "example": {
+          "assetCategory": "AIRTIME",
+          "assetType": "MTN",
+          "token": "CCBJ235OCBFZXBFSUUUT4PMG7RRCAXZXMUEB2L7CTTQ5NRSNO4P2SLNP",
+          "totalAmount": "50000000",
+          "price": "50000000",
+          "expiresAt": 1795123456
+        }
+      },
+      "BuyTradeBody": {
+        "type": "object",
+        "required": [
+          "signedXdr"
+        ],
+        "properties": {
+          "signedXdr": {
+            "type": "string",
+            "description": "The escrow deposit envelope returned by `POST /api/v1/trades/{id}/buy/prepare`, signed by the buyer in their own browser. Base64 XDR. The buyer's secret key is never sent to this API.",
+            "example": "AAAAAgAAAAD..."
+          }
+        },
+        "example": {
+          "amount": "25000000",
+          "recipientPhone": "+2348012345678"
+        }
+      },
+      "DisputeBody": {
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "Why the trade is being disputed.",
+            "example": "Seller did not deliver the airtime after payment was locked."
+          }
+        },
+        "example": {
+          "reason": "Airtime not received within delivery window",
+          "evidence": "Telco reference ID MTN-9988771122 delivery timeout"
+        }
+      },
+      "PrepareBuyResponse": {
+        "type": "object",
+        "required": [
+          "xdr",
+          "networkPassphrase",
+          "publicKey"
+        ],
+        "properties": {
+          "xdr": {
+            "type": "string",
+            "description": "Unsigned, already-simulated transaction envelope (base64 XDR).",
+            "example": "AAAAAgAAAAD..."
+          },
+          "networkPassphrase": {
+            "type": "string",
+            "description": "Network the envelope must be signed against.",
+            "example": "Test SDF Network ; September 2015"
+          },
+          "publicKey": {
+            "type": "string",
+            "description": "Buyer's Stellar account \u2014 the envelope's source account.",
+            "example": "GBXYZ1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+          }
+        }
+      },
+      "TradeListResponse": {
+        "type": "object",
+        "required": [
+          "data",
+          "pagination"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TradeOffer"
+            }
+          },
+          "pagination": {
+            "$ref": "#/components/schemas/PaginationMeta"
+          }
+        }
+      },
+      "WalletResponse": {
+        "type": "object",
+        "required": [
+          "publicKey",
+          "balance",
+          "asset",
+          "network"
+        ],
+        "properties": {
+          "publicKey": {
+            "type": "string",
+            "example": "GABC1234..."
+          },
+          "balance": {
+            "type": "string",
+            "description": "XLM balance as a decimal string.",
+            "example": "10000.0000000"
+          },
+          "asset": {
+            "type": "string",
+            "example": "XLM"
+          },
+          "network": {
+            "type": "string",
+            "example": "testnet"
+          }
+        }
+      },
+      "Bank": {
+        "type": "object",
+        "required": [
+          "code",
+          "name"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "example": "058"
+          },
+          "name": {
+            "type": "string",
+            "example": "Guaranty Trust Bank"
+          }
+        }
+      },
+      "BanksResponse": {
+        "type": "object",
+        "required": [
+          "banks"
+        ],
+        "properties": {
+          "banks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Bank"
+            }
+          }
+        }
+      },
+      "ResolveAccountResponse": {
+        "type": "object",
+        "required": [
+          "account_name"
+        ],
+        "properties": {
+          "account_name": {
+            "type": "string",
+            "example": "JOHN DOE"
+          }
+        }
+      },
+      "WithdrawBody": {
+        "type": "object",
+        "required": [
+          "amount",
+          "bank_code",
+          "account_number",
+          "account_name"
+        ],
+        "properties": {
+          "amount": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "example": 1000
+          },
+          "bank_code": {
+            "type": "string",
+            "example": "058"
+          },
+          "account_number": {
+            "type": "string",
+            "example": "0123456789"
+          },
+          "account_name": {
+            "type": "string",
+            "example": "JOHN DOE"
+          }
+        }
+      },
+      "ProfileResponse": {
+        "type": "object",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "id",
+              "maskedPhone",
+              "createdAt",
+              "totalTradesCompleted",
+              "stellarPublicKey"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "maskedPhone": {
+                "type": "string",
+                "example": "+234 *** *** 5678"
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "totalTradesCompleted": {
+                "type": "integer",
+                "example": 5
+              },
+              "stellarPublicKey": {
+                "type": "string",
+                "example": "GABC1234..."
+              },
+              "kycStatus": {
+                "type": "string",
+                "enum": [
+                  "unverified",
+                  "pending",
+                  "verified",
+                  "rejected"
+                ],
+                "example": "verified"
+              },
+              "referralCode": {
+                "type": "string",
+                "example": "K7QM2XWTHN4PZR8C"
+              }
+            }
+          }
+        }
+      },
+      "ProfileTradesResponse": {
+        "type": "object",
+        "required": [
+          "data",
+          "pagination"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TradeOffer"
+            }
+          },
+          "pagination": {
+            "$ref": "#/components/schemas/PaginationMeta"
+          }
+        }
+      },
+      "DeleteAccountResponse": {
+        "type": "object",
+        "required": [
+          "message",
+          "scheduledDeletionAt"
+        ],
+        "properties": {
+          "message": {
+            "type": "string",
+            "example": "Account deletion requested. Your account will be anonymised in 30 days."
+          },
+          "scheduledDeletionAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "ISO timestamp 30 days from now."
+          }
+        }
+      },
+      "DeletionStatusResponse": {
+        "type": "object",
+        "required": [
+          "pendingDeletion"
+        ],
+        "properties": {
+          "pendingDeletion": {
+            "type": "boolean"
+          },
+          "scheduledDeletionAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "nullable": true
+          }
+        }
+      },
+      "QueueStats": {
+        "type": "object",
+        "required": [
+          "name",
+          "waiting",
+          "active",
+          "completed",
+          "failed",
+          "delayed"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "fund-stellar-account"
+          },
+          "waiting": {
+            "type": "integer",
+            "example": 0
+          },
+          "active": {
+            "type": "integer",
+            "example": 1
+          },
+          "completed": {
+            "type": "integer",
+            "example": 42
+          },
+          "failed": {
+            "type": "integer",
+            "example": 2
+          },
+          "delayed": {
+            "type": "integer",
+            "example": 0
+          },
+          "recentFailures": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "jobId": {
+                  "type": "string"
+                },
+                "data": {
+                  "type": "object"
+                },
+                "failedReason": {
+                  "type": "string"
+                },
+                "timestamp": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            }
+          }
+        }
+      },
+      "QueuesResponse": {
+        "type": "object",
+        "required": [
+          "queues"
+        ],
+        "properties": {
+          "queues": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QueueStats"
+            }
+          }
+        }
+      },
+      "AnalyticsOverview": {
+        "type": "object",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "totalUsers",
+              "totalTrades",
+              "tradeVolume",
+              "feeRevenue",
+              "successRate"
+            ],
+            "properties": {
+              "totalUsers": {
+                "type": "integer",
+                "example": 1240
+              },
+              "totalTrades": {
+                "type": "integer",
+                "example": 860
+              },
+              "tradeVolume": {
+                "type": "number",
+                "example": 482500
+              },
+              "feeRevenue": {
+                "type": "number",
+                "example": 9650
+              },
+              "successRate": {
+                "type": "number",
+                "example": 87.5
+              }
+            }
+          }
+        }
+      },
+      "AnalyticsTimeseriesPoint": {
+        "type": "object",
+        "required": [
+          "date",
+          "tradeCount",
+          "volume"
+        ],
+        "properties": {
+          "date": {
+            "type": "string",
+            "format": "date",
+            "example": "2026-08-01"
+          },
+          "tradeCount": {
+            "type": "integer",
+            "example": 42
+          },
+          "volume": {
+            "type": "number",
+            "example": 21000
+          }
+        }
+      },
+      "AnalyticsTimeseriesResponse": {
+        "type": "object",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AnalyticsTimeseriesPoint"
+            }
+          }
+        }
+      },
+      "AnalyticsAssetsResponse": {
+        "type": "object",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "assetType",
+                "tradeCount",
+                "volume"
+              ],
+              "properties": {
+                "assetType": {
+                  "type": "string",
+                  "example": "MTN_AIRTIME"
+                },
+                "tradeCount": {
+                  "type": "integer",
+                  "example": 310
+                },
+                "volume": {
+                  "type": "number",
+                  "example": 155000
+                }
+              }
+            }
+          }
         }
       },
       "DataExport": {
         "type": "object",
+        "required": [
+          "id",
+          "status",
+          "format",
+          "requestedAt",
+          "statusUrl"
+        ],
         "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "status": { "type": "string", "enum": ["pending", "processing", "ready", "failed", "expired"] },
-          "format": { "type": "string", "enum": ["json"] },
-          "requestedAt": { "type": "string", "format": "date-time" },
-          "completedAt": { "type": "string", "format": "date-time", "nullable": true },
-          "expiresAt": { "type": "string", "format": "date-time", "nullable": true },
-          "statusUrl": { "type": "string", "format": "uri" },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "processing",
+              "ready",
+              "failed",
+              "expired"
+            ]
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "json"
+            ]
+          },
+          "requestedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "completedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "expiresAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "statusUrl": {
+            "type": "string",
+            "format": "uri"
+          },
           "download": {
-            "type": "object",
-            "nullable": true,
-            "description": "Present once status is ready. The signed URL is short-lived; request statusUrl again for a fresh one.",
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Present once status is ready. The signed URL is short-lived (DATA_EXPORT_LINK_TTL_SECONDS); request statusUrl again for a fresh one.",
+            "required": [
+              "url",
+              "expiresAt"
+            ],
             "properties": {
-              "url": { "type": "string", "format": "uri" },
-              "expiresAt": { "type": "string", "format": "date-time" }
+              "url": {
+                "type": "string",
+                "format": "uri"
+              },
+              "expiresAt": {
+                "type": "string",
+                "format": "date-time"
+              }
             }
           }
-        },
-        "required": ["id", "status", "format", "requestedAt", "statusUrl"]
+        }
       },
       "AuditLogEntry": {
         "type": "object",
+        "required": [
+          "id",
+          "occurred_at",
+          "actor_id",
+          "action",
+          "target_type",
+          "target_id",
+          "metadata"
+        ],
         "properties": {
-          "id": { "type": "string", "format": "uuid" },
-          "occurred_at": { "type": "string", "format": "date-time" },
-          "actor_id": { "type": "string", "format": "uuid" },
-          "actor_role": { "type": "string", "nullable": true, "example": "admin" },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "actor_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "actor_role": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "example": "admin"
+          },
           "action": {
             "type": "string",
-            "enum": ["trade.dispute_resolved", "fraud_flag.reviewed", "webhook.replayed", "user.banned", "user.unbanned", "kyc.approved", "kyc.rejected"]
+            "enum": [
+              "trade.dispute_resolved",
+              "fraud_flag.reviewed",
+              "webhook.replayed",
+              "user.banned",
+              "user.unbanned",
+              "kyc.approved",
+              "kyc.rejected"
+            ]
           },
-          "target_type": { "type": "string", "enum": ["trade", "fraud_flag", "webhook_event", "user", "kyc"] },
-          "target_id": { "type": "string" },
-          "before_value": { "type": "object", "nullable": true, "description": "Resource state before the action." },
-          "after_value": { "type": "object", "nullable": true, "description": "Resource state after the action." },
-          "metadata": { "type": "object", "description": "Request context: requestId, ip, userAgent." }
-        },
-        "required": ["id", "occurred_at", "actor_id", "action", "target_type", "target_id", "metadata"]
+          "target_type": {
+            "type": "string",
+            "enum": [
+              "trade",
+              "fraud_flag",
+              "webhook_event",
+              "user",
+              "kyc"
+            ]
+          },
+          "target_id": {
+            "type": "string"
+          },
+          "before_value": {
+            "description": "Resource state before the action (any JSON value or null)."
+          },
+          "after_value": {
+            "description": "Resource state after the action (any JSON value or null)."
+          },
+          "metadata": {
+            "type": "object",
+            "description": "Request context: requestId, ip, userAgent."
+          }
+        }
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing or invalid Bearer JWT.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            },
+            "example": {
+              "error": "Missing or invalid Authorization header"
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "Authenticated but not permitted to perform this action.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            },
+            "example": {
+              "error": "Only the seller can confirm delivery"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "The requested resource does not exist.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            },
+            "example": {
+              "error": "Trade offer not found"
+            }
+          }
+        }
+      },
+      "UnprocessableEntity": {
+        "description": "Request body failed schema validation.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ValidationErrorResponse"
+            },
+            "example": {
+              "error": "Validation failed",
+              "details": [
+                {
+                  "field": "phone",
+                  "message": "Must be a valid international phone number (+234...)"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "TooManyRequests": {
+        "description": "Rate limit exceeded.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            },
+            "example": {
+              "error": "Too many requests. Please slow down."
+            }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "Unexpected server error.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            },
+            "example": {
+              "error": "Internal server error"
+            }
+          }
+        }
+      },
+      "BadRequest": {
+        "description": "Malformed request syntax or invalid parameters.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            },
+            "example": {
+              "error": "Invalid request parameters"
+            }
+          }
+        }
       }
     }
   },
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
   "paths": {
     "/health": {
       "get": {
-        "tags": ["Health"],
-        "summary": "Server health check",
-        "description": "Returns server status. No authentication required.",
+        "tags": [
+          "Health"
+        ],
+        "summary": "Liveness probe",
+        "description": "Returns 200 when the server process is running.",
+        "security": [],
         "responses": {
           "200": {
-            "description": "OK",
+            "description": "Server is alive.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "status": { "type": "string", "example": "ok" },
-                    "timestamp": { "type": "string", "format": "date-time" }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/auth/request-otp": {
-      "post": {
-        "tags": ["Auth"],
-        "summary": "Request an OTP",
-        "description": "Sends a one-time password to the given phone number via Termii. Creates the user record on first request.",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": ["phone"],
-                "properties": {
-                  "phone": {
-                    "type": "string",
-                    "description": "International E.164-style or Nigerian local format (10-15 digits).",
-                    "example": "+2348012345678"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "OTP sent",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": { "message": { "type": "string", "example": "OTP sent successfully" } }
-                }
-              }
-            }
-          },
-          "422": { "description": "Validation failed", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ValidationError" } } } },
-          "502": { "description": "Upstream OTP provider error", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
-        }
-      }
-    },
-    "/api/auth/verify-otp": {
-      "post": {
-        "tags": ["Auth"],
-        "summary": "Verify an OTP",
-        "description": "Verifies a 6-digit OTP for a phone number and returns a session JWT on success.",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": ["phone", "otp"],
-                "properties": {
-                  "phone": { "type": "string", "example": "+2348012345678" },
-                  "otp": { "type": "string", "example": "123456", "description": "Exactly 6 digits." }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": { "description": "Verified — returns a session token", "content": { "application/json": { "schema": { "type": "object", "properties": { "token": { "type": "string" } } } } } },
-          "400": { "description": "Invalid phone/OTP or no pending OTP", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
-          "422": { "description": "Validation failed", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ValidationError" } } } }
-        }
-      }
-    },
-    "/api/trades": {
-      "get": {
-        "tags": ["Trades"],
-        "summary": "List active trades",
-        "description": "Returns paginated active trade listings. No authentication required.",
-        "parameters": [
-          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1, "minimum": 1 } },
-          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 20, "minimum": 1, "maximum": 100 } }
-        ],
-        "responses": {
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "data": { "type": "array", "items": { "$ref": "#/components/schemas/TradeOffer" } },
-                    "pagination": { "$ref": "#/components/schemas/Pagination" }
-                  }
-                }
-              }
-            }
-          },
-          "400": { "description": "Invalid query parameters", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ValidationError" } } } }
-        }
-      },
-      "post": {
-        "tags": ["Trades"],
-        "summary": "Create a trade offer",
-        "description": "Creates a new trade offer. Registers the listing on the Soroban escrow contract via `create_listing` and stores the record in PostgreSQL.",
-        "security": [{ "bearerAuth": [] }],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": ["assetType", "amount", "expiresInHours"],
-                "properties": {
-                  "assetType": { "type": "string", "maxLength": 50, "pattern": "^[A-Za-z0-9_-]+$", "example": "MTN_AIRTIME" },
-                  "amount": { "type": "number", "minimum": 0, "exclusiveMinimum": true, "example": 500 },
-                  "expiresInHours": { "type": "integer", "minimum": 1, "maximum": 168, "example": 24 }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": { "description": "Created", "content": { "application/json": { "schema": { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/TradeOffer" } } } } } },
-          "400": { "description": "Validation error or wallet not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ValidationError" } } } },
-          "401": { "description": "Missing or invalid Authorization header", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
-        }
-      }
-    },
-    "/api/trades/{id}": {
-      "get": {
-        "tags": ["Trades"],
-        "summary": "Get a trade by ID",
-        "description": "Returns a single trade offer by ID. No authentication required.",
-        "parameters": [
-          { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
-        ],
-        "responses": {
-          "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/TradeOffer" } } } } } },
-          "404": { "description": "Trade offer not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
-        }
-      }
-    },
-    "/api/trades/{id}/buy": {
-      "post": {
-        "tags": ["Trades"],
-        "summary": "Buy a trade (lock escrow)",
-        "description": "Locks the buyer's escrow funds on-chain by calling `deposit_to_escrow` on the Soroban contract and updates the trade status to `Locked`.",
-        "security": [{ "bearerAuth": [] }],
-        "parameters": [
-          { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": ["signedXdr"],
-                "properties": {
-                  "signedXdr": {
-                    "type": "string",
-                    "description": "The escrow deposit envelope from POST /api/trades/{id}/buy/prepare, signed by the buyer in their own browser. Base64 XDR. The buyer's secret key is never sent to this API."
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": { "description": "Escrow locked", "content": { "application/json": { "schema": { "type": "object", "properties": { "data": { "$ref": "#/components/schemas/TradeOffer" } } } } } },
-          "400": { "description": "Trade not available for purchase", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
-          "401": { "description": "Missing or invalid Authorization header", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
-          "404": { "description": "Trade offer not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
-        }
-      }
-    },
-    "/api/trades/{id}/confirm-delivery": {
-      "post": {
-        "tags": ["Trades"],
-        "summary": "Confirm delivery (seller)",
-        "description": "Seller confirms delivery of the traded asset. Returns 202 immediately; `release_payment` is invoked on the escrow contract asynchronously (up to 3 attempts), and the result is pushed via the Events stream.",
-        "security": [{ "bearerAuth": [] }],
-        "parameters": [
-          { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
-        ],
-        "responses": {
-          "202": { "description": "Accepted — payment release is processing", "content": { "application/json": { "schema": { "type": "object", "properties": { "message": { "type": "string" }, "tradeId": { "type": "string" } } } } } },
-          "400": { "description": "Trade not in a confirmable state", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
-          "401": { "description": "Missing or invalid Authorization header", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
-          "403": { "description": "Caller is not the seller on this trade", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
-          "404": { "description": "Trade offer not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
-        }
-      }
-    },
-    "/api/wallet": {
-      "get": {
-        "tags": ["Wallet"],
-        "summary": "Get wallet balance",
-        "description": "Returns the authenticated user's Stellar public key and current XLM balance. The secret key is never included in the response.",
-        "security": [{ "bearerAuth": [] }],
-        "responses": {
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "publicKey": { "type": "string" },
-                    "balance": { "type": "string", "example": "10000.0000000" },
-                    "asset": { "type": "string", "example": "XLM" },
-                    "network": { "type": "string", "example": "testnet" }
-                  }
-                }
-              }
-            }
-          },
-          "404": { "description": "Wallet not found / still provisioning", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
-          "502": { "description": "Unable to fetch balance from Horizon", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
-        }
-      }
-    },
-    "/api/wallet/banks": {
-      "get": {
-        "tags": ["Wallet"],
-        "summary": "List Nigerian banks",
-        "description": "Returns the Paystack bank list for the withdrawal bank-selection dropdown.",
-        "security": [{ "bearerAuth": [] }],
-        "responses": {
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "banks": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "properties": { "code": { "type": "string" }, "name": { "type": "string" } }
-                      }
+                    "status": {
+                      "type": "string",
+                      "example": "ok"
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
                     }
                   }
                 }
               }
             }
           },
-          "502": { "description": "Unable to fetch bank list from Paystack", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
         }
       }
     },
-    "/api/wallet/resolve-account": {
+    "/ready": {
       "get": {
-        "tags": ["Wallet"],
-        "summary": "Resolve a bank account name",
-        "description": "Resolves a Nigerian bank account number to the account holder's name via Paystack.",
-        "security": [{ "bearerAuth": [] }],
-        "parameters": [
-          { "name": "account_number", "in": "query", "required": true, "schema": { "type": "string" } },
-          { "name": "bank_code", "in": "query", "required": true, "schema": { "type": "string" } }
+        "tags": [
+          "Health"
         ],
+        "summary": "Readiness probe",
+        "description": "Returns 200 when the server and database are ready to serve traffic.",
+        "security": [],
         "responses": {
-          "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "object", "properties": { "account_name": { "type": "string" } } } } } },
-          "400": { "description": "Missing or invalid query parameters", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
-          "502": { "description": "Unable to resolve account via Paystack", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+          "200": {
+            "description": "Server and DB are ready.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "ready"
+                    },
+                    "db": {
+                      "type": "string",
+                      "example": "ok"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Database not reachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "not ready"
+                    },
+                    "db": {
+                      "type": "string",
+                      "example": "error"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
         }
       }
     },
-    "/api/wallet/withdraw": {
+    "/api/v1/auth/request-otp": {
       "post": {
-        "tags": ["Wallet"],
-        "summary": "Withdraw to a bank account",
-        "description": "Submits a withdrawal request to a Nigerian bank account after validating the current wallet balance covers the amount.",
-        "security": [{ "bearerAuth": [] }],
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Request OTP",
+        "description": "Sends a 6-digit OTP to the provided phone number via Termii SMS. Creates a new user record on first call (upsert).",
+        "security": [],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "required": ["amount", "bank_code", "account_number", "account_name"],
-                "properties": {
-                  "amount": { "type": "number", "exclusiveMinimum": true, "minimum": 0 },
-                  "bank_code": { "type": "string" },
-                  "account_number": { "type": "string" },
-                  "account_name": { "type": "string" }
-                }
+                "$ref": "#/components/schemas/RequestOtpBody"
+              },
+              "example": {
+                "phone": "+2348012345678"
               }
             }
           }
         },
         "responses": {
-          "200": { "description": "Withdrawal accepted", "content": { "application/json": { "schema": { "type": "object", "properties": { "success": { "type": "boolean" } } } } } },
-          "400": { "description": "Missing fields, invalid amount, or insufficient balance", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
-          "404": { "description": "Wallet not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
-          "502": { "description": "Unable to fetch current balance", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+          "200": {
+            "description": "OTP sent successfully.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "OTP sent successfully"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "$ref": "#/components/responses/UnprocessableEntity"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "502": {
+            "description": "Termii SMS service unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Failed to send OTP. Please try again."
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
         }
       }
     },
-    "/api/profile": {
-      "get": {
-        "tags": ["Profile"],
-        "summary": "Get authenticated profile",
-        "description": "Returns profile metadata for the authenticated user, including a masked phone number and completed-trade count.",
-        "security": [{ "bearerAuth": [] }],
+    "/api/v1/auth/verify-otp": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Verify OTP and obtain JWT",
+        "description": "Verifies the OTP against Termii. On success issues a 7-day JWT and provisions a Stellar wallet for new users.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyOtpBody"
+              },
+              "example": {
+                "phone": "+2348012345678",
+                "otp": "123456"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
-            "description": "OK",
+            "description": "OTP verified \u2014 JWT issued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthTokenResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or expired OTP.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "$ref": "#/components/responses/UnprocessableEntity"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "502": {
+            "description": "Termii verification service unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/recover": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Recover account with a backup code",
+        "description": "Redeems a single-use backup code (issue #108) and returns a short-lived one-time token that can be used to register a new phone number. 5 failed attempts from the same IP within 1 hour trigger a 429 lockout.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecoverBody"
+              },
+              "example": {
+                "phone": "+2348012345678",
+                "recoveryCode": "ABCD-1234-EFGH-5678"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Code accepted \u2014 one-time recovery token issued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryTokenResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or already-used recovery code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "$ref": "#/components/responses/UnprocessableEntity"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/recover/change-phone": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Register a new phone number after recovery",
+        "description": "Presents the one-time recovery token from POST /api/v1/auth/recover and moves the account to a new phone number. Sends an OTP to the new phone number and prompts the user to verify ownership via POST /api/v1/auth/verify-otp before a session JWT is issued.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePhoneBody"
+              },
+              "example": {
+                "newPhone": "+2348098765432",
+                "recoveryToken": "rec_token_sample_abc123"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Phone number updated \u2014 verification prompt returned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "phone": {
+                      "type": "string"
+                    },
+                    "requiresVerification": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Recovery token is invalid, expired, or not recovery-scoped.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "The new phone number is already registered to another account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "$ref": "#/components/responses/UnprocessableEntity"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/recovery-codes/status": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Check remaining recovery codes",
+        "description": "Returns how many backup codes remain unused for the authenticated user (issue #108). The codes themselves are never revealed.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Remaining code count.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryStatusResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/trades": {
+      "get": {
+        "tags": [
+          "Trades"
+        ],
+        "summary": "List active trade offers",
+        "description": "Returns paginated active listings that have not expired.",
+        "security": [],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated list of active trade offers.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TradeListResponse"
+                },
+                "example": {
+                  "data": [
+                    {
+                      "id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+                      "seller_handle": "@airflex_2f9a",
+                      "buyer_id": null,
+                      "asset_type": "MTN_AIRTIME",
+                      "amount": 500,
+                      "status": "Active",
+                      "contract_listing_id": "42",
+                      "escrow_tx_hash": null,
+                      "expires_at": "2026-08-02T12:00:00Z",
+                      "created_at": "2026-08-01T12:00:00Z",
+                      "updated_at": "2026-08-01T12:00:00Z"
+                    }
+                  ],
+                  "pagination": {
+                    "page": 1,
+                    "limit": 20,
+                    "total": 1,
+                    "totalPages": 1
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query parameters.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Invalid query parameters: page must be >= 1"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Trades"
+        ],
+        "summary": "Create a trade offer",
+        "description": "Creates a new trade listing. Calls `create_listing` on the Soroban escrow contract and stores the resulting on-chain listing ID.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "Optional idempotency key to prevent duplicate listing creation on retry.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTradeBody"
+              },
+              "example": {
+                "assetCategory": "AIRTIME",
+                "assetType": "MTN",
+                "token": "CCBJ235OCBFZXBFSUUUT4PMG7RRCAXZXMUEB2L7CTTQ5NRSNO4P2SLNP",
+                "totalAmount": "50000000",
+                "price": "50000000",
+                "expiresAt": 1795123456
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Trade offer created.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
                     "data": {
-                      "type": "object",
-                      "properties": {
-                        "id": { "type": "string", "format": "uuid" },
-                        "maskedPhone": { "type": "string", "example": "+234 *** *** 5678" },
-                        "createdAt": { "type": "string", "format": "date-time" },
-                        "totalTradesCompleted": { "type": "integer" },
-                        "stellarPublicKey": { "type": "string" }
-                      }
+                      "$ref": "#/components/schemas/TradeOffer"
+                    }
+                  }
+                },
+                "example": {
+                  "data": {
+                    "id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+                    "seller_id": "c2ddba77-2c9a-4ef8-bb6d-6bb9bd380a22",
+                    "seller_handle": "@airflex_2f9a",
+                    "buyer_id": null,
+                    "asset_type": "MTN_AIRTIME",
+                    "amount": 500,
+                    "status": "Active",
+                    "contract_listing_id": "42",
+                    "escrow_tx_hash": null,
+                    "expires_at": "2026-08-02T12:00:00Z",
+                    "created_at": "2026-08-01T12:00:00Z",
+                    "updated_at": "2026-08-01T12:00:00Z"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Seller wallet not found or contract call failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Seller stellar wallet not configured"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "422": {
+            "description": "Request body failed schema validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                },
+                "example": {
+                  "errors": [
+                    {
+                      "field": "amount",
+                      "message": "amount is required"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/trades/{id}": {
+      "get": {
+        "tags": [
+          "Trades"
+        ],
+        "summary": "Get trade by ID",
+        "security": [],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Trade offer found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TradeOffer"
+                    }
+                  }
+                },
+                "example": {
+                  "data": {
+                    "id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+                    "seller_id": "c2ddba77-2c9a-4ef8-bb6d-6bb9bd380a22",
+                    "seller_handle": "@airflex_2f9a",
+                    "buyer_id": null,
+                    "asset_type": "MTN_AIRTIME",
+                    "amount": 500,
+                    "status": "Active",
+                    "contract_listing_id": "42",
+                    "escrow_tx_hash": null,
+                    "expires_at": "2026-08-02T12:00:00Z",
+                    "created_at": "2026-08-01T12:00:00Z",
+                    "updated_at": "2026-08-01T12:00:00Z"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/trades/{id}/buy/prepare": {
+      "post": {
+        "tags": [
+          "Trades"
+        ],
+        "summary": "Build the unsigned escrow deposit for a buy",
+        "description": "Returns the simulated but unsigned `deposit_to_escrow` envelope for the authenticated buyer to sign locally. Takes no request body. Sign the returned XDR client-side, then POST it to `/api/v1/trades/{id}/buy`.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Unsigned envelope ready for client-side signing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/PrepareBuyResponse"
+                    }
+                  }
+                },
+                "example": {
+                  "data": {
+                    "xdr": "AAAAAgAAAAD...",
+                    "networkPassphrase": "Test SDF Network ; September 2015",
+                    "publicKey": "GBXYZ1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Trade not available, already locked, or buyer is the seller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Cannot buy your own trade offer"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/trades/{id}/buy": {
+      "post": {
+        "tags": [
+          "Trades"
+        ],
+        "summary": "Submit a signed escrow deposit for a trade",
+        "description": "Submits the buyer-signed `deposit_to_escrow` envelope from `/buy/prepare` to the network. Trade status transitions to Locked.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BuyTradeBody"
+              },
+              "example": {
+                "amount": "25000000",
+                "recipientPhone": "+2348012345678"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Escrow deposit confirmed \u2014 trade is now Locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/TradeOffer"
+                    }
+                  }
+                },
+                "example": {
+                  "data": {
+                    "id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+                    "seller_id": "c2ddba77-2c9a-4ef8-bb6d-6bb9bd380a22",
+                    "seller_handle": "@airflex_2f9a",
+                    "buyer_id": "b1ffcd88-8d1a-3de7-aa5c-5aa8ac270b22",
+                    "asset_type": "MTN_AIRTIME",
+                    "amount": 500,
+                    "status": "Locked",
+                    "contract_listing_id": "42",
+                    "escrow_tx_hash": "abc123txhash",
+                    "expires_at": "2026-08-02T12:00:00Z",
+                    "created_at": "2026-08-01T12:00:00Z",
+                    "updated_at": "2026-08-01T12:30:00Z"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Trade not available, already locked, or buyer is the seller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Trade is no longer available"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "422": {
+            "description": "Request body failed schema validation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                },
+                "example": {
+                  "errors": [
+                    {
+                      "field": "signedXdr",
+                      "message": "signedXdr is required"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/trades/{id}/confirm-delivery": {
+      "post": {
+        "tags": [
+          "Trades"
+        ],
+        "summary": "Confirm delivery (seller only)",
+        "description": "Signals that the seller has delivered the airtime/data. Returns 202 immediately. Payment release runs asynchronously via the Soroban `release_payment` call with up to 3 retry attempts. Parties are notified via SSE.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Delivery confirmation accepted \u2014 payment release in progress.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "Delivery confirmation accepted"
+                    },
+                    "tradeId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "example": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
+                    }
+                  }
+                },
+                "example": {
+                  "message": "Delivery confirmation accepted",
+                  "tradeId": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Trade not in Locked state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Trade must be in Locked state to confirm delivery"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/trades/{id}/dispute": {
+      "post": {
+        "tags": [
+          "Trades"
+        ],
+        "summary": "Dispute a locked trade",
+        "description": "Escalates a Locked trade to Disputed. Either the buyer or the seller of the trade may call this. An admin resolves the dispute via POST /api/v1/admin/trades/{id}/resolve.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DisputeBody"
+              },
+              "example": {
+                "reason": "Airtime not delivered within 30 minutes",
+                "evidence": "Telco response code 404 unfulfilled"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Trade successfully disputed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/TradeOffer"
                     }
                   }
                 }
               }
             }
           },
-          "404": { "description": "User not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+          "400": {
+            "description": "Trade is not in a state that can be disputed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Caller is neither the buyer nor the seller of this trade.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "Trade is already disputed or is no longer Locked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "$ref": "#/components/responses/UnprocessableEntity"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
         }
       }
     },
-    "/api/profile/trades": {
+    "/api/v1/wallet": {
       "get": {
-        "tags": ["Profile"],
-        "summary": "Get trade history",
-        "description": "Returns the paginated trade history for the authenticated user, covering trades where the user was the seller or the buyer.",
-        "security": [{ "bearerAuth": [] }],
-        "parameters": [
-          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } },
-          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 10, "maximum": 50 } },
-          { "name": "status", "in": "query", "schema": { "type": "string", "enum": ["All", "Active", "Locked", "Completed", "Cancelled"], "default": "All" } }
+        "tags": [
+          "Wallet"
+        ],
+        "summary": "Get wallet balance",
+        "description": "Returns the authenticated user's Stellar public key and current XLM balance fetched from Horizon. The secret key is never returned.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
         ],
         "responses": {
           "200": {
-            "description": "OK",
+            "description": "Wallet details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WalletResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "502": {
+            "description": "Horizon RPC unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/wallet/banks": {
+      "get": {
+        "tags": [
+          "Wallet"
+        ],
+        "summary": "List Nigerian banks",
+        "description": "Returns Paystack's list of Nigerian banks for account number resolution.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bank list.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BanksResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "502": {
+            "description": "Paystack API unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/wallet/resolve-account": {
+      "get": {
+        "tags": [
+          "Wallet"
+        ],
+        "summary": "Resolve bank account name",
+        "description": "Resolves a Nigerian bank account number to the account holder name via Paystack.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "account_number",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "0123456789"
+            }
+          },
+          {
+            "name": "bank_code",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "058"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Account name resolved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolveAccountResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid query parameters.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "502": {
+            "description": "Paystack API unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/wallet/withdraw": {
+      "post": {
+        "tags": [
+          "Wallet"
+        ],
+        "summary": "Withdraw to bank account",
+        "description": "Initiates a withdrawal to a Nigerian bank account via Paystack.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "description": "Unique key per withdrawal (8\u2013128 characters: letters, digits, '.', '_', ':', '-'). A retry with the same key and body returns the original response without debiting again.",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9._:-]+$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WithdrawBody"
+              },
+              "example": {
+                "accountNumber": "0123456789",
+                "bankCode": "058",
+                "amount": 10000
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Withdrawal initiated successfully.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "data": { "type": "array", "items": { "$ref": "#/components/schemas/TradeOffer" } },
-                    "pagination": { "$ref": "#/components/schemas/Pagination" }
+                    "success": {
+                      "type": "boolean",
+                      "example": true
+                    }
                   }
                 }
               }
             }
+          },
+          "400": {
+            "description": "Invalid input, missing or malformed Idempotency-Key, or insufficient balance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "422": {
+            "description": "The Idempotency-Key was already used with a different request body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/profile": {
+      "get": {
+        "tags": [
+          "Profile"
+        ],
+        "summary": "Get own profile",
+        "description": "Returns the authenticated user's profile metadata. Phone is masked.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Profile data.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Profile"
+        ],
+        "summary": "Request account deletion (GDPR/NDPR)",
+        "description": "Initiates a 30-day soft-delete grace period. The account is marked `pending_deletion`. After 30 days all PII is anonymised. All pending trades are cancelled and escrow refunds are triggered. A confirmation SMS is sent via Termii.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deletion request accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteAccountResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Account deletion already pending.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      },
+      "patch": {
+        "summary": "PATCH /api/v1/profile",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      },
+      "put": {
+        "summary": "PUT /api/v1/profile",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/profile/trades": {
+      "get": {
+        "tags": [
+          "Profile"
+        ],
+        "summary": "Get own trade history",
+        "description": "Returns paginated trade history for the authenticated user (as seller or buyer). Filterable by status.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50,
+              "default": 10
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "All",
+                "Active",
+                "Locked",
+                "Completed",
+                "Cancelled",
+                "Disputed"
+              ],
+              "default": "All"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated trade history.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileTradesResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/profile/deletion-status": {
+      "get": {
+        "tags": [
+          "Profile"
+        ],
+        "summary": "Check account deletion status",
+        "description": "Returns whether the account has a pending deletion request and when it is scheduled.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deletion status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeletionStatusResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/profile/cancel-deletion": {
+      "post": {
+        "tags": [
+          "Profile"
+        ],
+        "summary": "Cancel pending account deletion",
+        "description": "Cancels a pending 30-day deletion request within the grace window.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deletion request cancelled successfully.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "Account deletion cancelled. Your account is restored."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No pending deletion request to cancel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/events": {
+      "get": {
+        "tags": [
+          "Events"
+        ],
+        "summary": "Server-Sent Events stream",
+        "description": "Persistent SSE connection for real-time trade status updates. Event types: `connected`, `trade_completed`, `trade_disputed`, `admin_alert`. Also available, unversioned, at `/api/events` for backwards compatibility.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "SSE stream opened.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
     },
     "/api/events": {
       "get": {
-        "tags": ["Events"],
-        "summary": "Subscribe to trade events (SSE)",
-        "description": "Persistent Server-Sent Events stream for the authenticated user. Emits `connected`, `trade_completed`, `trade_disputed`, and `admin_alert` events. The connection stays open indefinitely; browsers reconnect automatically via `EventSource`.",
-        "security": [{ "bearerAuth": [] }],
+        "tags": [
+          "Events"
+        ],
+        "summary": "Server-Sent Events stream (legacy alias)",
+        "description": "Unversioned alias for `/api/v1/events`, kept for backwards compatibility. Prefer `/api/v1/events` for new integrations.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "responses": {
           "200": {
-            "description": "text/event-stream connection opened",
-            "content": { "text/event-stream": { "schema": { "type": "string" } } }
+            "description": "SSE stream opened.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
-          "401": { "description": "Missing or invalid Authorization header", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/queues": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Job queue metrics",
+        "description": "Returns queue depths and recent failure counts for all BullMQ job queues. Admin access required.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Queue stats for all job types.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueuesResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/analytics/overview": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Platform analytics overview",
+        "description": "Platform-level metrics for the admin dashboard (issue #110): total users, total trades, completed trade volume, platform fee revenue, and success rate. Cached in Redis for 5 minutes.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Platform metrics.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalyticsOverview"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/analytics/trades/timeseries": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Daily trade volume timeseries",
+        "description": "Daily trade counts and volume for the range [?from, ?to] (issue #110). Both params are ISO-8601 dates; they default to the last 30 days. Cached in Redis for 5 minutes.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "example": "2026-08-01"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "example": "2026-08-28"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Daily trade counts and volume.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalyticsTimeseriesResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query parameters.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/analytics/assets": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Per-asset-type trade breakdown",
+        "description": "Trade counts and volume grouped by asset_type (issue #110), ordered by volume. Cached in Redis for 5 minutes.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Per-asset breakdown.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalyticsAssetsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/audit-logs": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Query the immutable admin audit trail (super_admin only)",
+        "description": "State-changing admin actions (dispute resolutions, fraud flag reviews, webhook replays, ...) with actor, target, before/after state and request context, newest first (issue #539). Entries are append-only: POST/PUT/PATCH/DELETE return 405 and the database rejects modification. Entries older than 365 days are purged daily.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "actorId",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "schema": {
+              "$ref": "#/components/schemas/AuditLogEntry/properties/action"
+            }
+          },
+          {
+            "name": "targetType",
+            "in": "query",
+            "schema": {
+              "$ref": "#/components/schemas/AuditLogEntry/properties/target_type"
+            }
+          },
+          {
+            "name": "targetId",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Matching audit entries.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "data",
+                    "pagination"
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AuditLogEntry"
+                      }
+                    },
+                    "pagination": {
+                      "$ref": "#/components/schemas/PaginationMeta"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query parameters.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
         }
       }
     },
     "/api/v1/users/me/export": {
       "get": {
-        "tags": ["Profile"],
+        "tags": [
+          "Profile"
+        ],
         "summary": "Request a GDPR data portability export",
-        "description": "Starts asynchronous generation of a machine-readable JSON export of all personal data held about the caller: account details, KYC record, trade history, ratings, wallet ledger, withdrawals and referrals. Credentials and raw payment details are omitted or masked, and the export lists every redaction. The user is notified by SMS when it is ready. Limited to one request per user per 24 hours.",
-        "security": [{ "bearerAuth": [] }],
+        "description": "Starts asynchronous generation of a machine-readable JSON export of all personal data held about the caller: account details, KYC record, trade history, ratings, wallet ledger, withdrawals and referrals (issue #539). Credentials and raw payment details are omitted or masked; the export lists every redaction. The user is notified by SMS when it is ready. Limited to one request per user per 24 hours.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "responses": {
           "202": {
-            "description": "Export accepted for generation",
-            "content": { "application/json": { "schema": { "type": "object", "properties": { "message": { "type": "string" }, "export": { "$ref": "#/components/schemas/DataExport" } } } } }
+            "description": "Export accepted for generation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message",
+                    "export"
+                  ],
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "export": {
+                      "$ref": "#/components/schemas/DataExport"
+                    }
+                  }
+                }
+              }
+            }
           },
-          "401": { "description": "Missing or invalid Authorization header", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
           "429": {
-            "description": "An export was already requested in the last 24 hours. Retry-After gives the seconds until a new request is allowed; `export` is the existing request.",
-            "content": { "application/json": { "schema": { "type": "object", "properties": { "error": { "type": "string" }, "retryAfterSeconds": { "type": "integer" }, "export": { "$ref": "#/components/schemas/DataExport" } } } } }
+            "description": "An export was already requested in the last 24 hours. The Retry-After header gives the seconds until a new request is allowed; `export` is the existing request.",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error",
+                    "retryAfterSeconds",
+                    "export"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "retryAfterSeconds": {
+                      "type": "integer"
+                    },
+                    "export": {
+                      "$ref": "#/components/schemas/DataExport"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
           }
         }
       }
     },
     "/api/v1/users/me/export/{exportId}": {
       "get": {
-        "tags": ["Profile"],
+        "tags": [
+          "Profile"
+        ],
         "summary": "Get the status of a data export",
         "description": "Returns the caller's export request. Once ready, `download.url` is a signed URL valid for a short time (default 15 minutes).",
-        "security": [{ "bearerAuth": [] }],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
         "parameters": [
-          { "name": "exportId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+          {
+            "name": "exportId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
         ],
         "responses": {
           "200": {
-            "description": "Export status",
-            "content": { "application/json": { "schema": { "type": "object", "properties": { "export": { "$ref": "#/components/schemas/DataExport" } } } } }
+            "description": "Export status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "export"
+                  ],
+                  "properties": {
+                    "export": {
+                      "$ref": "#/components/schemas/DataExport"
+                    }
+                  }
+                }
+              }
+            }
           },
-          "400": { "description": "Malformed export id", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
-          "401": { "description": "Missing or invalid Authorization header", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
-          "404": { "description": "Data export not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+          "400": {
+            "description": "Malformed export id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
         }
       }
     },
     "/api/v1/users/me/export/{exportId}/download": {
       "get": {
-        "tags": ["Profile"],
+        "tags": [
+          "Profile"
+        ],
         "summary": "Download a data export via signed URL",
         "description": "Returns the export as a JSON attachment. Authorised by the HMAC signature in the query string (bound to the export, its owner and the expiry), so no Bearer token is needed. Invalid, expired or unknown links all return 404.",
         "security": [],
         "parameters": [
-          { "name": "exportId", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } },
-          { "name": "expires", "in": "query", "required": true, "description": "Link expiry, Unix epoch seconds.", "schema": { "type": "integer" } },
-          { "name": "signature", "in": "query", "required": true, "schema": { "type": "string" } }
-        ],
-        "responses": {
-          "200": { "description": "The export document", "content": { "application/json": { "schema": { "type": "object" } } } },
-          "404": { "description": "Download link is invalid or has expired", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
-        }
-      }
-    },
-    "/api/v1/admin/audit-logs": {
-      "get": {
-        "tags": ["Admin"],
-        "summary": "Query the immutable admin audit trail (super_admin only)",
-        "description": "State-changing admin actions (dispute resolutions, fraud flag reviews, webhook replays) with actor, target, before/after state and request context, newest first. Entries are append-only: POST/PUT/PATCH/DELETE return 405 and the database rejects modification. Entries older than 365 days are purged by a daily retention job.",
-        "security": [{ "bearerAuth": [] }],
-        "parameters": [
-          { "name": "actorId", "in": "query", "schema": { "type": "string", "format": "uuid" } },
-          { "name": "action", "in": "query", "schema": { "type": "string", "enum": ["trade.dispute_resolved", "fraud_flag.reviewed", "webhook.replayed", "user.banned", "user.unbanned", "kyc.approved", "kyc.rejected"] } },
-          { "name": "targetType", "in": "query", "schema": { "type": "string", "enum": ["trade", "fraud_flag", "webhook_event", "user", "kyc"] } },
-          { "name": "targetId", "in": "query", "schema": { "type": "string" } },
-          { "name": "from", "in": "query", "schema": { "type": "string", "format": "date-time" } },
-          { "name": "to", "in": "query", "schema": { "type": "string", "format": "date-time" } },
-          { "name": "page", "in": "query", "schema": { "type": "integer", "minimum": 1, "default": 1 } },
-          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 } }
+          {
+            "name": "exportId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "expires",
+            "in": "query",
+            "required": true,
+            "description": "Link expiry, Unix epoch seconds.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "signature",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
         ],
         "responses": {
           "200": {
-            "description": "Matching audit entries",
-            "content": { "application/json": { "schema": { "type": "object", "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/AuditLogEntry" } }, "pagination": { "$ref": "#/components/schemas/Pagination" } } } } }
+            "description": "The export document.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
-          "400": { "description": "Invalid query parameters", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
-          "401": { "description": "Missing or invalid Authorization header", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
-          "403": { "description": "Super-admin access required", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/admin/analytics/assets": {
+      "get": {
+        "summary": "GET /api/admin/analytics/assets",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/admin/analytics/overview": {
+      "get": {
+        "summary": "GET /api/admin/analytics/overview",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/admin/analytics/trades/timeseries": {
+      "get": {
+        "summary": "GET /api/admin/analytics/trades/timeseries",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/admin/audit-logs": {
+      "get": {
+        "summary": "GET /api/admin/audit-logs",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/admin/flagged-accounts": {
+      "get": {
+        "summary": "GET /api/admin/flagged-accounts",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/admin/fraud-flags": {
+      "get": {
+        "summary": "GET /api/admin/fraud-flags",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/admin/metrics": {
+      "get": {
+        "summary": "GET /api/admin/metrics",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/admin/queues": {
+      "get": {
+        "summary": "GET /api/admin/queues",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/admin/trades": {
+      "get": {
+        "summary": "GET /api/admin/trades",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/admin/users": {
+      "get": {
+        "summary": "GET /api/admin/users",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/admin/users/{phone}": {
+      "get": {
+        "summary": "GET /api/admin/users/{phone}",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/admin/webhooks": {
+      "get": {
+        "summary": "GET /api/admin/webhooks",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/docs": {
+      "get": {
+        "summary": "GET /api/docs",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/docs.json": {
+      "get": {
+        "summary": "GET /api/docs.json",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/rates": {
+      "get": {
+        "summary": "GET /api/rates",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/test-async-error": {
+      "get": {
+        "summary": "GET /api/test-async-error",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/trades": {
+      "get": {
+        "summary": "GET /api/trades",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      },
+      "post": {
+        "summary": "POST /api/trades",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/trades/{id}": {
+      "get": {
+        "summary": "GET /api/trades/{id}",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/trades/{id}/buy": {
+      "post": {
+        "summary": "POST /api/trades/{id}/buy",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/trades/{id}/buy/prepare": {
+      "post": {
+        "summary": "POST /api/trades/{id}/buy/prepare",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/trades/{id}/confirm-delivery": {
+      "post": {
+        "summary": "POST /api/trades/{id}/confirm-delivery",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/trades/{id}/dispute": {
+      "post": {
+        "summary": "POST /api/trades/{id}/dispute",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/trades/{id}/rate": {
+      "post": {
+        "summary": "POST /api/trades/{id}/rate",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/users/me/export": {
+      "get": {
+        "summary": "GET /api/users/me/export",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/users/me/export/{exportId}": {
+      "get": {
+        "summary": "GET /api/users/me/export/{exportId}",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/users/me/export/{exportId}/download": {
+      "get": {
+        "summary": "GET /api/users/me/export/{exportId}/download",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/users/{id}/ratings": {
+      "get": {
+        "summary": "GET /api/users/{id}/ratings",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/flagged-accounts": {
+      "get": {
+        "summary": "GET /api/v1/admin/flagged-accounts",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/fraud-flags": {
+      "get": {
+        "summary": "GET /api/v1/admin/fraud-flags",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/fraud-flags/{id}": {
+      "patch": {
+        "summary": "PATCH /api/v1/admin/fraud-flags/{id}",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/metrics": {
+      "get": {
+        "summary": "GET /api/v1/admin/metrics",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/trades": {
+      "get": {
+        "summary": "GET /api/v1/admin/trades",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/trades/{id}/resolve": {
+      "post": {
+        "summary": "POST /api/v1/admin/trades/{id}/resolve",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/users": {
+      "get": {
+        "summary": "GET /api/v1/admin/users",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/users/{phone}": {
+      "get": {
+        "summary": "GET /api/v1/admin/users/{phone}",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/webhooks": {
+      "get": {
+        "summary": "GET /api/v1/admin/webhooks",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/webhooks/{id}/replay": {
+      "post": {
+        "summary": "POST /api/v1/admin/webhooks/{id}/replay",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/revoke": {
+      "post": {
+        "summary": "POST /api/v1/auth/revoke",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/rates": {
+      "get": {
+        "summary": "GET /api/v1/rates",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/referrals": {
+      "get": {
+        "summary": "GET /api/v1/referrals",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/referrals/stats": {
+      "get": {
+        "summary": "GET /api/v1/referrals/stats",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/test-async-error": {
+      "get": {
+        "summary": "GET /api/v1/test-async-error",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/trades/{id}/rate": {
+      "post": {
+        "summary": "POST /api/v1/trades/{id}/rate",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/v1/users/{id}/ratings": {
+      "get": {
+        "summary": "GET /api/v1/users/{id}/ratings",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/v1/wallet/unlock": {
+      "post": {
+        "summary": "POST /api/v1/wallet/unlock",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/webhooks/paystack": {
+      "post": {
+        "summary": "POST /api/v1/webhooks/paystack",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/v1/webhooks/stellar": {
+      "post": {
+        "summary": "POST /api/v1/webhooks/stellar",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/kyc/submit": {
+      "post": {
+        "summary": "POST /api/kyc/submit",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          }
+        }
+      }
+    },
+    "/api/admin/fraud-flags/{id}": {
+      "patch": {
+        "summary": "PATCH /api/admin/fraud-flags/{id}",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/admin/trades/{id}/resolve": {
+      "post": {
+        "summary": "POST /api/admin/trades/{id}/resolve",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/admin/webhooks/{id}/replay": {
+      "post": {
+        "summary": "POST /api/admin/webhooks/{id}/replay",
+        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "responses": {
+          "default": {
+            "description": "The response status and shape are defined by the route handler."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
         }
       }
     }
-  }
+  },
+  "tags": [
+    {
+      "name": "Health",
+      "description": "Liveness and readiness probes"
+    },
+    {
+      "name": "Auth",
+      "description": "OTP-based phone authentication"
+    },
+    {
+      "name": "Trades",
+      "description": "P2P trade offer marketplace"
+    },
+    {
+      "name": "Wallet",
+      "description": "Stellar wallet and Paystack withdrawals"
+    },
+    {
+      "name": "Profile",
+      "description": "User profile and account management"
+    },
+    {
+      "name": "Events",
+      "description": "Real-time Server-Sent Events stream"
+    },
+    {
+      "name": "Admin",
+      "description": "Platform administration and monitoring"
+    }
+  ]
 }

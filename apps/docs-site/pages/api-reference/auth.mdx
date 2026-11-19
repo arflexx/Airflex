@@ -13,13 +13,13 @@ import { Callout } from "nextra/components";
   [`/openapi.json`](/openapi.json).
 </Callout>
 
-Phone-number OTP authentication.
+OTP-based phone authentication
 
-## `POST /api/auth/request-otp`
+## `POST /api/v1/auth/request-otp` 🔒
 
-**Request an OTP**
+**Request OTP**
 
-Sends a one-time password to the given phone number via Termii. Creates the user record on first request.
+Sends a 6-digit OTP to the provided phone number via Termii SMS. Creates a new user record on first call (upsert).
 
 **Request body**
 
@@ -31,7 +31,7 @@ Sends a one-time password to the given phone number via Termii. Creates the user
 
 **Responses**
 
-**`200`** — OTP sent
+**`200`** — OTP sent successfully.
 
 ```json
 {
@@ -39,30 +39,59 @@ Sends a one-time password to the given phone number via Termii. Creates the user
 }
 ```
 
-**`422`** — Validation failed
+**`400`** — Malformed request syntax or invalid parameters.
+
+```json
+{
+  "error": "Invalid request parameters"
+}
+```
+
+**`422`** — Request body failed schema validation.
 
 ```json
 {
   "error": "Validation failed",
-  "details": {}
+  "details": [
+    {
+      "field": "phone",
+      "message": "Must be a valid international phone number (+234...)"
+    }
+  ]
 }
 ```
 
-**`502`** — Upstream OTP provider error
+**`429`** — Rate limit exceeded.
 
 ```json
 {
-  "error": "Human-readable message"
+  "error": "Too many requests. Please slow down."
+}
+```
+
+**`500`** — Unexpected server error.
+
+```json
+{
+  "error": "Internal server error"
+}
+```
+
+**`502`** — Termii SMS service unavailable.
+
+```json
+{
+  "error": "Failed to send OTP. Please try again."
 }
 ```
 
 ---
 
-## `POST /api/auth/verify-otp`
+## `POST /api/v1/auth/verify-otp` 🔒
 
-**Verify an OTP**
+**Verify OTP and obtain JWT**
 
-Verifies a 6-digit OTP for a phone number and returns a session JWT on success.
+Verifies the OTP against Termii. On success issues a 7-day JWT and provisions a Stellar wallet for new users.
 
 **Request body**
 
@@ -75,28 +104,283 @@ Verifies a 6-digit OTP for a phone number and returns a session JWT on success.
 
 **Responses**
 
-**`200`** — Verified — returns a session token
+**`200`** — OTP verified — JWT issued.
 
 ```json
 {
-  "token": "string"
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "user": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "phone": "+2348012345678",
+    "stellarPublicKey": "GABC1234..."
+  },
+  "recoveryCodes": [
+    "ABC23456789ABCDE"
+  ]
 }
 ```
 
-**`400`** — Invalid phone/OTP or no pending OTP
+**`400`** — Invalid or expired OTP.
 
 ```json
 {
-  "error": "Human-readable message"
+  "error": "Descriptive error message"
 }
 ```
 
-**`422`** — Validation failed
+**`422`** — Request body failed schema validation.
 
 ```json
 {
   "error": "Validation failed",
-  "details": {}
+  "details": [
+    {
+      "field": "phone",
+      "message": "Must be a valid international phone number (+234...)"
+    }
+  ]
+}
+```
+
+**`429`** — Rate limit exceeded.
+
+```json
+{
+  "error": "Too many requests. Please slow down."
+}
+```
+
+**`500`** — Unexpected server error.
+
+```json
+{
+  "error": "Internal server error"
+}
+```
+
+**`502`** — Termii verification service unavailable.
+
+```json
+{
+  "error": "Descriptive error message"
+}
+```
+
+---
+
+## `POST /api/v1/auth/recover` 🔒
+
+**Recover account with a backup code**
+
+Redeems a single-use backup code (issue #108) and returns a short-lived one-time token that can be used to register a new phone number. 5 failed attempts from the same IP within 1 hour trigger a 429 lockout.
+
+**Request body**
+
+```json
+{
+  "phone": "+2348012345678",
+  "recoveryCode": "ABCD-1234-EFGH-5678"
+}
+```
+
+**Responses**
+
+**`200`** — Code accepted — one-time recovery token issued.
+
+```json
+{
+  "token": "string",
+  "message": "string",
+  "expiresIn": "15m"
+}
+```
+
+**`400`** — Malformed request syntax or invalid parameters.
+
+```json
+{
+  "error": "Invalid request parameters"
+}
+```
+
+**`401`** — Invalid or already-used recovery code.
+
+```json
+{
+  "error": "Descriptive error message"
+}
+```
+
+**`422`** — Request body failed schema validation.
+
+```json
+{
+  "error": "Validation failed",
+  "details": [
+    {
+      "field": "phone",
+      "message": "Must be a valid international phone number (+234...)"
+    }
+  ]
+}
+```
+
+**`429`** — Rate limit exceeded.
+
+```json
+{
+  "error": "Too many requests. Please slow down."
+}
+```
+
+**`500`** — Unexpected server error.
+
+```json
+{
+  "error": "Internal server error"
+}
+```
+
+---
+
+## `POST /api/v1/auth/recover/change-phone` 🔒
+
+**Register a new phone number after recovery**
+
+Presents the one-time recovery token from POST /api/v1/auth/recover and moves the account to a new phone number. Sends an OTP to the new phone number and prompts the user to verify ownership via POST /api/v1/auth/verify-otp before a session JWT is issued.
+
+**Request body**
+
+```json
+{
+  "newPhone": "+2348098765432",
+  "recoveryToken": "rec_token_sample_abc123"
+}
+```
+
+**Responses**
+
+**`200`** — Phone number updated — verification prompt returned.
+
+```json
+{
+  "message": "string",
+  "phone": "string",
+  "requiresVerification": true
+}
+```
+
+**`400`** — Malformed request syntax or invalid parameters.
+
+```json
+{
+  "error": "Invalid request parameters"
+}
+```
+
+**`401`** — Recovery token is invalid, expired, or not recovery-scoped.
+
+```json
+{
+  "error": "Descriptive error message"
+}
+```
+
+**`404`** — The requested resource does not exist.
+
+```json
+{
+  "error": "Trade offer not found"
+}
+```
+
+**`409`** — The new phone number is already registered to another account.
+
+```json
+{
+  "error": "Descriptive error message"
+}
+```
+
+**`422`** — Request body failed schema validation.
+
+```json
+{
+  "error": "Validation failed",
+  "details": [
+    {
+      "field": "phone",
+      "message": "Must be a valid international phone number (+234...)"
+    }
+  ]
+}
+```
+
+**`429`** — Rate limit exceeded.
+
+```json
+{
+  "error": "Too many requests. Please slow down."
+}
+```
+
+**`500`** — Unexpected server error.
+
+```json
+{
+  "error": "Internal server error"
+}
+```
+
+---
+
+## `GET /api/v1/auth/recovery-codes/status` 🔒
+
+**Check remaining recovery codes**
+
+Returns how many backup codes remain unused for the authenticated user (issue #108). The codes themselves are never revealed.
+
+**Responses**
+
+**`200`** — Remaining code count.
+
+```json
+{
+  "data": {
+    "remaining": 8
+  }
+}
+```
+
+**`400`** — Malformed request syntax or invalid parameters.
+
+```json
+{
+  "error": "Invalid request parameters"
+}
+```
+
+**`401`** — Missing or invalid Bearer JWT.
+
+```json
+{
+  "error": "Missing or invalid Authorization header"
+}
+```
+
+**`429`** — Rate limit exceeded.
+
+```json
+{
+  "error": "Too many requests. Please slow down."
+}
+```
+
+**`500`** — Unexpected server error.
+
+```json
+{
+  "error": "Internal server error"
 }
 ```
 

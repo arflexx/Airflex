@@ -217,10 +217,17 @@ pub struct EscrowContract;
 
 #[contractimpl]
 impl EscrowContract {
-    // -----------------------------------------------------------------------
-    // Initialise
-    // -----------------------------------------------------------------------
-
+    /// Sets the admin address, seeds the trade counter, whitelists initial payment tokens,
+    /// and registers default asset categories (AIRTIME, DATA).
+    ///
+    /// Pre-conditions:
+    /// - Contract has not been previously initialized.
+    /// - Admin address must authorize the call (`admin.require_auth()`).
+    ///
+    /// Post-conditions:
+    /// - Admin stored in contract instance storage.
+    /// - Trade counter initialized to 0 and paused state to false.
+    /// - Initial payment tokens and default categories whitelisted.
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -307,10 +314,21 @@ impl EscrowContract {
         Ok(())
     }
 
-    // -----------------------------------------------------------------------
-    // create_listing — called by the Seller
-    // -----------------------------------------------------------------------
-
+    /// Registers a new trade offer on the ledger for airtime or data.
+    ///
+    /// Pre-conditions:
+    /// - Contract must not be paused.
+    /// - `seller` must authenticate transaction (`seller.require_auth()`).
+    /// - `amount > 0`.
+    /// - `token` must be in the approved `AllowedToken` set.
+    /// - `asset_type` must be in the approved `AllowedCategory` set.
+    /// - `expires_at > ledger.timestamp()` and within `MAX_EXPIRY_SECS` (30 days).
+    ///
+    /// Post-conditions:
+    /// - Trade stored with `TradeStatus::Open`.
+    /// - Trade counter incremented.
+    /// - `trade_created` event emitted.
+    /// - Returns new trade ID.
     pub fn create_listing(
         env: Env,
         seller: Address,
@@ -774,10 +792,18 @@ impl EscrowContract {
         Ok(())
     }
 
-    // -----------------------------------------------------------------------
-    // cancel_and_refund
-    // -----------------------------------------------------------------------
-
+    /// Refunds the buyer or closes an unfulfilled trade, callable by buyer after expiry or admin.
+    ///
+    /// Pre-conditions:
+    /// - Contract must not be paused.
+    /// - `caller` must authenticate transaction (`caller.require_auth()`).
+    /// - If not admin, caller must be authorized party after `trade.expires_at`.
+    /// - Trade status must not be `Completed`.
+    ///
+    /// Post-conditions:
+    /// - Committed escrow tokens transferred back to buyer.
+    /// - Trade status transitions to `TradeStatus::Cancelled`.
+    /// - `trade_refunded` event emitted.
     pub fn cancel_and_refund(
         env: Env,
         caller: Address,
@@ -1027,10 +1053,13 @@ impl EscrowContract {
         Ok(())
     }
 
-    // -----------------------------------------------------------------------
-    // View helpers  (NOT blocked by paused flag)
-    // -----------------------------------------------------------------------
-
+    /// Read-only query returning the current state of a trade offer.
+    ///
+    /// Pre-conditions:
+    /// - Trade ID must exist in contract storage.
+    ///
+    /// Post-conditions:
+    /// - Returns `TradeOffer` struct and extends entry TTL.
     pub fn get_trade(env: Env, trade_id: u64) -> Result<TradeOffer, ContractError> {
         let trade: TradeOffer = env
             .storage()
@@ -1051,6 +1080,7 @@ impl EscrowContract {
         Ok(trade)
     }
 
+    /// Returns the total number of trade offers ever created.
     pub fn trade_count(env: Env) -> u64 {
         env.storage()
             .instance()
@@ -1058,6 +1088,7 @@ impl EscrowContract {
             .unwrap_or(0u64)
     }
 
+    /// Returns the currently configured administrative address for the contract.
     pub fn get_admin(env: Env) -> Result<Address, ContractError> {
         env.storage()
             .instance()

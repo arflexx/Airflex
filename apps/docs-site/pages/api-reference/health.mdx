@@ -13,22 +13,82 @@ import { Callout } from "nextra/components";
   [`/openapi.json`](/openapi.json).
 </Callout>
 
-Server status.
+Liveness and readiness probes
 
-## `GET /health`
+## `GET /health` 🔒
 
-**Server health check**
+**Liveness probe**
 
-Returns server status. No authentication required.
+Returns 200 when the server process is running.
 
 **Responses**
 
-**`200`** — OK
+**`200`** — Server is alive.
 
 ```json
 {
   "status": "ok",
   "timestamp": "2026-08-24T10:00:00.000Z"
+}
+```
+
+**`400`** — Malformed request syntax or invalid parameters.
+
+```json
+{
+  "error": "Invalid request parameters"
+}
+```
+
+**`429`** — Rate limit exceeded.
+
+```json
+{
+  "error": "Too many requests. Please slow down."
+}
+```
+
+---
+
+## `GET /ready` 🔒
+
+**Readiness probe**
+
+Returns 200 when the server and database are ready to serve traffic.
+
+**Responses**
+
+**`200`** — Server and DB are ready.
+
+```json
+{
+  "status": "ready",
+  "db": "ok"
+}
+```
+
+**`400`** — Malformed request syntax or invalid parameters.
+
+```json
+{
+  "error": "Invalid request parameters"
+}
+```
+
+**`429`** — Rate limit exceeded.
+
+```json
+{
+  "error": "Too many requests. Please slow down."
+}
+```
+
+**`503`** — Database not reachable.
+
+```json
+{
+  "status": "not ready",
+  "db": "error"
 }
 ```
 

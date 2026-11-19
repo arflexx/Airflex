@@ -13,25 +13,79 @@ import { Callout } from "nextra/components";
   [`/openapi.json`](/openapi.json).
 </Callout>
 
-Real-time trade status updates via Server-Sent Events.
+Real-time Server-Sent Events stream
 
-## `GET /api/events` 🔒
+## `GET /api/v1/events` 🔒
 
-**Subscribe to trade events (SSE)**
+**Server-Sent Events stream**
 
-Persistent Server-Sent Events stream for the authenticated user. Emits `connected`, `trade_completed`, `trade_disputed`, and `admin_alert` events. The connection stays open indefinitely; browsers reconnect automatically via `EventSource`.
+Persistent SSE connection for real-time trade status updates. Event types: `connected`, `trade_completed`, `trade_disputed`, `admin_alert`. Also available, unversioned, at `/api/events` for backwards compatibility.
 
 **Responses**
 
-**`200`** — text/event-stream connection opened
+**`200`** — SSE stream opened.
 
 `text/event-stream` connection — see description above.
 
-**`401`** — Missing or invalid Authorization header
+**`400`** — Malformed request syntax or invalid parameters.
 
 ```json
 {
-  "error": "Human-readable message"
+  "error": "Invalid request parameters"
+}
+```
+
+**`401`** — Missing or invalid Bearer JWT.
+
+```json
+{
+  "error": "Missing or invalid Authorization header"
+}
+```
+
+**`429`** — Rate limit exceeded.
+
+```json
+{
+  "error": "Too many requests. Please slow down."
+}
+```
+
+---
+
+## `GET /api/events` 🔒
+
+**Server-Sent Events stream (legacy alias)**
+
+Unversioned alias for `/api/v1/events`, kept for backwards compatibility. Prefer `/api/v1/events` for new integrations.
+
+**Responses**
+
+**`200`** — SSE stream opened.
+
+`text/event-stream` connection — see description above.
+
+**`400`** — Malformed request syntax or invalid parameters.
+
+```json
+{
+  "error": "Invalid request parameters"
+}
+```
+
+**`401`** — Missing or invalid Bearer JWT.
+
+```json
+{
+  "error": "Missing or invalid Authorization header"
+}
+```
+
+**`429`** — Rate limit exceeded.
+
+```json
+{
+  "error": "Too many requests. Please slow down."
 }
 ```
 

@@ -13,21 +13,296 @@ import { Callout } from "nextra/components";
   [`/openapi.json`](/openapi.json).
 </Callout>
 
-Platform administration. The audit trail is readable by super-admins only.
+Platform administration and monitoring
+
+## `GET /api/v1/admin/queues` 🔒
+
+**Job queue metrics**
+
+Returns queue depths and recent failure counts for all BullMQ job queues. Admin access required.
+
+**Responses**
+
+**`200`** — Queue stats for all job types.
+
+```json
+{
+  "queues": [
+    {
+      "name": "fund-stellar-account",
+      "waiting": 0,
+      "active": 1,
+      "completed": 42,
+      "failed": 2,
+      "delayed": 0,
+      "recentFailures": [
+        {
+          "jobId": null,
+          "data": null,
+          "failedReason": null,
+          "timestamp": null
+        }
+      ]
+    }
+  ]
+}
+```
+
+**`400`** — Malformed request syntax or invalid parameters.
+
+```json
+{
+  "error": "Invalid request parameters"
+}
+```
+
+**`401`** — Missing or invalid Bearer JWT.
+
+```json
+{
+  "error": "Missing or invalid Authorization header"
+}
+```
+
+**`403`** — Authenticated but not permitted to perform this action.
+
+```json
+{
+  "error": "Only the seller can confirm delivery"
+}
+```
+
+**`429`** — Rate limit exceeded.
+
+```json
+{
+  "error": "Too many requests. Please slow down."
+}
+```
+
+**`500`** — Unexpected server error.
+
+```json
+{
+  "error": "Internal server error"
+}
+```
+
+---
+
+## `GET /api/v1/admin/analytics/overview` 🔒
+
+**Platform analytics overview**
+
+Platform-level metrics for the admin dashboard (issue #110): total users, total trades, completed trade volume, platform fee revenue, and success rate. Cached in Redis for 5 minutes.
+
+**Responses**
+
+**`200`** — Platform metrics.
+
+```json
+{
+  "data": {
+    "totalUsers": 1240,
+    "totalTrades": 860,
+    "tradeVolume": 482500,
+    "feeRevenue": 9650,
+    "successRate": 87.5
+  }
+}
+```
+
+**`400`** — Malformed request syntax or invalid parameters.
+
+```json
+{
+  "error": "Invalid request parameters"
+}
+```
+
+**`401`** — Missing or invalid Bearer JWT.
+
+```json
+{
+  "error": "Missing or invalid Authorization header"
+}
+```
+
+**`403`** — Authenticated but not permitted to perform this action.
+
+```json
+{
+  "error": "Only the seller can confirm delivery"
+}
+```
+
+**`429`** — Rate limit exceeded.
+
+```json
+{
+  "error": "Too many requests. Please slow down."
+}
+```
+
+**`500`** — Unexpected server error.
+
+```json
+{
+  "error": "Internal server error"
+}
+```
+
+---
+
+## `GET /api/v1/admin/analytics/trades/timeseries` 🔒
+
+**Daily trade volume timeseries**
+
+Daily trade counts and volume for the range [?from, ?to] (issue #110). Both params are ISO-8601 dates; they default to the last 30 days. Cached in Redis for 5 minutes.
+
+**Parameters**
+
+| Name | In | Type | Notes |
+|------|----|------|-------|
+| `from` | query | string | optional |
+| `to` | query | string | optional |
+
+
+**Responses**
+
+**`200`** — Daily trade counts and volume.
+
+```json
+{
+  "data": [
+    {
+      "date": "2026-08-01",
+      "tradeCount": 42,
+      "volume": 21000
+    }
+  ]
+}
+```
+
+**`400`** — Invalid query parameters.
+
+```json
+{
+  "error": "Descriptive error message"
+}
+```
+
+**`401`** — Missing or invalid Bearer JWT.
+
+```json
+{
+  "error": "Missing or invalid Authorization header"
+}
+```
+
+**`403`** — Authenticated but not permitted to perform this action.
+
+```json
+{
+  "error": "Only the seller can confirm delivery"
+}
+```
+
+**`429`** — Rate limit exceeded.
+
+```json
+{
+  "error": "Too many requests. Please slow down."
+}
+```
+
+**`500`** — Unexpected server error.
+
+```json
+{
+  "error": "Internal server error"
+}
+```
+
+---
+
+## `GET /api/v1/admin/analytics/assets` 🔒
+
+**Per-asset-type trade breakdown**
+
+Trade counts and volume grouped by asset_type (issue #110), ordered by volume. Cached in Redis for 5 minutes.
+
+**Responses**
+
+**`200`** — Per-asset breakdown.
+
+```json
+{
+  "data": [
+    {
+      "assetType": "MTN_AIRTIME",
+      "tradeCount": 310,
+      "volume": 155000
+    }
+  ]
+}
+```
+
+**`400`** — Malformed request syntax or invalid parameters.
+
+```json
+{
+  "error": "Invalid request parameters"
+}
+```
+
+**`401`** — Missing or invalid Bearer JWT.
+
+```json
+{
+  "error": "Missing or invalid Authorization header"
+}
+```
+
+**`403`** — Authenticated but not permitted to perform this action.
+
+```json
+{
+  "error": "Only the seller can confirm delivery"
+}
+```
+
+**`429`** — Rate limit exceeded.
+
+```json
+{
+  "error": "Too many requests. Please slow down."
+}
+```
+
+**`500`** — Unexpected server error.
+
+```json
+{
+  "error": "Internal server error"
+}
+```
+
+---
 
 ## `GET /api/v1/admin/audit-logs` 🔒
 
 **Query the immutable admin audit trail (super_admin only)**
 
-State-changing admin actions (dispute resolutions, fraud flag reviews, webhook replays) with actor, target, before/after state and request context, newest first. Entries are append-only: POST/PUT/PATCH/DELETE return 405 and the database rejects modification. Entries older than 365 days are purged by a daily retention job.
+State-changing admin actions (dispute resolutions, fraud flag reviews, webhook replays, ...) with actor, target, before/after state and request context, newest first (issue #539). Entries are append-only: POST/PUT/PATCH/DELETE return 405 and the database rejects modification. Entries older than 365 days are purged daily.
 
 **Parameters**
 
 | Name | In | Type | Notes |
 |------|----|------|-------|
 | `actorId` | query | string | optional |
-| `action` | query | string | optional (one of `trade.dispute_resolved`, `fraud_flag.reviewed`, `webhook.replayed`, `user.banned`, `user.unbanned`, `kyc.approved`, `kyc.rejected`) |
-| `targetType` | query | string | optional (one of `trade`, `fraud_flag`, `webhook_event`, `user`, `kyc`) |
+| `action` | query | string | optional |
+| `targetType` | query | string | optional |
 | `targetId` | query | string | optional |
 | `from` | query | string | optional |
 | `to` | query | string | optional |
@@ -37,7 +312,7 @@ State-changing admin actions (dispute resolutions, fraud flag reviews, webhook r
 
 **Responses**
 
-**`200`** — Matching audit entries
+**`200`** — Matching audit entries.
 
 ```json
 {
@@ -50,41 +325,57 @@ State-changing admin actions (dispute resolutions, fraud flag reviews, webhook r
       "action": "trade.dispute_resolved",
       "target_type": "trade",
       "target_id": "string",
-      "before_value": {},
-      "after_value": {},
+      "before_value": null,
+      "after_value": null,
       "metadata": {}
     }
   ],
   "pagination": {
     "page": 1,
     "limit": 20,
-    "total": 42,
-    "totalPages": 3
+    "total": 100,
+    "totalPages": 5
   }
 }
 ```
 
-**`400`** — Invalid query parameters
+**`400`** — Invalid query parameters.
 
 ```json
 {
-  "error": "Human-readable message"
+  "error": "Descriptive error message"
 }
 ```
 
-**`401`** — Missing or invalid Authorization header
+**`401`** — Missing or invalid Bearer JWT.
 
 ```json
 {
-  "error": "Human-readable message"
+  "error": "Missing or invalid Authorization header"
 }
 ```
 
-**`403`** — Super-admin access required
+**`403`** — Authenticated but not permitted to perform this action.
 
 ```json
 {
-  "error": "Human-readable message"
+  "error": "Only the seller can confirm delivery"
+}
+```
+
+**`429`** — Rate limit exceeded.
+
+```json
+{
+  "error": "Too many requests. Please slow down."
+}
+```
+
+**`500`** — Unexpected server error.
+
+```json
+{
+  "error": "Internal server error"
 }
 ```
 
