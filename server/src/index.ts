@@ -13,6 +13,7 @@ import { apiVersion } from "./middleware/apiVersion";
 import { requestId } from "./middleware/requestId";
 import { pool, query } from "./db/pool";
 import { cache } from "./services/cache";
+import { checkHealth } from "./services/health";
 
 import { assertEnvValid } from "./config/validateEnv";
 import { corsMiddleware } from "./config/cors";
@@ -136,12 +137,17 @@ app.use(apiVersion);
 // Routes
 // ---------------------------------------------------------------------------
 
-app.get("/health", (_req: Request, res: Response) => {
-  res.status(200).json({
-    status: "ok",
+// Unauthenticated: registered before registerRoutes and its auth middleware.
+app.get("/health", async (_req: Request, res: Response) => {
+  const client = cache.getClient();
+  const { httpStatus, body } = await checkHealth({
+    pingDb: () => query("SELECT 1"),
+    pingRedis: () =>
+      client.isConnected ? client.ping() : Promise.reject(new Error("Redis not connected")),
+    redisConfigured: Boolean(process.env["REDIS_URL"]),
     version: "1.0.0",
-    timestamp: new Date().toISOString(),
   });
+  res.status(httpStatus).json(body);
 });
 
 app.get("/ready", async (_req: Request, res: Response) => {

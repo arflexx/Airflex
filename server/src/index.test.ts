@@ -19,8 +19,26 @@ process.env["TERMII_API_KEY"] = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
 
 import request from "supertest";
 import app from "./index";
+import * as pool from "./db/pool";
 
 describe("GET /health", () => {
+  // No database in unit tests: stub the SELECT 1 probe.
+  beforeEach(() => {
+    jest.spyOn(pool, "query").mockResolvedValue({ rows: [] } as never);
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it("reports db and uptime, and returns 503 when the database is down", async () => {
+    const ok = await request(app).get("/health");
+    expect(ok.body).toMatchObject({ db: "ok", redis: "disabled" });
+    expect(typeof ok.body.uptime).toBe("number");
+
+    jest.spyOn(pool, "query").mockRejectedValue(new Error("ECONNREFUSED"));
+    const down = await request(app).get("/health");
+    expect(down.status).toBe(503);
+    expect(down.body).toMatchObject({ status: "error", db: "error" });
+  });
+
   it("returns 200 with status ok", async () => {
     const res = await request(app).get("/health");
     expect(res.status).toBe(200);
