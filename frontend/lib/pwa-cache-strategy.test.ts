@@ -10,6 +10,8 @@ import {
   SW_CACHE_STRATEGY_VERSION,
   STATIC_CACHE_NAME,
   API_CACHE_NAME,
+  OFFLINE_FALLBACK_ROUTE,
+  navigationFallback,
   isHashedStatic,
   isCacheableGet,
   staticAssetRule,
@@ -136,5 +138,19 @@ describe("SW_CACHE_STRATEGY_VERSION", () => {
   it("is a non-empty version string", () => {
     expect(typeof SW_CACHE_STRATEGY_VERSION).toBe("string");
     expect(SW_CACHE_STRATEGY_VERSION.length).toBeGreaterThan(0);
+  });
+});
+
+// Issue #610 — pwa-cache-strategy.js is the single source of truth for which
+// route the generated service worker falls back to on an offline navigation.
+describe("navigationFallback", () => {
+  it("registers /offline as the navigation fallback document", () => {
+    expect(OFFLINE_FALLBACK_ROUTE).toBe("/offline");
+    expect(navigationFallback).toEqual({ document: "/offline" });
+  });
+
+  it("points at the same route the App Router offline page is served from", () => {
+    // Keeps this module and app/offline/page.tsx from drifting apart.
+    expect(navigationFallback.document).toBe(OFFLINE_FALLBACK_ROUTE);
   });
 });

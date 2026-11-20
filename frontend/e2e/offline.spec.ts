@@ -80,13 +80,56 @@ test.describe("Offline page", () => {
     await expect(spinner).toHaveAttribute("aria-label", "Reconnecting…");
   });
 
-  test("Retry link is present while offline", async ({ page }) => {
+  test("Retry button is present while offline and targets the previous route", async ({
+    page,
+  }) => {
+    // Visit a real route first so document.referrer is populated, then land
+    // on /offline the way the service worker's navigation fallback would.
+    // `page.goto` does not set a Referer header by default, so it is passed
+    // explicitly to simulate the browser-driven navigation that would
+    // normally populate `document.referrer`.
+    await page.goto("/sell");
+    const previousUrl = page.url();
+    await page.goto("/offline", { referer: previousUrl });
+    await page.locator('[data-hydrated="true"]').waitFor();
+
+    // The manual Retry button should always be available as a fallback
+    // (issue #610) — a button, not a link, since clicking it re-attempts the
+    // previous route rather than just navigating somewhere fixed.
+    const retry = page.getByRole("button", { name: /retry/i });
+    await expect(retry).toBeVisible();
+
+    await retry.click();
+    await page.waitForURL("/sell", { timeout: 10_000 });
+    expect(page.url()).toMatch(/\/sell$/);
+  });
+
+  test("Retry button falls back to / when there is no same-origin referrer", async ({
+    page,
+  }) => {
     await page.goto("/offline");
     await page.locator('[data-hydrated="true"]').waitFor();
 
-    // The manual Retry link should always be available as a fallback.
-    const retry = page.getByRole("link", { name: /retry/i });
-    await expect(retry).toBeVisible();
-    await expect(retry).toHaveAttribute("href", "/");
+    const retry = page.getByRole("button", { name: /retry/i });
+    await retry.click();
+    await page.waitForURL("/", { timeout: 10_000 });
+    expect(page.url()).toMatch(/\/$/);
+  });
+
+  // Issue #610 — the offline page must show a locale-aware message, not a
+  // hardcoded English string, since it is reachable without a network round
+  // trip in any locale the user had selected.
+  test("shows a localized message when reached in a non-English locale", async ({
+    page,
+  }) => {
+    await page.goto("/yo/offline");
+    await page.locator('[data-hydrated="true"]').waitFor();
+
+    await expect(
+      page.getByRole("heading", { name: "O kò sí lórí ayélujára" })
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Tún gbìyànjú" })
+    ).toBeVisible();
   });
 });

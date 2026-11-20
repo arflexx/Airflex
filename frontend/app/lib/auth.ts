@@ -13,6 +13,7 @@
  */
 
 import { clearSessionKey } from "./stellarSession";
+import { clearTheme } from "../../lib/storage";
 
 const TOKEN_KEY = "airflex:token";
 
@@ -122,12 +123,19 @@ export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
 }
 
-/** Remove the JWT — call on sign-out. */
+/**
+ * Remove the JWT — call on sign-out.
+ *
+ * Also clears the persisted theme preference (issue #605) so the next
+ * signed-out visitor on this device sees the system default rather than the
+ * previous user's choice.
+ */
 export function clearToken(): void {
   if (typeof window === "undefined") return;
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
   clearSessionCookie();
+  clearTheme();
 }
 
 /** True when a token is present (does not validate expiry client-side). */

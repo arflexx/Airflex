@@ -40,7 +40,53 @@ describe("CurrencyInput Component", () => {
   it("displays inline red error message when value is below min", () => {
     render(<CurrencyInput value={50} onChange={jest.fn()} min={100} id="test-input" />);
 
-    expect(screen.getByRole("alert")).toHaveTextContent("Minimum amount is ₦100");
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("Minimum amount is ₦100");
+    expect(screen.getByRole("spinbutton")).toHaveClass("border-red-400");
+  });
+
+  it("displays inline red error message when value is above max (issue #602)", () => {
+    render(<CurrencyInput value={600} onChange={jest.fn()} max={500} id="test-input" />);
+
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("Maximum amount is ₦500");
+    const input = screen.getByRole("spinbutton");
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    expect(input).toHaveAttribute("aria-describedby", "test-input-error");
+    expect(input).toHaveClass("border-red-400");
+  });
+
+  it("shows no error and a plain border for an empty value (issue #602)", () => {
+    render(<CurrencyInput value="" onChange={jest.fn()} min={100} max={500} id="test-input" />);
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    const input = screen.getByRole("spinbutton");
+    expect(input).not.toHaveAttribute("aria-invalid");
+    expect(input).toHaveValue("");
+  });
+
+  it("shows no error for a valid in-range value (issue #602)", () => {
+    render(<CurrencyInput value={250} onChange={jest.fn()} min={100} max={500} id="test-input" />);
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("spinbutton")).not.toHaveAttribute("aria-invalid");
+  });
+
+  it("accepts a decimalPlaces prop and flags values with too many decimals (issue #602)", () => {
+    render(
+      <CurrencyInput value={"12.567"} onChange={jest.fn()} decimalPlaces={2} id="test-input" />
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Enter up to 2 decimal places");
+  });
+
+  it("accepts a decimal value within the configured decimalPlaces without error (issue #602)", () => {
+    render(
+      <CurrencyInput value={"12.56"} onChange={jest.fn()} decimalPlaces={2} id="test-input" />
+    );
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("spinbutton")).toHaveValue("12.56");
   });
 
   it("increments and decrements in steps of 100 on arrow key presses", () => {

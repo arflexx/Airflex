@@ -42,7 +42,7 @@ import { creditReferralReward } from "./referrals";
 import { NotificationService } from "./notifications";
 import { ContractError, parseContractError } from "./contractErrors";
 import { FraudDetectionService, type FailedTradeReason } from "./fraudDetection";
-import type { TradeOffer } from "../types/trade";
+import { TradeErrorCode, type TradeOffer } from "../types/trade";
 import logger from "../utils/logger";
 import {
   recordActiveSpanError,
@@ -178,33 +178,43 @@ export async function triggerVerification(
 
   // Every rejected confirmation counts as a failed trade attempt by the
   // caller for fraud detection (issue #491).
-  const reject = (message: string, statusCode: number): VerificationError => {
+  const reject = (
+    message: string,
+    statusCode: number,
+    code: TradeErrorCode
+  ): VerificationError => {
     trackFailedTrade([sellerId], tradeId, "CONFIRMATION_REJECTED");
-    return new VerificationError(message, statusCode);
+    return new VerificationError(message, statusCode, code);
   };
 
   if (!rows.length) {
-    throw reject("Trade not found", 404);
+    throw reject("Trade not found", 404, TradeErrorCode.TRADE_NOT_FOUND);
   }
 
   const trade = rows[0]!;
 
   if (trade.seller_id !== sellerId) {
-    throw reject("Only the seller can confirm delivery", 403);
+    throw reject(
+      "Only the seller can confirm delivery",
+      403,
+      TradeErrorCode.TRADE_NOT_SELLER
+    );
   }
 
   if (trade.status !== "Locked") {
     throw reject(
       `Trade cannot be confirmed in its current state (${trade.status}). ` +
         `Only Locked trades can be confirmed.`,
-      400
+      400,
+      TradeErrorCode.TRADE_INVALID_STATE
     );
   }
 
   if (!trade.contract_listing_id) {
     throw reject(
       "Trade has no associated on-chain listing ID",
-      400
+      400,
+      TradeErrorCode.TRADE_NO_LISTING
     );
   }
 
@@ -593,11 +603,16 @@ function log(
 /**
  * Carries an HTTP status code so the route handler can respond correctly
  * for synchronous validation failures (not found, forbidden, bad state).
+ *
+ * `code` is the machine-readable `TradeErrorCode` (issue #618) the route
+ * handler forwards verbatim in the JSON response's `code` field. It is
+ * optional so existing two-argument call sites keep compiling.
  */
 export class VerificationError extends Error {
   constructor(
     message: string,
-    public readonly statusCode: number
+    public readonly statusCode: number,
+    public readonly code?: string
   ) {
     super(message);
     this.name = "VerificationError";
