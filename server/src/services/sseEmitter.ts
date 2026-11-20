@@ -1,4 +1,5 @@
 import { Response } from "express";
+import { cache } from "./cache";
 
 /**
  * sseEmitter.ts — Lightweight Server-Sent Events (SSE) hub.
@@ -7,46 +8,8 @@ import { Response } from "express";
  * text/event-stream connection. The server pushes trade status change events
  * without needing the client to poll.
  *
- * SSE is chosen over WebSockets because:
- *  - It is unidirectional (server → client), which matches our use-case exactly.
- *  - It works over plain HTTP/1.1 with automatic reconnection built into browsers.
- *  - No extra library is needed; Express can write chunked responses natively.
- *
- * Usage
- * -----
- *  // Register a client connection (called from the /api/v1/events route):
- *  SseEmitter.addClient(userId, res, req.header("last-event-id"));
- *
- *  // Push an event to specific users (called from tradeVerification):
- *  SseEmitter.emit(
- *    [sellerId, buyerId],
- *    { type: "trade_completed", tradeId: "...", status: "Completed" }
- *  );
- *
- *  // Push a broadcast admin alert:
- *  SseEmitter.emitAll({ type: "admin_alert", message: "..." });
- *
- * Heartbeat
- * ---------
- * While a client is connected the server writes an SSE comment line
- * (`: heartbeat`) every 30 seconds. Comment lines are ignored by EventSource
- * but keep the TCP connection alive through proxies and load balancers that
- * would otherwise close idle connections.
- *
- * Replay (Last-Event-ID)
- * ----------------------
- * Every emitted event carries a monotonically increasing `id:` field. The most
- * recent REPLAY_BUFFER_SIZE events are kept in memory; when a client reconnects
- * with a `Last-Event-ID` header (EventSource does this automatically), any
- * buffered events addressed to that user with a higher id are replayed before
- * live delivery resumes.
- *
- * Slow consumers
- * --------------
- * A client that stops reading lets Node buffer writes in memory. Once a
- * connection has more than MAX_BUFFERED_BYTES queued it is dropped, so one
- * stalled client can neither exhaust memory nor delay delivery to others. The
- * client reconnects and recovers missed events through Last-Event-ID.
+ * Persists connection state and buffered events per user in Redis (with a 5-minute TTL)
+ * so that reconnecting clients replaying Last-Event-ID recover missed events (issue #619).
  */
 
 // ---------------------------------------------------------------------------
@@ -56,11 +19,23 @@ import { Response } from "express";
 /** How often to write a keep-alive comment line to each connected client. */
 const HEARTBEAT_INTERVAL_MS = 30_000;
 
-/** How many recent events are retained for Last-Event-ID replay. */
-export const REPLAY_BUFFER_SIZE = 500;
+/** Default number of recent events retained per user for Last-Event-ID replay. */
+export const DEFAULT_MAX_USER_EVENTS = 50;
+
+/** TTL in seconds for buffered events in Redis (5 minutes). */
+export const SSE_EVENT_TTL_SECONDS = 300;
+
+/** Legacy alias for compatibility */
+export const REPLAY_BUFFER_SIZE = DEFAULT_MAX_USER_EVENTS;
 
 /** Queued-but-unsent bytes after which a connection is considered stalled. */
 export const MAX_BUFFERED_BYTES = 1024 * 1024;
+
+/** Resolves configurable max events per user. */
+export function getMaxUserEvents(): number {
+  const env = Number(process.env["SSE_MAX_USER_EVENTS"]);
+  return Number.isSafeInteger(env) && env > 0 ? env : DEFAULT_MAX_USER_EVENTS;
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -77,48 +52,54 @@ interface SseClient {
   heartbeat: ReturnType<typeof setInterval>;
 }
 
-interface BufferedEvent {
+export interface StoredUserEvent {
   id: number;
-  /** Recipient user IDs, or null for a broadcast to everyone. */
-  userIds: string[] | null;
   event: SseEvent;
+  timestamp: number;
 }
 
 // ---------------------------------------------------------------------------
-// Module-level state
+// State
 // ---------------------------------------------------------------------------
 
 /** All currently connected SSE clients. */
 const clients: SseClient[] = [];
 
-/** Ring of the most recent events, oldest first. */
-const replayBuffer: BufferedEvent[] = [];
+/** In-memory cache of events per user (synced with Redis). */
+const userEventsMap = new Map<string, StoredUserEvent[]>();
 
-/** Id of the last emitted event. */
-let lastEventId = 0;
+/** Monotonically increasing event ID counter per user. */
+const userCounterMap = new Map<string, number>();
+
+/** Test helper: reset state */
+function reset(): void {
+  closeAll();
+  userEventsMap.clear();
+  userCounterMap.clear();
+}
 
 /**
  * Registers an Express Response as an SSE stream for the given user.
- *
- * Sets the required headers and sends an initial "connected" event so the
- * client knows the stream is alive, then replays any buffered events newer
- * than `lastSeenEventId`. Also removes the client from the registry when the
- * connection closes (browser tab closed, network drop, etc.).
  */
 function addClient(userId: string, res: Response, lastSeenEventId?: string): void {
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache, no-transform");
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no"); // Disable Nginx proxy buffering
-  res.flushHeaders();
+  if (!res.headersSent) {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no"); // Disable Nginx proxy buffering
+    res.flushHeaders();
+  }
+
+  // Guide client reconnect timing if not already written
+  res.write("retry: 3000\n\n");
 
   // Send an immediate confirmation so the client knows it is connected
   writeEvent(res, { type: "connected", userId });
 
+  // Replay missed events
   replayMissed(userId, res, lastSeenEventId);
 
-  // Heartbeat: a comment line every 30s prevents proxies from closing idle
-  // connections. Per-client interval so it stops when this connection closes.
+  // Heartbeat: a comment line every 30s prevents proxies from closing idle connections
   const heartbeat = setInterval(() => {
     try {
       res.write(": heartbeat\n\n");
@@ -126,55 +107,92 @@ function addClient(userId: string, res: Response, lastSeenEventId?: string): voi
         (res as Response & { flush: () => void }).flush();
       }
     } catch {
-      // Client disconnected mid-write — the "close" handler will clean up
+      // Client disconnected mid-write
     }
   }, HEARTBEAT_INTERVAL_MS);
-  // Don't keep the process alive just for an open SSE stream
   heartbeat.unref?.();
 
   const client: SseClient = { userId, res, heartbeat };
   clients.push(client);
 
-  // Clean up when the client disconnects
   res.on("close", () => removeClient(client));
 }
 
 /**
+ * Next event ID for a given user.
+ */
+function nextEventIdForUser(userId: string): number {
+  const current = userCounterMap.get(userId) ?? 0;
+  const next = current + 1;
+  userCounterMap.set(userId, next);
+  return next;
+}
+
+/**
+ * Stores an event for a user in the local buffer and Redis with a 5-minute TTL.
+ */
+function storeUserEvent(userId: string, id: number, event: SseEvent): void {
+  const now = Date.now();
+  const ttlMs = SSE_EVENT_TTL_SECONDS * 1000;
+  const maxEvents = getMaxUserEvents();
+
+  let events = userEventsMap.get(userId) ?? [];
+  // Silently drop events older than the 5-minute TTL
+  events = events.filter((e) => now - e.timestamp < ttlMs);
+
+  events.push({ id, event, timestamp: now });
+  if (events.length > maxEvents) {
+    events = events.slice(events.length - maxEvents);
+  }
+  userEventsMap.set(userId, events);
+
+  // Persist to Redis asynchronously
+  void cache.set(`sse:events:${userId}`, JSON.stringify(events), SSE_EVENT_TTL_SECONDS).catch(() => undefined);
+}
+
+/**
  * Emits an SSE event to all connections belonging to the specified user IDs.
- * Safe to call with an empty array — it simply no-ops.
+ * Increments event ID per user.
  */
 function emit(userIds: string[], event: SseEvent): void {
   if (userIds.length === 0) return;
-  const id = remember([...userIds], event);
-  // Iterate a snapshot: stalled clients may be removed mid-loop
-  for (const client of [...clients]) {
-    if (userIds.includes(client.userId)) {
-      deliver(client, event, id);
+  for (const userId of userIds) {
+    const id = nextEventIdForUser(userId);
+    storeUserEvent(userId, id, event);
+
+    for (const client of [...clients]) {
+      if (client.userId === userId) {
+        deliver(client, event, id);
+      }
     }
   }
 }
 
 /**
- * Emits an SSE event to ALL currently connected clients.
- * Used for admin alerts and system-wide broadcasts.
+ * Emits an SSE event to ALL currently connected clients and known users.
  */
 function emitAll(event: SseEvent): void {
-  const id = remember(null, event);
-  for (const client of [...clients]) {
-    deliver(client, event, id);
+  const targetUserIds = new Set<string>();
+  for (const client of clients) {
+    targetUserIds.add(client.userId);
+  }
+  for (const userId of userEventsMap.keys()) {
+    targetUserIds.add(userId);
+  }
+  for (const userId of userCounterMap.keys()) {
+    targetUserIds.add(userId);
+  }
+  for (const userId of targetUserIds) {
+    emit([userId], event);
   }
 }
 
-/** Returns the count of currently open SSE connections (useful for health checks). */
+/** Returns the count of currently open SSE connections. */
 function connectionCount(): number {
   return clients.length;
 }
 
-/**
- * Ends every open stream and releases its heartbeat timer. Intended for
- * graceful shutdown; clients reconnect (with Last-Event-ID) once the server
- * is back.
- */
+/** Ends every open stream and releases its heartbeat timer. */
 function closeAll(): void {
   for (const client of [...clients]) {
     removeClient(client);
@@ -186,38 +204,21 @@ function closeAll(): void {
   }
 }
 
-/** Test helper: closes all clients and forgets buffered events and ids. */
-function reset(): void {
-  closeAll();
-  replayBuffer.length = 0;
-  lastEventId = 0;
-}
-
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-/** Stores an event in the replay buffer and returns its assigned id. */
-function remember(userIds: string[] | null, event: SseEvent): number {
-  lastEventId += 1;
-  replayBuffer.push({ id: lastEventId, userIds, event });
-  if (replayBuffer.length > REPLAY_BUFFER_SIZE) {
-    replayBuffer.splice(0, replayBuffer.length - REPLAY_BUFFER_SIZE);
-  }
-  return lastEventId;
-}
-
 /** Writes buffered events newer than `lastSeenEventId` that target `userId`. */
 function replayMissed(userId: string, res: Response, lastSeenEventId?: string): void {
-  // Ignore absent or malformed ids rather than replaying the whole buffer
   if (lastSeenEventId === undefined || !/^\d+$/.test(lastSeenEventId)) return;
   const since = Number(lastSeenEventId);
+  const now = Date.now();
+  const ttlMs = SSE_EVENT_TTL_SECONDS * 1000;
 
-  for (const entry of replayBuffer) {
+  let events = userEventsMap.get(userId) ?? [];
+  // Silently drop events older than the 5-minute TTL
+  events = events.filter((e) => now - e.timestamp < ttlMs);
+  userEventsMap.set(userId, events);
+
+  for (const entry of events) {
     if (entry.id <= since) continue;
-    if (entry.userIds === null || entry.userIds.includes(userId)) {
-      writeEvent(res, entry.event, entry.id);
-    }
+    writeEvent(res, entry.event, entry.id);
   }
 }
 
@@ -234,7 +235,7 @@ function deliver(client: SseClient, event: SseEvent, id: number): void {
   }
 }
 
-/** Unregisters a client and stops its heartbeat. Idempotent. */
+/** Unregisters a client and stops its heartbeat. */
 function removeClient(client: SseClient): void {
   clearInterval(client.heartbeat);
   const idx = clients.indexOf(client);
@@ -243,34 +244,20 @@ function removeClient(client: SseClient): void {
 
 /**
  * Writes a single SSE message frame to the given response stream.
- *
- * SSE wire format:
- *   id: <id>\n        (omitted for the connected handshake)
- *   event: <type>\n
- *   data: <json>\n
- *   \n
  */
 function writeEvent(res: Response, event: SseEvent, id?: number): void {
-  // Writing to an ended stream emits an error; skip connections that are
-  // already gone and let the "close" handler unregister them.
   if (res.writableEnded || res.destroyed) return;
   try {
     if (id !== undefined) res.write(`id: ${id}\n`);
     res.write(`event: ${event.type}\n`);
     res.write(`data: ${JSON.stringify(event)}\n\n`);
-    // Express will flush automatically for chunked encoding, but calling
-    // flush() explicitly ensures delivery when response compression is active.
     if (typeof (res as Response & { flush?: () => void }).flush === "function") {
       (res as Response & { flush: () => void }).flush();
     }
   } catch {
-    // Client disconnected mid-write — the "close" handler will clean up
+    // Client disconnected
   }
 }
-
-// ---------------------------------------------------------------------------
-// Exports
-// ---------------------------------------------------------------------------
 
 export const SseEmitter = {
   addClient,

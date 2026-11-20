@@ -34,7 +34,16 @@ const router = Router();
 router.get("/", authenticate, (req, res) => {
   const { sub: userId } = (req as AuthenticatedRequest).user;
 
-  // Hand the response over to the SSE hub — it sets headers, replays events
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+
+  // Set retry field in SSE response to guide client reconnect timing (issue #619)
+  res.write("retry: 3000\n\n");
+
+  // Hand the response over to the SSE hub — it replays events
   // missed since Last-Event-ID (sent automatically by EventSource on
   // reconnect), and keeps the connection alive until the client disconnects.
   SseEmitter.addClient(userId, res, req.header("last-event-id"));

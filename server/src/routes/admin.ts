@@ -36,6 +36,7 @@ import {
   paginationSchema,
   auditLogQuerySchema,
   updateKycStatusSchema,
+  adminUsersQuerySchema,
   type ResolveDisputeInput,
   type ReviewFraudFlagInput,
   type UpdateKycStatusInput,
@@ -359,7 +360,7 @@ router.get(
   authenticate,
   authorize("admin"),
   async (req, res) => {
-    const parsed = paginationSchema.safeParse(req.query);
+    const parsed = adminUsersQuerySchema.safeParse(req.query);
     if (!parsed.success) {
       res.status(400).json({
         error: "Invalid query parameters",
@@ -368,10 +369,18 @@ router.get(
       return;
     }
 
-    const { page, limit } = parsed.data;
-    const offset = (page - 1) * limit;
+    const { cursor, limit } = parsed.data;
 
-    const { rows: users } = await pool.query<{
+    const queryParams: unknown[] = [];
+    let whereClause = "";
+    if (cursor) {
+      queryParams.push(cursor);
+      whereClause = `WHERE id > $${queryParams.length}`;
+    }
+    queryParams.push(limit + 1);
+    const limitPlaceholder = `$${queryParams.length}`;
+
+    const { rows: fetchedRows } = await pool.query<{
       id: string;
       phone: string;
       registrationDate: string;
@@ -381,8 +390,9 @@ router.get(
       `WITH page_users AS (
          SELECT id, phone, created_at
          FROM users
-         ORDER BY created_at DESC
-         LIMIT $1 OFFSET $2
+         ${whereClause}
+         ORDER BY id ASC
+         LIMIT ${limitPlaceholder}
        )
        SELECT
          pu.id,
@@ -410,23 +420,20 @@ router.get(
          ) participation
          GROUP BY participant_id
        ) tr_agg ON tr_agg.participant_id = pu.id
-       ORDER BY pu.created_at DESC`,
-      [limit, offset]
+       ORDER BY pu.id ASC`,
+      queryParams
     );
 
-    const { rows: countRows } = await pool.query<{ count: string }>(
-      `SELECT COUNT(*) FROM users`
-    );
-
-    const total = parseInt(countRows[0]?.count ?? "0", 10);
+    const hasMore = fetchedRows.length > limit;
+    const users = hasMore ? fetchedRows.slice(0, limit) : fetchedRows;
+    const nextCursor = hasMore && users.length > 0 ? users[users.length - 1]!.id : null;
 
     res.status(200).json({
       data: users,
+      nextCursor,
       pagination: {
-        page,
         limit,
-        total,
-        totalPages: Math.ceil(total / limit),
+        nextCursor,
       },
     });
   }

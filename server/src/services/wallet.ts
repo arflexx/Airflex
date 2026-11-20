@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "crypto";
 import type { PoolClient } from "pg";
 import pool from "../db";
+import { cache } from "./cache";
 
 export type WalletTransactionType =
   | "trade_settlement"
@@ -410,3 +411,54 @@ export async function executeIdempotentWithdrawal(
     client.release();
   }
 }
+
+// ---------------------------------------------------------------------------
+// Idempotent deposits (issues #615, #620)
+// ---------------------------------------------------------------------------
+
+export interface DepositRequest {
+  amount: number;
+}
+
+export interface DepositOutcome {
+  status: number;
+  body: Record<string, unknown>;
+  replayed: boolean;
+}
+
+/**
+ * Runs a fiat deposit initiation idempotently per (userId, idempotencyKey).
+ * Caches the response in Redis with a 24-hour TTL (86,400 seconds).
+ */
+export async function executeIdempotentDeposit(
+  userId: string,
+  idempotencyKey: string,
+  request: DepositRequest
+): Promise<DepositOutcome> {
+  const cacheKey = `idempotency:deposit:${userId}:${idempotencyKey}`;
+  const cached = await cache.get(cacheKey);
+
+  if (cached) {
+    try {
+      const parsed = JSON.parse(cached) as Record<string, unknown>;
+      return { status: 200, body: parsed, replayed: true };
+    } catch {
+      // If parsing fails, fall through and re-issue
+    }
+  }
+
+  const reference = `airflex-dep-${randomUUID()}`;
+  const body = {
+    success: true,
+    reference,
+    amount: request.amount,
+    status: "pending",
+    message: "Deposit initiated. Complete payment using the provided reference or dedicated virtual account.",
+  };
+
+  // 24-hour TTL
+  await cache.set(cacheKey, JSON.stringify(body), 24 * 60 * 60);
+
+  return { status: 200, body, replayed: false };
+}
+
