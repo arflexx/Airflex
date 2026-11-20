@@ -56,6 +56,15 @@ export const openApiDocument = {
         required: ["error"],
         properties: {
           error: { type: "string", example: "Descriptive error message" },
+          code: {
+            type: "string",
+            description:
+              "Machine-readable error code API consumers should branch on instead " +
+              "of parsing `error`. Present on every 4xx/5xx response from the " +
+              "trades endpoints (issue #618); other endpoints are migrating to it " +
+              "incrementally.",
+            example: "TRADE_NOT_FOUND",
+          },
         },
       },
       ValidationErrorItem: {
@@ -1018,6 +1027,7 @@ export const openApiDocument = {
             content: {
               "application/json": {
                 schema: { $ref: "#/components/schemas/ErrorResponse" },
+                example: { error: "Invalid query parameters", code: "INVALID_QUERY" },
               },
             },
           },
@@ -1029,7 +1039,8 @@ export const openApiDocument = {
         summary: "Create a trade offer",
         description:
           "Creates a new trade listing. Calls `create_listing` on the Soroban escrow contract " +
-          "and stores the resulting on-chain listing ID.",
+          "and stores the resulting on-chain listing ID. Rate-limited to `MAX_TRADES_PER_HOUR` " +
+          "(default 10) requests per user per hour (issue #617 / #614).",
         security: [{ bearerAuth: [] }],
         parameters: [
           {
@@ -1067,11 +1078,54 @@ export const openApiDocument = {
             content: {
               "application/json": {
                 schema: { $ref: "#/components/schemas/ErrorResponse" },
+                example: { error: "Seller wallet not found", code: "WALLET_NOT_FOUND" },
               },
             },
           },
           "401": { $ref: "#/components/responses/Unauthorized" },
+          "403": {
+            description: "Seller has not completed KYC verification.",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/ErrorResponse" },
+                example: {
+                  error:
+                    "KYC verification is required before creating a trade listing. " +
+                    "Submit your KYC documents via POST /api/kyc/submit.",
+                  code: "KYC_REQUIRED",
+                },
+              },
+            },
+          },
+          "404": {
+            description: "Authenticated user row could not be found.",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/ErrorResponse" },
+                example: { error: "User not found", code: "USER_NOT_FOUND" },
+              },
+            },
+          },
           "422": { $ref: "#/components/responses/UnprocessableEntity" },
+          "429": {
+            description:
+              "Caller exceeded MAX_TRADES_PER_HOUR trade-creation requests (issue #617 / #614).",
+            headers: {
+              "Retry-After": {
+                description: "Seconds until the rate-limit window resets.",
+                schema: { type: "integer" },
+              },
+            },
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/ErrorResponse" },
+                example: {
+                  error: "Too many trade creation requests. Try again in 1 minute(s).",
+                  code: "TRADE_RATE_LIMITED",
+                },
+              },
+            },
+          },
           "500": { $ref: "#/components/responses/InternalError" },
         },
       },
@@ -1145,6 +1199,10 @@ export const openApiDocument = {
             content: {
               "application/json": {
                 schema: { $ref: "#/components/schemas/ErrorResponse" },
+                example: {
+                  error: "Trade is not available for purchase (status: Locked)",
+                  code: "TRADE_NOT_AVAILABLE",
+                },
               },
             },
           },
@@ -1197,6 +1255,10 @@ export const openApiDocument = {
             content: {
               "application/json": {
                 schema: { $ref: "#/components/schemas/ErrorResponse" },
+                example: {
+                  error: "Seller cannot buy their own trade",
+                  code: "TRADE_SELF_BUY_FORBIDDEN",
+                },
               },
             },
           },
@@ -1244,6 +1306,10 @@ export const openApiDocument = {
             content: {
               "application/json": {
                 schema: { $ref: "#/components/schemas/ErrorResponse" },
+                example: {
+                  error: "Trade cannot be confirmed in its current state (Active). Only Locked trades can be confirmed.",
+                  code: "TRADE_INVALID_STATE",
+                },
               },
             },
           },
@@ -1299,6 +1365,10 @@ export const openApiDocument = {
             content: {
               "application/json": {
                 schema: { $ref: "#/components/schemas/ErrorResponse" },
+                example: {
+                  error: "Only locked trades can be disputed (current status: Active)",
+                  code: "TRADE_NOT_LOCKED",
+                },
               },
             },
           },
@@ -1308,6 +1378,10 @@ export const openApiDocument = {
             content: {
               "application/json": {
                 schema: { $ref: "#/components/schemas/ErrorResponse" },
+                example: {
+                  error: "Only the buyer or seller can dispute this trade",
+                  code: "TRADE_FORBIDDEN_DISPUTE",
+                },
               },
             },
           },
@@ -1317,6 +1391,7 @@ export const openApiDocument = {
             content: {
               "application/json": {
                 schema: { $ref: "#/components/schemas/ErrorResponse" },
+                example: { error: "Trade is already disputed", code: "TRADE_ALREADY_DISPUTED" },
               },
             },
           },

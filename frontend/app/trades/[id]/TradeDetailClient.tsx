@@ -166,12 +166,25 @@ function ConfirmationPanel({ trade, txHash }: { trade: TradeOffer; txHash: strin
 interface BuyResponse {
   data?: TradeOffer & { escrow_tx_hash?: string };
   error?: string;
+  code?: string;
 }
 
 interface PrepareBuyResponse {
   data?: { xdr: string; networkPassphrase: string; publicKey: string };
   error?: string;
+  code?: string;
 }
+
+/**
+ * Trade-specific error codes from `server/src/types/trade.ts` that the buy
+ * flow (`buy/prepare` + `buy`) can return (issue #618). API consumers should
+ * branch on `code` rather than parsing `error`, which may change wording.
+ */
+type BuyErrorCode =
+  | "TRADE_NOT_FOUND"
+  | "TRADE_NOT_AVAILABLE"
+  | "TRADE_NO_LISTING"
+  | "TRADE_SELF_BUY_FORBIDDEN";
 
 interface Props {
   trade: TradeOffer;
@@ -219,6 +232,27 @@ export default function TradeDetailClient({ trade }: Props) {
 
   // Render the opaque display handle — never the seller's UUID (issue #330).
   const sellerAlias = trade.seller_handle ?? "@airflex";
+
+  /**
+   * Maps a backend `code` (issue #618) to a user-facing message. Falls back
+   * to the server-provided `error` string (or the generic purchase-failed
+   * copy) for codes this component doesn't special-case, e.g. 401/422,
+   * which are handled separately, or future codes the client predates.
+   */
+  function messageForBuyError(code: string | undefined, serverMessage: string | undefined): string {
+    switch (code as BuyErrorCode | undefined) {
+      case "TRADE_NOT_FOUND":
+        return t("errorTradeNotFound");
+      case "TRADE_NOT_AVAILABLE":
+        return t("errorTradeNotAvailable");
+      case "TRADE_NO_LISTING":
+        return t("errorTradeNoListing");
+      case "TRADE_SELF_BUY_FORBIDDEN":
+        return t("errorSelfBuyForbidden");
+      default:
+        return serverMessage ?? t("purchaseFailed");
+    }
+  }
 
   /** Sends the user back through authentication, returning here afterwards. */
   function reauthenticate() {
@@ -272,7 +306,7 @@ export default function TradeDetailClient({ trade }: Props) {
       );
 
       if (!prepared.data) {
-        rollback(prepared.error ?? t("purchaseFailed"));
+        setBuyError(messageForBuyError(prepared.code, prepared.error));
         return;
       }
 
@@ -324,8 +358,8 @@ export default function TradeDetailClient({ trade }: Props) {
         setStatus(previousStatus);
         reauthenticate();
       } else if (error instanceof ApiError) {
-        const data = error.data as { error?: string } | undefined;
-        rollback(data?.error ?? t("purchaseFailed"));
+        const data = error.data as { error?: string; code?: string } | undefined;
+        setBuyError(messageForBuyError(data?.code, data?.error));
       } else {
         rollback(t("networkError"));
       }

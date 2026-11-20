@@ -166,7 +166,11 @@
     "offerHasExpired": "This offer has expired.",
     "timeRemaining": "Time remaining: {time}",
     "offerExpiredAria": "This offer has expired",
-    "buyAria": "Buy {asset} worth ₦{amount} from {seller}"
+    "buyAria": "Buy {asset} worth ₦{amount} from {seller}",
+    "errorTradeNotFound": "This trade is no longer available.",
+    "errorTradeNotAvailable": "This trade is no longer available for purchase.",
+    "errorTradeNoListing": "This trade has no associated contract listing and cannot be purchased.",
+    "errorSelfBuyForbidden": "You cannot buy your own trade listing."
   },
   "Sell": {
     "metaTitle": "Sell Airtime",
