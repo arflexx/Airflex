@@ -17,11 +17,11 @@
  *  - Same-origin GET `/api/**` → StaleWhileRevalidate.
  *  - Non-GET requests and cross-origin / authenticated requests bypass the
  *    cache entirely (never intercepted).
- *  - Document navigations that fail while offline and are not already cached
- *    fall back to `OFFLINE_FALLBACK_ROUTE` (issue #610). `next.config.js`
- *    feeds `navigationFallback` straight into next-pwa's `fallbacks` option so
- *    this module stays the single source of truth for which route is
- *    registered as the offline navigation fallback.
+ *  - Failed document (navigation) requests → the precached offline fallback
+ *    page at `OFFLINE_FALLBACK_PATH` (issue #613). `next.config.js` reads this
+ *    constant to configure next-pwa's `fallbacks.document`, so the route a
+ *    user lands on when offline and the route this module advertises can
+ *    never drift apart.
  */
 
 "use strict";
@@ -33,19 +33,11 @@ const STATIC_CACHE_NAME = "next-static";
 const API_CACHE_NAME = "apis";
 
 /**
- * Route served by the generated service worker when a document navigation
- * fails because the user is offline and the requested page was never cached
- * (issue #610). Must match the App Router route at `app/offline/page.tsx`.
+ * Route served as the navigation fallback when a document request fails
+ * offline and isn't already cached (issue #613). Must match an actual route
+ * under `app/` — see `app/offline/page.tsx`.
  */
-const OFFLINE_FALLBACK_ROUTE = "/offline";
-
-/**
- * next-pwa `fallbacks` option, derived from `OFFLINE_FALLBACK_ROUTE` so the
- * route is declared once and consumed by `next.config.js`.
- */
-const navigationFallback = {
-  document: OFFLINE_FALLBACK_ROUTE,
-};
+const OFFLINE_FALLBACK_PATH = "/offline";
 
 /** One month — hashed asset names change when content changes, so a long TTL is safe. */
 const STATIC_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
@@ -111,8 +103,7 @@ module.exports = {
   API_CACHE_NAME,
   STATIC_MAX_AGE_SECONDS,
   API_MAX_AGE_SECONDS,
-  OFFLINE_FALLBACK_ROUTE,
-  navigationFallback,
+  OFFLINE_FALLBACK_PATH,
   isHashedStatic,
   isCacheableGet,
   staticAssetRule,

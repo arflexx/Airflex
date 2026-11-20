@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useContext, useRef } from "react";
 import { useTranslations } from "next-intl";
 import type { TradeOffer } from "../../../../server/src/types/trade";
 import { getToken, getUser, isAuthenticated } from "../../lib/auth";
@@ -23,6 +23,7 @@ import {
   EscrowTransactionLink,
   shouldShowEscrowLink,
 } from "../../../components/EscrowTransactionLink";
+import { ToastContext } from "../../../components/ToastProvider";
 import { DisputeModal } from "./dispute/DisputeModal";
 
 // ---------------------------------------------------------------------------
@@ -224,6 +225,27 @@ export default function TradeDetailClient({ trade }: Props) {
   const isLocked = status === "Locked";
   const canBuy   = authed && isActive && !countdown.expired && !isSeller;
 
+  // Toast surface for buy-failure feedback (issue #612). Optional-chained:
+  // falls back to the inline `buyError` banner alone if no <ToastProvider>
+  // happens to be mounted above this tree.
+  const toastCtx = useContext(ToastContext);
+
+  /**
+   * Optimistic trade status (issue #612) — following the `useOptimisticBalance`
+   * pattern, this is a display-only value layered on top of the confirmed
+   * `status`. The instant the buyer clicks "Buy" (`buying` flips true
+   * synchronously, before any network round-trip), the status badge jumps to
+   * "Locked" so the UI reflects acceptance immediately. If the request fails,
+   * `buying` resets to `false` in `handleBuy`'s `finally` block and this
+   * value snaps straight back to the still-unchanged confirmed `status` — an
+   * automatic rollback with no extra state to get out of sync. All gating
+   * logic (`isActive`, `isLocked`, `canBuy`, the dispute section, etc.) keeps
+   * using the confirmed `status`, not this one, so the Buy button itself
+   * stays mounted (disabled + spinner) for the duration of the request
+   * instead of disappearing.
+   */
+  const displayStatus: TradeOffer["status"] = buying ? "Locked" : status;
+
   const RATING_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
   const canRateSeller =
     isBuyer &&
@@ -259,6 +281,17 @@ export default function TradeDetailClient({ trade }: Props) {
     clearSessionKey();
     const returnTo = encodeURIComponent(`/trades/${trade.id}`);
     window.location.href = `/auth/signup?returnTo=${returnTo}`;
+  }
+
+  /**
+   * Surfaces a buy failure both inline (existing `buyError` banner) and as a
+   * toast (issue #612), and implicitly rolls the optimistic status badge back
+   * — the caller's `finally` clears `buying`, which `displayStatus` already
+   * derives from.
+   */
+  function failBuy(message: string) {
+    setBuyError(message);
+    toastCtx?.error(message);
   }
 
   /**
@@ -306,7 +339,7 @@ export default function TradeDetailClient({ trade }: Props) {
       );
 
       if (!prepared.data) {
-        setBuyError(messageForBuyError(prepared.code, prepared.error));
+        failBuy(prepared.error ?? t("purchaseFailed"));
         return;
       }
 
@@ -334,11 +367,11 @@ export default function TradeDetailClient({ trade }: Props) {
             reauthenticate();
             return;
           }
-          rollback(t("purchaseFailed"));
+          failBuy(t("purchaseFailed"));
           return;
         }
         if (err instanceof AccountMismatchError) {
-          rollback(t("purchaseFailed"));
+          failBuy(t("purchaseFailed"));
           return;
         }
         throw err;
@@ -358,10 +391,10 @@ export default function TradeDetailClient({ trade }: Props) {
         setStatus(previousStatus);
         reauthenticate();
       } else if (error instanceof ApiError) {
-        const data = error.data as { error?: string; code?: string } | undefined;
-        setBuyError(messageForBuyError(data?.code, data?.error));
+        const data = error.data as { error?: string } | undefined;
+        failBuy(data?.error ?? t("purchaseFailed"));
       } else {
-        rollback(t("networkError"));
+        failBuy(t("networkError"));
       }
     } finally {
       setBuying(false);
@@ -422,7 +455,7 @@ export default function TradeDetailClient({ trade }: Props) {
         {/* Coloured header strip */}
         <div className="flex items-center justify-between gap-3 bg-violet-50 px-5 py-4 border-b border-violet-100 dark:bg-violet-900/20 dark:border-violet-800">
           <AssetBadge assetType={trade.asset_type} />
-          <Badge variant={status === "Active" ? "Open" : (status as any)} />
+          <Badge variant={displayStatus === "Active" ? "Open" : (displayStatus as any)} />
         </div>
 
         {/* Detail rows */}

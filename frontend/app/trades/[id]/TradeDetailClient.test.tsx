@@ -1,34 +1,34 @@
 import React from "react";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import "@testing-library/jest-dom";
-import TradeDetailClient from "./TradeDetailClient";
-import { apiFetch, ApiError } from "../../../lib/apiFetch";
 import type { TradeOffer } from "../../../../server/src/types/trade";
 
-// Real catalog text so assertions match what users actually see.
+// Real translation catalogs, so assertions can match on the text a user
+// actually sees rather than translation keys.
 jest.mock("next-intl", () => jest.requireActual("../../../i18n/testing").nextIntlMock);
 
 jest.mock("../../lib/auth", () => ({
-  getToken: () => "mock-jwt-token",
-  getUser: () => ({ id: "buyer-1" }),
   isAuthenticated: () => true,
+  getUser: () => ({ id: "buyer-1" }),
+  getToken: () => "token-abc",
+}));
+
+// Signing/session are never reached in the failure-at-prepare-step scenario
+// this suite exercises, but TradeDetailClient imports them unconditionally —
+// stub them out rather than pull in the real @stellar/stellar-sdk dependency.
+jest.mock("../../lib/signing", () => ({
+  ensureSessionKey: jest.fn(),
+  signTransactionXdr: jest.fn(),
+  SessionKeyMissingError: class SessionKeyMissingError extends Error {},
+  UnlockFailedError: class UnlockFailedError extends Error {
+    status?: number;
+  },
+  AccountMismatchError: class AccountMismatchError extends Error {},
 }));
 
 jest.mock("../../lib/stellarSession", () => ({
   clearSessionKey: jest.fn(),
-  setSessionKey: jest.fn(),
-  getSessionKey: jest.fn(),
-  hasSessionKey: jest.fn(() => true),
 }));
-
-jest.mock("../../lib/signing", () => {
-  const actual = jest.requireActual("../../lib/signing");
-  return {
-    ...actual,
-    ensureSessionKey: jest.fn().mockResolvedValue(undefined),
-    signTransactionXdr: jest.fn().mockReturnValue("signed-xdr-stub"),
-  };
-});
 
 jest.mock("../../../lib/apiFetch", () => {
   const actual = jest.requireActual("../../../lib/apiFetch");
@@ -38,93 +38,116 @@ jest.mock("../../../lib/apiFetch", () => {
   };
 });
 
-const mockedApiFetch = apiFetch as jest.MockedFunction<typeof apiFetch>;
+// ToastProvider renders through a portal and auto-dismisses on a timer this
+// suite doesn't need to manage — assert directly against the ToastContext
+// consumer instead via a minimal stand-in provider.
+const toastError = jest.fn();
+jest.mock("../../../components/ToastProvider", () => {
+  const React = require("react");
+  const ToastContext = React.createContext({
+    success: jest.fn(),
+    error: toastError,
+    info: jest.fn(),
+    warning: jest.fn(),
+  });
+  return { ToastContext };
+});
 
-const baseTrade: TradeOffer = {
-  id: "trade-abc",
-  seller_id: "seller-1",
-  buyer_id: null,
-  asset_type: "MTN_AIRTIME",
-  amount: 1000,
-  fee_amount: 15,
-  seller_net_amount: 985,
-  status: "Active",
-  contract_listing_id: "listing-1",
-  escrow_tx_hash: null,
-  expires_at: new Date(Date.now() + 3600_000).toISOString(),
-  created_at: new Date().toISOString(),
-  updated_at: new Date().toISOString(),
-  seller_handle: "@seller1",
-};
+import { apiFetch, ApiError } from "../../../lib/apiFetch";
+import TradeDetailClient from "./TradeDetailClient";
 
-// Issue #609 — optimistic UI for trade acceptance, with rollback on failure.
-describe("TradeDetailClient optimistic buy (Issue #609)", () => {
+const mockApiFetch = apiFetch as jest.MockedFunction<typeof apiFetch>;
+
+function makeTrade(overrides: Partial<TradeOffer> = {}): TradeOffer {
+  return {
+    id: "trade-123",
+    seller_id: "seller-1",
+    buyer_id: null,
+    asset_type: "MTN_AIRTIME",
+    amount: 5000,
+    fee_amount: null,
+    seller_net_amount: null,
+    status: "Active",
+    contract_listing_id: null,
+    escrow_tx_hash: null,
+    expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    seller_handle: "@seller",
+    ...overrides,
+  };
+}
+
+describe("TradeDetailClient optimistic buy (#612)", () => {
   beforeEach(() => {
-    mockedApiFetch.mockReset();
+    jest.clearAllMocks();
   });
 
-  it("flips status to Locked immediately, then rolls back and toasts on a failed API response", async () => {
-    // Step 1 (prepare) succeeds; step 3 (submit signed envelope) fails.
-    mockedApiFetch
-      .mockResolvedValueOnce({
-        data: {
-          xdr: "unsigned-xdr",
-          networkPassphrase: "Test SDF Network ; September 2015",
-          publicKey: "GABCDEF",
-        },
-      })
-      .mockRejectedValueOnce(
-        new ApiError("Insufficient escrow balance", 400, {
-          error: "Insufficient escrow balance",
-        })
-      );
+  it("rolls back the optimistic 'Locked' status and shows a toast when the buy request fails", async () => {
+    // TradeDetailClient reads the user-facing message from `error.data.error`
+    // (the server's JSON error body), not `error.message`.
+    mockApiFetch.mockRejectedValueOnce(
+      new ApiError("Conflict", 409, { error: "Trade already locked" })
+    );
 
-    render(<TradeDetailClient trade={baseTrade} />);
+    render(<TradeDetailClient trade={makeTrade()} />);
 
-    const buyButton = await screen.findByRole("button", { name: /buy mtn airtime/i });
+    // The button's accessible name comes from its `aria-label` ("Buy {asset}
+    // worth ₦{amount} from {seller}"), not its visible "Buy Now" text.
+    const buyButton = await screen.findByRole("button", { name: /^buy /i });
 
-    // Optimistic update: status flips to "Locked" synchronously on click,
-    // before the prepare/sign/submit round-trip resolves.
-    fireEvent.click(buyButton);
-    expect(screen.getByText("Locked")).toBeInTheDocument();
-
-    // On failure, the status rolls back to its previous value ("Active",
-    // rendered as the "Open" badge) and an error toast is shown.
-    await waitFor(() => {
-      expect(screen.queryByText("Locked")).not.toBeInTheDocument();
-    });
+    // Confirmed status starts "Active" → badge reads "Open".
     expect(screen.getByText("Open")).toBeInTheDocument();
 
-    const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("Insufficient escrow balance");
+    // A synchronous (non-async) `act` only flushes the click's synchronous
+    // state update (`setBuying(true)`, set before the first `await` in
+    // `handleBuy`) — it does not yield to the microtask queue, so the
+    // rejected `apiFetch` mock cannot have settled yet. That makes this
+    // assertion a reliable check of the *optimistic* state, not a race.
+    act(() => {
+      fireEvent.click(buyButton);
+    });
 
-    const toastStatus = await screen.findByRole("status");
-    expect(toastStatus).toHaveTextContent("Insufficient escrow balance");
+    // Optimistic transition: badge flips to "Locked" the instant the request
+    // is in flight, before the (failing) response has come back.
+    expect(screen.getByText("Locked")).toBeInTheDocument();
+    expect(buyButton).toBeDisabled();
 
-    expect(mockedApiFetch).toHaveBeenCalledTimes(2);
+    // The request now resolves (rejects) — status rolls back and a toast
+    // fires.
+    await waitFor(() => expect(screen.getByText("Open")).toBeInTheDocument());
+
+    expect(screen.queryByText("Locked")).not.toBeInTheDocument();
+    expect(toastError).toHaveBeenCalledWith("Trade already locked");
+    expect(screen.getByRole("alert")).toHaveTextContent("Trade already locked");
   });
 
-  it("confirms the purchase and keeps the Locked status when the full flow succeeds", async () => {
-    mockedApiFetch
-      .mockResolvedValueOnce({
-        data: {
-          xdr: "unsigned-xdr",
-          networkPassphrase: "Test SDF Network ; September 2015",
-          publicKey: "GABCDEF",
-        },
-      })
-      .mockResolvedValueOnce({
-        data: { ...baseTrade, status: "Locked", escrow_tx_hash: "tx-hash-123" },
-      });
-
-    render(<TradeDetailClient trade={baseTrade} />);
-
-    const buyButton = await screen.findByRole("button", { name: /buy mtn airtime/i });
-    fireEvent.click(buyButton);
-    expect(screen.getByText("Locked")).toBeInTheDocument();
-
-    await waitFor(() => {
-      expect(screen.getByText(/purchase confirmed/i)).toBeInTheDocument();
+  it("keeps the optimistic 'Locked' status once the buy request succeeds", async () => {
+    mockApiFetch.mockResolvedValueOnce({
+      data: { xdr: "XDR", networkPassphrase: "Test SDF Network ; September 2015", publicKey: "GPUBLIC" },
     });
+    mockApiFetch.mockResolvedValueOnce({
+      data: { ...makeTrade({ status: "Locked" }), escrow_tx_hash: "tx-abc" },
+    });
+
+    const { signTransactionXdr } = jest.requireMock("../../lib/signing") as {
+      signTransactionXdr: jest.Mock;
+    };
+    signTransactionXdr.mockReturnValue("signed-xdr");
+
+    render(<TradeDetailClient trade={makeTrade()} />);
+
+    const buyButton = await screen.findByRole("button", { name: /^buy /i });
+
+    await act(async () => {
+      fireEvent.click(buyButton);
+    });
+
+    // On success the component swaps to the confirmation panel, whose own
+    // "Locked" badge reflects the now-confirmed (not merely optimistic) status.
+    await waitFor(() =>
+      expect(screen.getByText(/purchase confirmed/i)).toBeInTheDocument()
+    );
+    expect(screen.getByText("Locked")).toBeInTheDocument();
   });
 });

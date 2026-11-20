@@ -252,5 +252,12 @@
       "sendNow": "Aika yanzu",
       "discard": "Watsar"
     }
+  },
+  "Offline": {
+    "heading": "Ba ka kan intanet",
+    "body": "AirFlex na bukatar intanet don loda wannan shafin. Duba hanyar sadarwarka sannan ka sake gwadawa — ciniki da walet dinka suna lafiya.",
+    "retry": "Sake gwadawa",
+    "reconnectingHeading": "Ana sake haɗawa…",
+    "reconnectingBody": "An dawo da hanyar sadarwa. Ana mayar da kai…"
   }
 }

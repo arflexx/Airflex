@@ -252,5 +252,12 @@
       "sendNow": "Send now",
       "discard": "Discard"
     }
+  },
+  "Offline": {
+    "heading": "You're offline",
+    "body": "AirFlex needs a connection to load this page. Check your network and try again — your saved trades and wallet are safe.",
+    "retry": "Retry",
+    "reconnectingHeading": "Reconnecting…",
+    "reconnectingBody": "Network connection restored. Taking you back…"
   }
 }
