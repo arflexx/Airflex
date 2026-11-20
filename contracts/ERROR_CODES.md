@@ -32,6 +32,7 @@ next integer, because deployed callers decode by discriminant.
 | `15` | `StorageLimitExceeded` | The seller has reached the maximum permitted number of active listings in storage. | Marketplace |
 | `16` | `InvalidCategory` | `asset_type` symbol is not on the admin-managed allowed categories list. | Escrow |
 | `17` | `DuplicateFill` | The buyer already holds an active (unreleased, unrefunded) sub-escrow on this trade — one active fill per buyer per trade (issue #294). | Escrow |
+| `19` | `AmountExceedsMax` (`AMOUNT_EXCEEDS_MAX`) | `create_listing` `amount` is above the admin-configured per-listing cap (`max_amount`, set via `update_max_amount`). Every fill is bounded by the listing total, so this caps any single escrow (issue #636). | Escrow |
 
 ## Escrow Contract — Canonical Error Code Table
 
@@ -57,6 +58,7 @@ New codes are always appended; existing values are never changed.
 | `15` | `PauseCooldownNotExpired` | Pause cooldown window has not elapsed before unpause. |
 | `16` | `InvalidCategory` | `asset_type` symbol is not on the admin-managed allowed categories list. |
 | `17` | `DuplicateFill` | Buyer already holds an active (unreleased, unrefunded) sub-escrow on this trade. |
+| `19` | `AmountExceedsMax` | `create_listing` amount exceeds the admin-set per-listing cap (`update_max_amount`). |
 
 ## Handling Errors
 

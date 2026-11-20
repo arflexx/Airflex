@@ -42,11 +42,19 @@ pub enum DataKey {
     /// (issue #642), used to reject a repeat call before the cooldown window
     /// has elapsed.
     LastDisputeAt(u64),
+    /// Maximum `total_amount` (in the token's smallest unit, e.g. stroops) a
+    /// single listing may lock (issue #636). Set at `initialize`, updated via
+    /// `update_max_amount`.
+    MaxAmount,
 }
 
 pub const EMERGENCY_TIMELOCK_SECS: u64 = 72 * 60 * 60; // 72 hours = 259,200 seconds
 pub const MAX_EXPIRY_SECS: u64 = 30 * 24 * 60 * 60; // 30 days = 2,592,000 seconds
 pub const DISPUTE_WINDOW_SECS: u64 = 24 * 60 * 60; // 24 hours = 86,400 seconds
+/// Default per-listing cap written at `initialize` (issue #636). It is
+/// effectively uncapped so existing integrations keep working; deployments set
+/// the real cap straight after init via `update_max_amount` (see deploy.sh).
+pub const DEFAULT_MAX_AMOUNT: i128 = i128::MAX;
 /// Default minimum time between successive `flag_dispute` calls on the same
 /// trade (issue #642). A malicious party repeatedly calling `flag_dispute`
 /// could otherwise spam the dispute path to exhaust the counterparty's
@@ -150,6 +158,9 @@ pub enum ContractError {
     /// `flag_dispute` was called on this trade before `dispute_cooldown_seconds`
     /// had elapsed since the previous dispute flag (issue #642).
     DisputeCooldownActive = 18,
+    /// `create_listing` amount is above the admin-configured `MaxAmount`
+    /// (issue #636).
+    AmountExceedsMax = 19,
 }
 
 // ---------------------------------------------------------------------------
@@ -236,6 +247,15 @@ fn require_not_paused(env: &Env) -> Result<(), ContractError> {
         return Err(ContractError::ContractPaused);
     }
     Ok(())
+}
+
+/// Contracts initialised before issue #636 have no `MaxAmount` entry; treat
+/// them as uncapped until the admin calls `update_max_amount`.
+fn get_max_amount(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::MaxAmount)
+        .unwrap_or(DEFAULT_MAX_AMOUNT)
 }
 
 fn get_admin(env: &Env) -> Result<Address, ContractError> {
@@ -326,6 +346,10 @@ impl EscrowContract {
         env.storage()
             .instance()
             .set(&DataKey::DisputeCooldownSecs, &DEFAULT_DISPUTE_COOLDOWN_SECS);
+        // Per-listing amount cap (issue #636).
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxAmount, &DEFAULT_MAX_AMOUNT);
         // Bump instance TTL so it survives long-running trades
         env.storage().instance().extend_ttl(17_280, 17_280 * 30);
         Ok(())
@@ -418,6 +442,12 @@ impl EscrowContract {
             return Err(ContractError::InvalidAmount);
         }
 
+        // Every fill is bounded by the remaining listing amount, so capping
+        // the listing total caps the funds any single escrow can lock.
+        if amount > get_max_amount(&env) {
+            return Err(ContractError::AmountExceedsMax);
+        }
+
         let now = env.ledger().timestamp();
         if expires_at <= now || expires_at > now + MAX_EXPIRY_SECS {
             return Err(ContractError::InvalidExpiry);
@@ -468,6 +498,27 @@ impl EscrowContract {
     /// Emits a `topics: ["token", "allowed"]` event carrying the token
     /// address, so off-chain indexers and admin tooling can observe changes
     /// to the allow-list without polling every token individually.
+    /// Admin-only: set the maximum `amount` a single listing may lock
+    /// (issue #636). Must be positive. Existing listings are unaffected.
+    /// Emits `topics: ["max_amt"]` with `(old_max, new_max)`.
+    pub fn update_max_amount(env: Env, new_max: i128) -> Result<(), ContractError> {
+        let admin = get_admin(&env)?;
+        admin.require_auth();
+        if new_max <= 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+        let old_max = get_max_amount(&env);
+        env.storage().instance().set(&DataKey::MaxAmount, &new_max);
+        env.events()
+            .publish((symbol_short!("max_amt"),), (old_max, new_max));
+        Ok(())
+    }
+
+    /// Current per-listing amount cap (issue #636).
+    pub fn max_amount(env: Env) -> i128 {
+        get_max_amount(&env)
+    }
+
     pub fn add_allowed_token(env: Env, token: Address) -> Result<(), ContractError> {
         let admin = get_admin(&env)?;
         admin.require_auth();
@@ -1279,6 +1330,77 @@ mod test {
     // -----------------------------------------------------------------------
     // Existing functional tests (updated to use Result-returning functions)
     // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // Issue #636: per-listing amount cap
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_max_amount_defaults_to_uncapped() {
+        let (_env, client, _admin, _seller, _buyer, _token) = setup();
+        assert_eq!(client.max_amount(), DEFAULT_MAX_AMOUNT);
+    }
+
+    #[test]
+    fn test_create_listing_at_max_amount_succeeds() {
+        let (env, client, _admin, seller, _buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+        client.update_max_amount(&1_000_0000000i128);
+
+        assert!(client.try_create_listing(&seller, &token, &1_000_0000000i128, &symbol_short!("AIRTIME"), &(1_000_000 + 86_400)).is_ok());
+    }
+
+    #[test]
+    fn test_create_listing_above_max_amount_fails() {
+        let (env, client, _admin, seller, _buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+        client.update_max_amount(&1_000_0000000i128);
+
+        assert_eq!(
+            client.try_create_listing(&seller, &token, &1_000_0000001i128, &symbol_short!("AIRTIME"), &(1_000_000 + 86_400)),
+            Err(Ok(ContractError::AmountExceedsMax))
+        );
+        assert_eq!(client.trade_count(), 0);
+    }
+
+    #[test]
+    fn test_admin_can_raise_and_lower_max_amount() {
+        let (env, client, _admin, seller, _buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        client.update_max_amount(&100i128);
+        assert_eq!(client.try_create_listing(&seller, &token, &101i128, &symbol_short!("AIRTIME"), &(1_000_000 + 86_400)), Err(Ok(ContractError::AmountExceedsMax)));
+
+        client.update_max_amount(&1_000i128);
+        assert_eq!(client.max_amount(), 1_000);
+        assert!(client.try_create_listing(&seller, &token, &101i128, &symbol_short!("AIRTIME"), &(1_000_000 + 86_400)).is_ok());
+    }
+
+    #[test]
+    fn test_update_max_amount_rejects_non_positive() {
+        let (_env, client, _admin, _seller, _buyer, _token) = setup();
+        assert_eq!(client.try_update_max_amount(&0i128), Err(Ok(ContractError::InvalidAmount)));
+        assert_eq!(client.try_update_max_amount(&-5i128), Err(Ok(ContractError::InvalidAmount)));
+    }
+
+    #[test]
+    fn test_update_max_amount_requires_admin_auth() {
+        let (env, client, _admin, seller, _buyer, _token) = setup();
+        env.set_auths(&[]);
+        let result = client
+            .mock_auths(&[MockAuth {
+                address: &seller,
+                invoke: &MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "update_max_amount",
+                    args: (5i128,).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_update_max_amount(&5i128);
+        assert!(result.is_err());
+        assert_eq!(client.max_amount(), DEFAULT_MAX_AMOUNT);
+    }
 
     #[test]
     fn test_create_listing() {
