@@ -413,7 +413,7 @@ export async function executeIdempotentWithdrawal(
 }
 
 // ---------------------------------------------------------------------------
-// Idempotent deposits (issue #621)
+// Idempotent deposits (issues #615, #620)
 // ---------------------------------------------------------------------------
 
 export interface DepositRequest {
@@ -461,3 +461,4 @@ export async function executeIdempotentDeposit(
 
   return { status: 200, body, replayed: false };
 }
+

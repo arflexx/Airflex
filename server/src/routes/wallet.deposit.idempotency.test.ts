@@ -2,7 +2,7 @@
  * wallet.deposit.idempotency.test.ts
  *
  * Integration tests for X-Idempotency-Key handling on POST /api/v1/wallet/deposit
- * (issue #621).
+ * (issues #615, #620).
  */
 
 process.env["JWT_SECRET"] = "test-secret-at-least-32-chars-long!";
@@ -56,7 +56,7 @@ function makeJwt(userId: string): string {
   );
 }
 
-describe("POST /api/v1/wallet/deposit idempotency (issue #621)", () => {
+describe("POST /api/v1/wallet/deposit idempotency", () => {
   it("rejects request without X-Idempotency-Key with HTTP 400", async () => {
     const token = makeJwt(USER_A);
     const res = await request(app)
@@ -70,7 +70,7 @@ describe("POST /api/v1/wallet/deposit idempotency (issue #621)", () => {
 
   it("processes first request and returns 200 with deposit info", async () => {
     const token = makeJwt(USER_A);
-    const key = "dep-key-gf-1001";
+    const key = "dep-key-1001";
     const res = await request(app)
       .post("/api/v1/wallet/deposit")
       .set("Authorization", `Bearer ${token}`)
@@ -92,7 +92,7 @@ describe("POST /api/v1/wallet/deposit idempotency (issue #621)", () => {
 
   it("replays cached response on duplicate request within TTL without re-processing", async () => {
     const token = makeJwt(USER_A);
-    const key = "dep-key-gf-repeat";
+    const key = "dep-key-repeat";
 
     const res1 = await request(app)
       .post("/api/v1/wallet/deposit")
@@ -115,7 +115,7 @@ describe("POST /api/v1/wallet/deposit idempotency (issue #621)", () => {
   });
 
   it("scopes keys per user to prevent cross-user collision", async () => {
-    const key = "shared-idempotency-key-gf";
+    const key = "shared-idempotency-key";
 
     const resA = await request(app)
       .post("/api/v1/wallet/deposit")
@@ -136,7 +136,7 @@ describe("POST /api/v1/wallet/deposit idempotency (issue #621)", () => {
 
   it("re-processes when key is expired", async () => {
     const token = makeJwt(USER_A);
-    const key = "dep-key-gf-expiring";
+    const key = "dep-key-expiring";
 
     const res1 = await request(app)
       .post("/api/v1/wallet/deposit")
@@ -145,7 +145,7 @@ describe("POST /api/v1/wallet/deposit idempotency (issue #621)", () => {
       .send({ amount: 3000 });
 
     const cacheKey = `idempotency:deposit:${USER_A}:${key}`;
-    // Simulate expiration
+    // Simulate expiration by setting expired / removing
     await cache.set(cacheKey, "", -1);
 
     const res2 = await request(app)

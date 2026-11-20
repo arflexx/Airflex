@@ -347,7 +347,7 @@ describe("Admin audit logs (issue #539)", () => {
   });
 });
 
-describe("GET /api/v1/admin/users query count (issue #480)", () => {
+describe("GET /api/v1/admin/users cursor-based pagination (issue #616)", () => {
   const adminId = "99999999-9999-9999-9999-999999999999";
   const adminToken = jwt.sign(
     { sub: adminId, role: "admin", tokenVersion: 1 },
@@ -355,82 +355,83 @@ describe("GET /api/v1/admin/users query count (issue #480)", () => {
     { expiresIn: "1h" }
   );
 
-  function makeUsers(n: number) {
-    return Array.from({ length: n }, (_, i) => ({
-      id: `00000000-0000-0000-0000-${String(i).padStart(12, "0")}`,
-      phone: `+23480000${String(i).padStart(5, "0")}`,
-      registrationDate: "2026-01-01T00:00:00.000Z",
-      balance: i === 0 ? 0 : 10 * i,
-      tradeCount: i === 0 ? 0 : i,
-    }));
+  function makeUsers(startIndex: number, count: number) {
+    return Array.from({ length: count }, (_, i) => {
+      const idx = startIndex + i;
+      return {
+        id: `00000000-0000-0000-0000-${String(idx).padStart(12, "0")}`,
+        phone: `+23480000${String(idx).padStart(5, "0")}`,
+        registrationDate: "2026-01-01T00:00:00.000Z",
+        balance: 10 * idx,
+        tradeCount: idx,
+      };
+    });
   }
 
-  // Answers the auth middleware, the page query and the total count; any
-  // other statement (e.g. a per-user follow-up) fails the test.
-  function wireDb(pageRows: ReturnType<typeof makeUsers>, total: number) {
+  function wireDb(pageRows: ReturnType<typeof makeUsers>) {
     mockQuery.mockImplementation(async (sql: string) => {
       if (/token_version/i.test(sql)) return { rows: [{ token_version: 1 }] };
       if (/SELECT role FROM users/i.test(sql)) return { rows: [{ role: "admin" }] };
-      if (/SELECT COUNT\(\*\) FROM users/i.test(sql)) return { rows: [{ count: String(total) }] };
       if (/FROM page_users pu/i.test(sql)) return { rows: pageRows };
       throw new Error(`unexpected query: ${sql.replace(/\s+/g, " ").slice(0, 80)}`);
     });
   }
 
-  async function listUsers(n: number, limit: number, total: number, page = 1) {
+  it("covers first page with nextCursor returned", async () => {
     mockQuery.mockReset();
-    wireDb(makeUsers(n), total);
+    // Simulate fetching limit + 1 items (e.g. limit=2, 3 items available)
+    wireDb(makeUsers(1, 3));
+
     const res = await request(app)
-      .get(`/api/v1/admin/users?page=${page}&limit=${limit}`)
+      .get("/api/v1/admin/users?limit=2")
       .set("Authorization", `Bearer ${adminToken}`);
-    return { res, queries: mockQuery.mock.calls.length };
-  }
-
-  it("issues the same number of queries for 1 user and for 50 users", async () => {
-    const small = await listUsers(1, 1, 1);
-    const large = await listUsers(50, 50, 50);
-
-    expect(small.res.status).toBe(200);
-    expect(large.res.status).toBe(200);
-    expect(large.res.body.data).toHaveLength(50);
-    // auth (2) + page query (1) + total count (1)
-    expect(small.queries).toBe(4);
-    expect(large.queries).toBe(small.queries);
-  });
-
-  it("returns an empty page with the same query count", async () => {
-    const { res, queries } = await listUsers(0, 20, 0);
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({
-      data: [],
-      pagination: { page: 1, limit: 20, total: 0, totalPages: 0 },
-    });
-    expect(queries).toBe(4);
-  });
-
-  it("keeps the response shape and pagination metadata unchanged", async () => {
-    const { res } = await listUsers(2, 2, 45, 3);
-
-    expect(res.status).toBe(200);
-    expect(res.body.pagination).toEqual({ page: 3, limit: 2, total: 45, totalPages: 23 });
-    expect(Object.keys(res.body.data[0]).sort()).toEqual(
-      ["balance", "id", "phone", "registrationDate", "tradeCount"]
-    );
-    // a user with no transactions or trades still comes back with zero values
-    expect(res.body.data[0]).toMatchObject({ balance: 0, tradeCount: 0 });
-  });
-
-  it("scopes the aggregates to the requested page and passes limit/offset", async () => {
-    await listUsers(2, 2, 45, 3);
+    expect(res.body.data).toHaveLength(2);
+    expect(res.body.nextCursor).toBe(res.body.data[1].id);
+    expect(res.body.nextCursor).not.toBeNull();
 
     const pageCall = mockQuery.mock.calls.find(([sql]) => /FROM page_users pu/i.test(sql));
     expect(pageCall).toBeDefined();
     const [sql, params] = pageCall as [string, unknown[]];
-    expect(params).toEqual([2, 4]);
-    expect(sql).toMatch(/WITH page_users AS/i);
-    expect(sql).toMatch(/FROM transactions\s+WHERE user_id IN \(SELECT id FROM page_users\)/i);
-    expect(sql).toMatch(/WHERE seller_id IN \(SELECT id FROM page_users\)/i);
-    expect(sql).toMatch(/WHERE buyer_id\s+IN \(SELECT id FROM page_users\)/i);
+    expect(sql).toMatch(/ORDER BY id ASC/i);
+    expect(params).toEqual([3]);
+  });
+
+  it("covers middle page with cursor and nextCursor returned", async () => {
+    mockQuery.mockReset();
+    const cursor = "00000000-0000-0000-0000-000000000002";
+    // 3 items returned (limit 2 + 1), indicating more items follow
+    wireDb(makeUsers(3, 3));
+
+    const res = await request(app)
+      .get(`/api/v1/admin/users?cursor=${cursor}&limit=2`)
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(2);
+    expect(res.body.nextCursor).toBe(res.body.data[1].id);
+    expect(res.body.nextCursor).not.toBeNull();
+
+    const pageCall = mockQuery.mock.calls.find(([sql]) => /FROM page_users pu/i.test(sql));
+    expect(pageCall).toBeDefined();
+    const [sql, params] = pageCall as [string, unknown[]];
+    expect(sql).toMatch(/WHERE id > \$1/i);
+    expect(params).toEqual([cursor, 3]);
+  });
+
+  it("covers last page where nextCursor is null", async () => {
+    mockQuery.mockReset();
+    const cursor = "00000000-0000-0000-0000-000000000005";
+    // Returns 1 item, less than or equal to limit (limit=2), indicating end of pages
+    wireDb(makeUsers(6, 1));
+
+    const res = await request(app)
+      .get(`/api/v1/admin/users?cursor=${cursor}&limit=2`)
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.nextCursor).toBeNull();
   });
 });

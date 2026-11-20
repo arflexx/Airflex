@@ -34,12 +34,14 @@ export {
   reviewFraudFlagSchema,
   auditLogQuerySchema,
   updateKycStatusSchema,
+  adminUsersQuerySchema,
   AUDIT_ACTIONS,
   AUDIT_TARGET_TYPES,
   type ResolveDisputeInput,
   type ReviewFraudFlagInput,
   type AuditLogQueryInput,
   type UpdateKycStatusInput,
+  type AdminUsersQueryInput,
   type AuditAction,
   type AuditTargetType,
 } from "./admin.schemas";
@@ -59,5 +61,9 @@ export {
 export {
   profileUpdateSchema,
   updateProfileSchema,
+  requestPhoneChangeSchema,
+  confirmPhoneChangeSchema,
   type ProfileUpdateInput,
+  type RequestPhoneChangeInput,
+  type ConfirmPhoneChangeInput,
 } from "./profile.schemas";
