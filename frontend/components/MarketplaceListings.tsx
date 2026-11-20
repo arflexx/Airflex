@@ -5,6 +5,7 @@ import { useSearchParams, useRouter, usePathname } from "next/navigation";
 import { useTranslations } from "next-intl";
 import type { TradeOffer } from "../../server/src/types/trade";
 import { Card } from "./ui/Card";
+import { Button } from "./ui/Button";
 import ErrorBoundary from "./ErrorBoundary";
 import TradeCardSkeleton from "./TradeCardSkeleton";
 
@@ -106,43 +107,55 @@ function TradeCard({ trade, t }: { trade: TradeOffer; t: (key: string, values?: 
   );
 }
 
+/**
+ * Empty state for the /trades listing (issue #604).
+ *
+ * Shown whenever a successful fetch resolves to zero trades — either because
+ * the marketplace genuinely has no active listings yet, or because the
+ * user's current filters exclude everything. Built from the shared `Card`
+ * and `Button` primitives (`components/ui/`) for visual consistency with the
+ * rest of the app, and fully translated via the `Home` i18n namespace so it
+ * reads correctly in all four locales (en, ha, ig, yo).
+ */
 function EmptyState({
   t,
   hasActiveFilters,
   onClear,
+  onBrowseMarketplace,
 }: {
   t: (key: string) => string;
   hasActiveFilters: boolean;
   onClear: () => void;
+  onBrowseMarketplace: () => void;
 }) {
   return (
-    <div className="col-span-full flex flex-col items-center justify-center gap-4 rounded-2xl border border-dashed border-gray-200 bg-gray-50 px-8 py-20 text-center dark:border-gray-700 dark:bg-gray-800/50">
+    <Card
+      data-testid="trades-empty-state"
+      className="col-span-full flex flex-col items-center justify-center gap-4 !border-dashed !border-gray-200 !bg-gray-50 px-8 py-20 text-center dark:!border-gray-700 dark:!bg-gray-800/50"
+    >
       <span aria-hidden="true" className="text-5xl">📭</span>
       <h2 className="text-xl font-semibold text-gray-700 dark:text-gray-200">
-        {hasActiveFilters ? "No listings found matching your filters" : t("noListings")}
+        {hasActiveFilters ? t("noFilteredListings") : t("noListings")}
       </h2>
       <p className="max-w-sm text-sm text-gray-500 dark:text-gray-400">
-        {hasActiveFilters
-          ? "Try adjusting or clearing your filters to see more available listings."
-          : t("noListingsBody")}
+        {hasActiveFilters ? t("noFilteredListingsBody") : t("noListingsBody")}
       </p>
       {hasActiveFilters ? (
-        <button
-          type="button"
-          onClick={onClear}
-          className="mt-2 inline-flex items-center gap-2 rounded-xl bg-violet-600 px-6 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"
-        >
-          Clear filters
-        </button>
+        <Button variant="primary" size="md" onClick={onClear} className="mt-2">
+          {t("clearFilters")}
+        </Button>
       ) : (
-        <a
-          href="/sell"
-          className="mt-2 inline-flex items-center gap-2 rounded-xl bg-violet-600 px-6 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-violet-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"
+        <Button
+          variant="primary"
+          size="md"
+          onClick={onBrowseMarketplace}
+          className="mt-2"
+          aria-label={t("browseListings")}
         >
-          {t("sellAsset")}
-        </a>
+          {t("browseListings")}
+        </Button>
       )}
-    </div>
+    </Card>
   );
 }
 
@@ -393,7 +406,12 @@ export default function MarketplaceListings({
           ) : loading ? (
             <TradeCardSkeleton count={8} />
           ) : trades.length === 0 ? (
-            <EmptyState t={t} hasActiveFilters={hasActiveFilters} onClear={handleClearFilters} />
+            <EmptyState
+              t={t}
+              hasActiveFilters={hasActiveFilters}
+              onClear={handleClearFilters}
+              onBrowseMarketplace={() => router.push("/")}
+            />
           ) : (
             trades.map((trade) => <TradeCard key={trade.id} trade={trade} t={t} />)
           )}

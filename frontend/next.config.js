@@ -12,6 +12,7 @@ const withNextIntl = createNextIntlPlugin("./i18n/request.ts");
 const {
   staticAssetRule,
   apiRule,
+  navigationFallback,
 } = require("./lib/pwa-cache-strategy");
 
 /** @type {import('next').NextConfig} */
@@ -26,10 +27,10 @@ const withPWA = require("next-pwa")({
   // live without forcing a manual reload (issue #463).
   skipWaiting: true,
   // Serve /offline when a navigation fails because the user is offline and
-  // the page is not in the cache (issue #107).
-  fallbacks: {
-    document: "/offline",
-  },
+  // the page is not in the cache (issue #107). The route itself is declared
+  // in lib/pwa-cache-strategy.js (issue #610) so it stays in one place and is
+  // unit-testable alongside the rest of the cache strategy.
+  fallbacks: navigationFallback,
   // Runtime caching rules. The static-asset (CacheFirst) and /api/
   // (StaleWhileRevalidate) rules are defined in lib/pwa-cache-strategy.js and
   // placed first so they take precedence. The remaining next-pwa defaults
