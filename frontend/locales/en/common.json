@@ -32,6 +32,9 @@
     "noListings": "No active listings right now",
     "noListingsBody": "Be the first to list your airtime or data. Sellers get paid instantly once delivery is confirmed on-chain.",
     "sellAsset": "Sell Airtime / Data",
+    "noFilteredListings": "No listings found matching your filters",
+    "noFilteredListingsBody": "Try adjusting or clearing your filters to see more available listings.",
+    "clearFilters": "Clear filters",
     "showingPage": "Showing page 1 of {total}. Sign in to filter and paginate listings.",
     "docs": "Docs",
     "github": "GitHub",
@@ -121,6 +124,13 @@
     "signIn": "Sign in",
     "copyright": "© {year} AirFlex. Open source under the MIT License.",
     "github": "GitHub"
+  },
+  "Offline": {
+    "title": "You're offline",
+    "message": "{siteName} needs a connection to load this page. Check your network and try again — your saved trades and wallet are safe.",
+    "retry": "Retry",
+    "reconnectingTitle": "Reconnecting…",
+    "reconnectingMessage": "Network connection restored. Taking you back…"
   },
   "Trade": {
     "loading": "Loading…",

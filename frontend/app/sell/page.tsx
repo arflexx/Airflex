@@ -616,6 +616,7 @@ export default function SellPage() {
             id="amount"
             name="amount"
             value={fields.amount}
+            decimalPlaces={0}
             onChange={(val) => {
               setFields((prev) => ({ ...prev, amount: val ? String(val) : "" }));
               if (errors.amount) setErrors((prev) => ({ ...prev, amount: undefined }));

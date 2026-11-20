@@ -17,6 +17,11 @@
  *  - Same-origin GET `/api/**` → StaleWhileRevalidate.
  *  - Non-GET requests and cross-origin / authenticated requests bypass the
  *    cache entirely (never intercepted).
+ *  - Document navigations that fail while offline and are not already cached
+ *    fall back to `OFFLINE_FALLBACK_ROUTE` (issue #610). `next.config.js`
+ *    feeds `navigationFallback` straight into next-pwa's `fallbacks` option so
+ *    this module stays the single source of truth for which route is
+ *    registered as the offline navigation fallback.
  */
 
 "use strict";
@@ -26,6 +31,21 @@ const SW_CACHE_STRATEGY_VERSION = "v1";
 
 const STATIC_CACHE_NAME = "next-static";
 const API_CACHE_NAME = "apis";
+
+/**
+ * Route served by the generated service worker when a document navigation
+ * fails because the user is offline and the requested page was never cached
+ * (issue #610). Must match the App Router route at `app/offline/page.tsx`.
+ */
+const OFFLINE_FALLBACK_ROUTE = "/offline";
+
+/**
+ * next-pwa `fallbacks` option, derived from `OFFLINE_FALLBACK_ROUTE` so the
+ * route is declared once and consumed by `next.config.js`.
+ */
+const navigationFallback = {
+  document: OFFLINE_FALLBACK_ROUTE,
+};
 
 /** One month — hashed asset names change when content changes, so a long TTL is safe. */
 const STATIC_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
@@ -91,6 +111,8 @@ module.exports = {
   API_CACHE_NAME,
   STATIC_MAX_AGE_SECONDS,
   API_MAX_AGE_SECONDS,
+  OFFLINE_FALLBACK_ROUTE,
+  navigationFallback,
   isHashedStatic,
   isCacheableGet,
   staticAssetRule,

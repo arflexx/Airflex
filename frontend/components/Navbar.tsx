@@ -371,8 +371,12 @@ export default function Navbar({
               )
             )}
 
-            {/* Theme toggle — always visible */}
-            <LanguageSwitcher />
+            {/* Language switcher — inline on desktop; the mobile equivalent lives
+                inside the hamburger drawer below (Issue #607) so it doesn't
+                compete for space with the hamburger button on small screens. */}
+            <div className="hidden md:block">
+              <LanguageSwitcher />
+            </div>
             <ThemeToggle currentTheme={currentTheme} />
 
             {/* Hamburger — mobile only */}
@@ -448,6 +452,16 @@ export default function Navbar({
             </a>
           ))}
         </nav>
+
+        {/* Language switcher — mobile equivalent of the desktop inline switcher
+            (Issue #607). Lives inside the drawer rather than next to the
+            hamburger button so it doesn't crowd the header on small screens. */}
+        <div className="mt-4 flex items-center justify-between gap-3 border-t border-gray-100 px-4 pt-4 dark:border-gray-700">
+          <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
+            {t("switchLanguage")}
+          </span>
+          <LanguageSwitcher />
+        </div>
 
         {/* Drawer auth section */}
         {mounted && (

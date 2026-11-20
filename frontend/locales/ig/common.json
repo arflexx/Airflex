@@ -32,6 +32,9 @@
     "noListings": "Enweghị ndepụta na-arụ ọrụ ugbu a",
     "noListingsBody": "Bụrụ onye mbụ idebe airtime ma ọ bụ data gị. Ndị na-ere na-enweta ego ozugbo enyochara nnyefe na chain.",
     "sellAsset": "Ree Airtime / Data",
+    "noFilteredListings": "Ahụghị ndepụta dabara na nhọrọ ịhọrọ gị",
+    "noFilteredListingsBody": "Nwaa ịgbanwe ma ọ bụ kpochapụ nhọrọ gị iji hụ ndepụta ndị ọzọ dị.",
+    "clearFilters": "Kpochapụ nhọrọ",
     "showingPage": "Na-egosi peeji 1 nke {total}. Banye iji nyochaa na paginate ndepụta.",
     "docs": "Dọks",
     "github": "GitHub",
@@ -121,6 +124,13 @@
     "signIn": "Banye",
     "copyright": "© {year} AirFlex. Mepee isi n'okpuru MIT License.",
     "github": "GitHub"
+  },
+  "Offline": {
+    "title": "Ị nọghị n'ịntanetị",
+    "message": "{siteName} chọrọ njikọ ịntanetị iji boo ibe a. Lelee netwọkụ gị ma nwaa ọzọ — azụmahịa gị na obere ego gị dị mma.",
+    "retry": "Nwaa ọzọ",
+    "reconnectingTitle": "Na-ejikọ ọzọ…",
+    "reconnectingMessage": "Enwetaghachiri njikọ ịntanetị. Na-akpọghachi gị…"
   },
   "Trade": {
     "loading": "Na-ebu…",
