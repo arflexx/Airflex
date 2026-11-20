@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { Card } from "../../components/ui/Card";
-import { ASSET_OPTIONS, ASSET_TYPE_VALUES, formatAssetType } from "../lib/assetTypes";
+import { Spinner } from "../../components/ui/Spinner";
+import { ASSET_OPTIONS, formatAssetType } from "../lib/assetTypes";
 import type { AssetTypeValue } from "../lib/assetTypes";
 import { useTradeList } from "../../hooks/useTradeList";
-import type { TradeOffer } from "../../../server/src/types/trade";
 
 // ---------------------------------------------------------------------------
 // Sub-components
@@ -177,18 +178,120 @@ function SkeletonCard() {
 // Main export
 // ---------------------------------------------------------------------------
 
-export default function ListingsGrid() {
-  const [activeFilter, setActiveFilter] = useState<FilterValue>("ALL");
-  const [page] = useState(1);
+export interface ListingsGridProps {
+  /**
+   * Number of listings fetched per page (issue #606). Defaults to 20.
+   */
+  pageSize?: number;
+}
 
-  const assetTypeParam =
-    activeFilter === "ALL" ? undefined : activeFilter;
+const PAGE_PARAM = "page";
+
+export default function ListingsGrid({ pageSize = 20 }: ListingsGridProps = {}) {
+  const router = useRouter();
+  const pathname = usePathname() || "/";
+  const searchParams = useSearchParams();
+
+  const [activeFilter, setActiveFilter] = useState<FilterValue>("ALL");
+
+  const initialPage = Math.max(1, Number(searchParams?.get(PAGE_PARAM)) || 1);
+  const [page, setPage] = useState(initialPage);
+
+  // Accumulated, de-duplicated listings across every page fetched so far —
+  // pagination here is infinite-scroll style, so each successful fetch is
+  // appended rather than replacing the grid.
+  const [accumulated, setAccumulated] = useState<GridTrade[]>([]);
+
+  const assetTypeParam = activeFilter === "ALL" ? undefined : activeFilter;
 
   const { trades, total, isLoading, error } = useTradeList({
     page,
-    limit: 20,
+    limit: pageSize,
     assetType: assetTypeParam,
   });
+
+  // Merge the current page's results into the accumulated list, de-duplicated
+  // by id so an offer inserted between fetches never appears twice.
+  useEffect(() => {
+    if (isLoading || error) return;
+    setAccumulated((prev) => {
+      const seen = new Set(prev.map((t) => t.id));
+      const newItems = (trades as unknown as GridTrade[]).filter((t) => !seen.has(t.id));
+      if (newItems.length === 0) return prev;
+      return [...prev, ...newItems];
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trades, isLoading, error]);
+
+  // Sync local state when the URL's `page` param changes externally (browser
+  // Back/Forward). Truncate the accumulated list back down to what that page
+  // depth would have shown, so Back returns to roughly the right position.
+  useEffect(() => {
+    const urlPage = Math.max(1, Number(searchParams?.get(PAGE_PARAM)) || 1);
+    if (urlPage !== page) {
+      setPage(urlPage);
+      setAccumulated((prev) =>
+        prev.length > urlPage * pageSize ? prev.slice(0, urlPage * pageSize) : prev,
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
+
+  const isInitialLoad = isLoading && page === 1 && accumulated.length === 0;
+  const isLoadingMore = isLoading && !isInitialLoad;
+
+  const reachedEnd =
+    !isLoading &&
+    !error &&
+    accumulated.length > 0 &&
+    ((trades as unknown as GridTrade[]).length < pageSize ||
+      (total > 0 && accumulated.length >= total));
+
+  const updatePageInUrl = useCallback(
+    (nextPage: number) => {
+      const params = new URLSearchParams(searchParams?.toString() ?? "");
+      if (nextPage > 1) params.set(PAGE_PARAM, String(nextPage));
+      else params.delete(PAGE_PARAM);
+      const query = params.toString();
+      router.push(query ? `${pathname}?${query}` : pathname, { scroll: false });
+    },
+    [pathname, router, searchParams],
+  );
+
+  const loadNextPage = useCallback(() => {
+    if (isLoading || reachedEnd) return;
+    const nextPage = page + 1;
+    setPage(nextPage);
+    updatePageInUrl(nextPage);
+  }, [isLoading, reachedEnd, page, updatePageInUrl]);
+
+  const handleFilterChange = (value: FilterValue) => {
+    setActiveFilter(value);
+    setPage(1);
+    setAccumulated([]);
+    updatePageInUrl(1);
+  };
+
+  // Infinite scroll: observe a sentinel below the grid and load the next
+  // page once it scrolls into view.
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const node = sentinelRef.current;
+    if (!node || reachedEnd || typeof IntersectionObserver === "undefined") return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          loadNextPage();
+        }
+      },
+      { rootMargin: "200px" },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [loadNextPage, reachedEnd, accumulated.length]);
+
+  const displayedTrades = useMemo(() => accumulated, [accumulated]);
 
   return (
     <section
@@ -205,7 +308,7 @@ export default function ListingsGrid() {
           >
             Active Listings
           </h2>
-          {!isLoading && total > 0 && (
+          {!isInitialLoad && total > 0 && (
             <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
               {total} {total === 1 ? "offer" : "offers"} available
             </p>
@@ -215,7 +318,7 @@ export default function ListingsGrid() {
 
       {/* Filter bar */}
       <div className="mb-6">
-        <FilterBar active={activeFilter} onChange={setActiveFilter} />
+        <FilterBar active={activeFilter} onChange={handleFilterChange} />
       </div>
 
       {/* Grid */}
@@ -226,7 +329,7 @@ export default function ListingsGrid() {
         >
           Failed to load listings. Please refresh the page.
         </div>
-      ) : isLoading ? (
+      ) : isInitialLoad ? (
         <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {Array.from({ length: 8 }).map((_, i) => (
             <SkeletonCard key={i} />
@@ -234,13 +337,39 @@ export default function ListingsGrid() {
         </div>
       ) : (
         <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {trades.length === 0 ? (
+          {displayedTrades.length === 0 ? (
             <EmptyState filtered={activeFilter !== "ALL"} />
           ) : (
-            trades.map((trade) => <TradeCard key={trade.id} trade={trade as unknown as GridTrade} />)
+            displayedTrades.map((trade) => <TradeCard key={trade.id} trade={trade} />)
           )}
         </div>
       )}
+
+      {/* Pagination footer: spinner while loading more, a manual "next page"
+          control as a fallback to scroll-triggered loading, or an
+          end-of-results message once every page has been fetched. */}
+      {!error && !isInitialLoad && displayedTrades.length > 0 && (
+        <div className="mt-8 flex justify-center" data-testid="listings-pagination-footer">
+          {isLoadingMore ? (
+            <Spinner size="md" label="Loading more listings…" />
+          ) : reachedEnd ? (
+            <p className="text-sm text-gray-400 dark:text-gray-500">
+              You&apos;ve reached the end of the listings.
+            </p>
+          ) : (
+            <button
+              type="button"
+              onClick={loadNextPage}
+              className="rounded-xl border border-gray-200 bg-white px-5 py-2 text-sm font-semibold text-gray-700 transition-colors hover:border-violet-300 hover:text-violet-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 dark:hover:border-violet-500 dark:hover:text-violet-300"
+            >
+              Load next page
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Scroll-to-bottom trigger for infinite scroll. */}
+      <div ref={sentinelRef} aria-hidden="true" data-testid="listings-sentinel" />
     </section>
   );
 }
