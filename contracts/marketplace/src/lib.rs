@@ -13,7 +13,15 @@ use soroban_sdk::{
 pub enum DataKey {
     Admin,
     ListingCounter,
+    /// Hot storage (issue #641): fields read on every lookup — price,
+    /// quantity, seller, status, buyer, expiry — kept in their own compact
+    /// ledger entry so routine reads/writes don't also carry the rarely-read
+    /// metadata fields below.
     Listing(u64),
+    /// Cold storage (issue #641): fields read only when explicitly
+    /// requested via `get_listing_details` — asset category/type metadata
+    /// and the creation timestamp.
+    ListingMeta(u64),
     Reputation(Address),
     Paused,
     PausedAt,
@@ -50,6 +58,14 @@ pub enum AssetCategory {
     Data,
 }
 
+/// Hot listing data (issue #641) — everything `deposit_to_escrow`,
+/// `release_payment`, `cancel_and_refund`, `resolve_dispute`,
+/// `update_listing` and `cancel_listing` touch on every call. Kept in its
+/// own compact ledger entry (`DataKey::Listing`) so routine reads/writes
+/// never pay for the cold metadata fields in `ListingMeta` below.
+///
+/// `get_listing` returns this struct only. Use `get_listing_details` for
+/// both hot and cold data together.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Listing {
@@ -57,16 +73,35 @@ pub struct Listing {
     pub seller: Address,
     pub token: Address, // payment token (e.g. USDC / NGNC)
     pub price: i128,    // price in base token units
-    pub asset_category: AssetCategory,
-    pub asset_type: Symbol, // e.g. symbol_short!("MTN")
-    pub quantity: i128,     // units of airtime/data being sold
+    pub quantity: i128, // units of airtime/data being sold
     pub status: ListingStatus,
-    pub created_at: u64, // ledger timestamp
     pub expires_at: u64, // listing expiry
     /// Set by deposit_to_escrow once a buyer locks funds. Used by
     /// resolve_dispute to confirm a recipient is actually a party to the
     /// trade before funds are moved to them.
     pub buyer: Option<Address>,
+}
+
+/// Cold listing data (issue #641) — descriptive metadata read only when a
+/// caller explicitly asks for it via `get_listing_details`. Stored under a
+/// secondary key (`DataKey::ListingMeta`) separate from the hot `Listing`
+/// entry above, so the far more frequent hot-only reads/writes never touch
+/// it.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ListingMetadata {
+    pub asset_category: AssetCategory,
+    pub asset_type: Symbol, // e.g. symbol_short!("MTN")
+    pub created_at: u64,    // ledger timestamp
+}
+
+/// Combined view returned by `get_listing_details` — both the hot and cold
+/// records for a listing.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ListingDetails {
+    pub listing: Listing,
+    pub metadata: ListingMetadata,
 }
 
 #[contracttype]
@@ -366,21 +401,34 @@ impl MarketplaceContract {
             seller: seller.clone(),
             token,
             price,
-            asset_category,
-            asset_type: asset_type.clone(),
             quantity,
             status: ListingStatus::Active,
-            created_at: now,
             expires_at,
             buyer: None,
         };
+        let metadata = ListingMetadata {
+            asset_category,
+            asset_type: asset_type.clone(),
+            created_at: now,
+        };
 
+        // Hot storage (issue #641): price/quantity/seller/status/buyer/expiry,
+        // read on every lookup.
         env.storage()
             .persistent()
             .set(&DataKey::Listing(id), &listing);
         env.storage()
             .persistent()
             .extend_ttl(&DataKey::Listing(id), 17_280, 17_280 * 30);
+
+        // Cold storage (issue #641): asset category/type + creation
+        // timestamp, read only via get_listing_details.
+        env.storage()
+            .persistent()
+            .set(&DataKey::ListingMeta(id), &metadata);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::ListingMeta(id), 17_280, 17_280 * 30);
 
         increment_active_listing_count(&env, &seller);
 
@@ -712,12 +760,35 @@ impl MarketplaceContract {
     // View helpers  (NOT blocked by paused flag)
     // -----------------------------------------------------------------------
 
-    /// Returns a listing by ID.
+    /// Returns the hot listing data only (price, quantity, seller, status,
+    /// buyer, expiry) — issue #641. Use `get_listing_details` for the full
+    /// record including asset metadata and creation timestamp.
     pub fn get_listing(env: Env, listing_id: u64) -> Result<Listing, ContractError> {
         env.storage()
             .persistent()
             .get(&DataKey::Listing(listing_id))
             .ok_or(ContractError::TradeNotFound)
+    }
+
+    /// Returns both the hot and cold listing records (issue #641): the same
+    /// data `get_listing` returns, plus asset category/type metadata and the
+    /// creation timestamp from the secondary `ListingMeta` key.
+    pub fn get_listing_details(
+        env: Env,
+        listing_id: u64,
+    ) -> Result<ListingDetails, ContractError> {
+        let listing: Listing = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Listing(listing_id))
+            .ok_or(ContractError::TradeNotFound)?;
+        let metadata: ListingMetadata = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ListingMeta(listing_id))
+            .ok_or(ContractError::TradeNotFound)?;
+
+        Ok(ListingDetails { listing, metadata })
     }
 
     /// Returns the reputation record for a given address.
@@ -1757,5 +1828,100 @@ mod test {
         // Seller attempts to cancel Sold listing
         let result_wrong_status = client.try_cancel_listing(&seller, &listing_id);
         assert_eq!(result_wrong_status, Err(Ok(ContractError::WrongStatus)));
+    }
+
+    // -----------------------------------------------------------------------
+    // Hot/cold offer storage split (Issue #641)
+    // -----------------------------------------------------------------------
+
+    /// `get_listing` returns only the hot fields (price, quantity, seller,
+    /// status, buyer, expiry) — the `Listing` struct no longer even has a
+    /// place to put asset_category/asset_type/created_at, so this is
+    /// enforced at the type level as well as being exercised here.
+    #[test]
+    fn test_get_listing_returns_hot_data_only() {
+        let (env, client, _admin, seller, _buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let listing_id = client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &AssetCategory::Airtime,
+            &symbol_short!("MTN"),
+            &1000i128,
+            &(1_000_000 + 86_400),
+        );
+
+        let listing = client.get_listing(&listing_id);
+        assert_eq!(listing.id, listing_id);
+        assert_eq!(listing.seller, seller);
+        assert_eq!(listing.price, 500_0000000i128);
+        assert_eq!(listing.quantity, 1000i128);
+        assert_eq!(listing.status, ListingStatus::Active);
+        assert_eq!(listing.expires_at, 1_000_000 + 86_400);
+        assert_eq!(listing.buyer, None);
+    }
+
+    /// `get_listing_details` returns both the hot record and the cold
+    /// metadata (asset category/type, creation timestamp) together.
+    #[test]
+    fn test_get_listing_details_returns_hot_and_cold_data() {
+        let (env, client, _admin, seller, _buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let listing_id = client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &AssetCategory::Data,
+            &symbol_short!("AIRTEL"),
+            &500i128,
+            &(1_000_000 + 86_400),
+        );
+
+        let details = client.get_listing_details(&listing_id);
+        assert_eq!(details.listing.id, listing_id);
+        assert_eq!(details.listing.price, 500_0000000i128);
+        assert_eq!(details.metadata.asset_category, AssetCategory::Data);
+        assert_eq!(details.metadata.asset_type, symbol_short!("AIRTEL"));
+        assert_eq!(details.metadata.created_at, 1_000_000u64);
+
+        // get_listing_details never fails to find hot data for an ID
+        // get_listing itself can resolve, and vice versa.
+        let hot_only = client.get_listing(&listing_id);
+        assert_eq!(hot_only, details.listing);
+    }
+
+    /// Hot and cold data live under distinct persistent storage keys
+    /// (`DataKey::Listing` vs `DataKey::ListingMeta`), confirming the
+    /// storage-key separation this issue asks for rather than just two
+    /// fields bundled in one entry.
+    #[test]
+    fn test_storage_keys_are_separated_for_hot_and_cold_data() {
+        let (env, client, _admin, seller, _buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let listing_id = client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &AssetCategory::Airtime,
+            &symbol_short!("MTN"),
+            &1000i128,
+            &(1_000_000 + 86_400),
+        );
+
+        env.as_contract(&client.address, || {
+            let hot: Option<Listing> = env.storage().persistent().get(&DataKey::Listing(listing_id));
+            let cold: Option<ListingMetadata> =
+                env.storage().persistent().get(&DataKey::ListingMeta(listing_id));
+
+            assert!(hot.is_some(), "hot Listing entry must exist under DataKey::Listing");
+            assert!(
+                cold.is_some(),
+                "cold ListingMetadata entry must exist under DataKey::ListingMeta"
+            );
+        });
     }
 }

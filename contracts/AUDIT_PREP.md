@@ -84,6 +84,7 @@ stateDiagram-v2
 1. **Off-Chain Telecom Delivery Verification**: The smart contract relies on an off-chain oracle service (or mutual agreement / automated verification processor) to verify telco airtime/data top-ups.
 2. **Soroban Persistent Storage TTL**: Storage entries (`DataKey::Trade`, `DataKey::Listing`) must be bumped periodically to prevent archival.
 3. **No Dynamic Price Feeds On-Chain**: Trade prices are fixed at listing creation time in NGN/XLM equivalent.
+4. **Dispute Cooldown Window (Issue #642)**: `flag_dispute` enforces a `dispute_cooldown_seconds` window (default `3600`, set at `initialize`) per trade to prevent dispute-spam griefing; see [THREAT_MODEL.md §6](./THREAT_MODEL.md) and `ContractError::DisputeCooldownActive` in [ERROR_CODES.md](./ERROR_CODES.md).
 
 ---
 
@@ -114,3 +115,17 @@ stateDiagram-v2
 ## 8. Error Codes Reference
 
 For a complete breakdown of contract error codes and custom panic signals, see [ERROR_CODES.md](./ERROR_CODES.md).
+
+---
+
+## 9. On-Chain Event Observability (Issue #639)
+
+In addition to the state recorded in `DataKey::Trade`, the escrow contract
+now emits a canonical `EscrowCreated` / `EscrowReleased` / `EscrowRefunded` /
+`EscrowDisputed` event for every state transition, each carrying
+`(escrow_id, actor, amount, timestamp)` — see the
+[escrow README's Events section](./escrow/README.md#events-issue-639) for the
+full topic table. Auditors can use these events, instead of polling
+`get_trade`, to reconstruct a trade's full history on-chain.
+`server/src/services/stellar.ts` (`fetchEscrowEvents`) fetches and parses
+them via Soroban RPC's `getEvents` for the backend oracle and indexers.
