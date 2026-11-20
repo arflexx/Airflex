@@ -93,7 +93,7 @@ export class WalletService {
       `SELECT id, trade_id, amount::text AS amount, direction, type, external_reference, created_at
        FROM transactions
        WHERE user_id = $1
-       ORDER BY created_at ASC`,
+       ORDER BY created_at DESC`,
       [userId]
     );
 

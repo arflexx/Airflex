@@ -723,8 +723,9 @@ export const openApiDocument = {
     "/health": {
       get: {
         tags: ["Health"],
-        summary: "Liveness probe",
-        description: "Returns 200 when the server process is running.",
+        summary: "Health probe",
+        description:
+          "Checks the database (SELECT 1) and Redis (PING). Returns 200 when every configured dependency is reachable, 503 otherwise. Redis reports `disabled` when REDIS_URL is unset.",
         security: [],
         responses: {
           "200": {
@@ -734,13 +735,18 @@ export const openApiDocument = {
                 schema: {
                   type: "object",
                   properties: {
-                    status: { type: "string", example: "ok" },
+                    status: { type: "string", enum: ["ok", "error"] },
+                    db: { type: "string", enum: ["ok", "error"] },
+                    redis: { type: "string", enum: ["ok", "error", "disabled"] },
+                    uptime: { type: "integer", description: "Process uptime in seconds." },
+                    version: { type: "string", example: "1.0.0" },
                     timestamp: { type: "string", format: "date-time" },
                   },
                 },
               },
             },
           },
+          "503": { description: "The database or Redis is unreachable; the failing component is `error`." },
         },
       },
     },

@@ -18,6 +18,8 @@
 #
 # Optional:
 #   SOROBAN_RPC_URL           Override default RPC endpoint
+#   ESCROW_MAX_AMOUNT_STROOPS Per-listing escrow cap set via update_max_amount after
+#                             initialize (issue #636); unset leaves escrow uncapped
 #
 # Examples:
 #   # Deploy all contracts to testnet
@@ -177,6 +179,19 @@ deploy_contract() {
       -- initialize \
       --admin "${SOROBAN_ADMIN_ADDRESS}"
     echo "   Initialized."
+
+    # Per-listing escrow cap (issue #636). initialize stores an uncapped
+    # default; set the real cap here when ESCROW_MAX_AMOUNT_STROOPS is given.
+    if [[ "$CONTRACT_NAME" == "escrow" && -n "${ESCROW_MAX_AMOUNT_STROOPS:-}" ]]; then
+      echo ">> Setting escrow max amount to ${ESCROW_MAX_AMOUNT_STROOPS} stroops..."
+      stellar contract invoke \
+        --id "${CONTRACT_ID}" \
+        --source deployer \
+        --network "${NETWORK}" \
+        -- update_max_amount \
+        --new_max "${ESCROW_MAX_AMOUNT_STROOPS}"
+      echo "   Max amount set."
+    fi
   fi
 
   # Update deployments.json using Node.js (available everywhere)
