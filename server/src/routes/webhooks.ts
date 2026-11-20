@@ -4,6 +4,7 @@ import crypto from "crypto";
 import { pool } from "../db/pool";
 import { QueueService } from "../jobs";
 import type { PaystackWebhookEvent } from "../services/paystackWebhookHandlers";
+import { verifyPaystackSignature } from "../utils/crypto";
 
 /**
  * Webhook endpoints — Paystack deposit processing (issues #9, #118).
@@ -48,21 +49,10 @@ router.post("/paystack", (req: Request, res: Response) => {
   }
 
   const signature = req.header("x-paystack-signature");
-  if (!signature) {
-    res.status(400).json({ error: "Missing x-paystack-signature header" });
-    return;
-  }
-
   const raw = (req as Request & { rawBody?: Buffer }).rawBody;
-  if (!raw) {
-    console.error("[webhooks] rawBody unavailable — check the express.json verify hook");
-    res.status(500).json({ error: "Webhook not configured" });
-    return;
-  }
 
-  const expected = crypto.createHmac("sha512", secret).update(raw).digest("hex");
-  if (!signatureMatches(expected, signature)) {
-    res.status(401).json({ error: "Invalid signature" });
+  if (!signature || !raw || !verifyPaystackSignature(raw, signature, secret)) {
+    res.status(401).json({ error: "Invalid or missing x-paystack-signature header" });
     return;
   }
 

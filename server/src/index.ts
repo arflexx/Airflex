@@ -137,19 +137,6 @@ app.use(apiVersion);
 // Routes
 // ---------------------------------------------------------------------------
 
-// Unauthenticated: registered before registerRoutes and its auth middleware.
-app.get("/health", async (_req: Request, res: Response) => {
-  const client = cache.getClient();
-  const { httpStatus, body } = await checkHealth({
-    pingDb: () => query("SELECT 1"),
-    pingRedis: () =>
-      client.isConnected ? client.ping() : Promise.reject(new Error("Redis not connected")),
-    redisConfigured: Boolean(process.env["REDIS_URL"]),
-    version: "1.0.0",
-  });
-  res.status(httpStatus).json(body);
-});
-
 app.get("/ready", async (_req: Request, res: Response) => {
   try {
     await query("SELECT 1");

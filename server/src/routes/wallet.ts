@@ -4,6 +4,7 @@ import { authenticate, AuthenticatedRequest } from "../middleware/authenticate";
 import { decryptSecret, getWalletBalance } from "../services/stellar";
 import {
   executeIdempotentWithdrawal,
+  executeIdempotentDeposit,
   parseIdempotencyKey,
   type WithdrawalOutcome,
 } from "../services/wallet";
@@ -377,6 +378,52 @@ router.post(
     }
 
     res.status(outcome.status).json(outcome.body);
+  }
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/wallet/deposit  (authenticated) — issue #621
+// ---------------------------------------------------------------------------
+
+/**
+ * Initiates a fiat deposit idempotently.
+ *
+ * Headers: `X-Idempotency-Key` (required). Missing header returns HTTP 400.
+ * A repeat request within the 24-hour TTL returns the original cached response (HTTP 200).
+ */
+router.post(
+  "/deposit",
+  authenticate,
+  async (req, res) => {
+    const { sub: userId } = (req as AuthenticatedRequest).user;
+
+    const rawKey = req.header("x-idempotency-key");
+    if (!rawKey || !rawKey.trim()) {
+      res.status(400).json({ error: "X-Idempotency-Key header is required" });
+      return;
+    }
+
+    const { amount } = req.body as { amount?: unknown };
+    const amountNum = parseFloat(String(amount));
+    if (!amount || isNaN(amountNum) || amountNum <= 0) {
+      res.status(400).json({ error: "amount must be a positive number" });
+      return;
+    }
+
+    try {
+      const outcome = await executeIdempotentDeposit(userId, rawKey.trim(), {
+        amount: amountNum,
+      });
+
+      if (outcome.replayed) {
+        res.setHeader("Idempotent-Replayed", "true");
+      }
+
+      res.status(outcome.status).json(outcome.body);
+    } catch (err) {
+      logger.error({ err, userId }, "[wallet] Deposit error");
+      res.status(500).json({ error: "Deposit request failed. Please try again." });
+    }
   }
 );
 

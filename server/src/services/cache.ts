@@ -322,6 +322,29 @@ export const cache = {
     redis.disconnect();
   },
 
+  /**
+   * Pings Redis to check connectivity (issue #626).
+   */
+  async ping(): Promise<boolean> {
+    const url = process.env["REDIS_URL"];
+    if (url) {
+      if (!redis.isConnected) {
+        try {
+          await redis.connect(url);
+        } catch {
+          return false;
+        }
+      }
+      try {
+        const pong = await redis.ping();
+        return pong !== null;
+      } catch {
+        return false;
+      }
+    }
+    return true;
+  },
+
   getClient(): RedisCacheClient {
     return redis;
   },

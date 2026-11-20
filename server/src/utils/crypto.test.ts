@@ -4,7 +4,8 @@
  * Unit tests for the crypto utilities (encrypt/decrypt with AES-256-GCM)
  */
 
-import { encrypt, decrypt } from "./crypto";
+import { encrypt, decrypt, verifyPaystackSignature } from "./crypto";
+import crypto from "crypto";
 
 describe("crypto utils", () => {
   const originalEnv = process.env["ENCRYPTION_KEY"];
@@ -84,6 +85,33 @@ describe("crypto utils", () => {
 
       process.env["ENCRYPTION_KEY"] = key2;
       expect(() => decrypt(ciphertext)).toThrow();
+    });
+  });
+
+  describe("verifyPaystackSignature (issue #623)", () => {
+    const secret = "sk_test_paystack_secret_key_12345";
+    const body = JSON.stringify({ event: "charge.success", data: { reference: "ref_123" } });
+    const validSignature = crypto.createHmac("sha512", secret).update(body).digest("hex");
+
+    it("returns true for a valid signature", () => {
+      expect(verifyPaystackSignature(body, validSignature, secret)).toBe(true);
+      expect(verifyPaystackSignature(Buffer.from(body), validSignature, secret)).toBe(true);
+    });
+
+    it("returns false for a tampered body", () => {
+      const tamperedBody = JSON.stringify({ event: "charge.success", data: { reference: "ref_tampered" } });
+      expect(verifyPaystackSignature(tamperedBody, validSignature, secret)).toBe(false);
+    });
+
+    it("returns false for a missing or invalid header signature", () => {
+      expect(verifyPaystackSignature(body, undefined, secret)).toBe(false);
+      expect(verifyPaystackSignature(body, "", secret)).toBe(false);
+      expect(verifyPaystackSignature(body, "invalid_signature_hex", secret)).toBe(false);
+    });
+
+    it("returns false when secret or body is missing", () => {
+      expect(verifyPaystackSignature(undefined, validSignature, secret)).toBe(false);
+      expect(verifyPaystackSignature(body, validSignature, undefined)).toBe(false);
     });
   });
 });
