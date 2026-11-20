@@ -14,15 +14,25 @@ use soroban_sdk::{
 
 #[contracttype]
 pub enum DataKey {
+    /// The admin `Address` set at `initialize`; never reassigned except via `set_admin`.
     Admin,
+    /// Monotonically increasing `u64` counter used to allocate the next `Trade(u64)` id.
     TradeCounter,
+    /// Persistent storage slot for a single `TradeOffer`, keyed by trade id.
     Trade(u64),
+    /// Circuit-breaker flag (`bool`); when `true` state-mutating calls are rejected.
     Paused,
+    /// Unix timestamp (ledger time, seconds) at which `pause` was last called.
     PausedAt,
+    /// Allow-list membership (`bool`) for a token contract `Address` accepted as trade collateral.
     AllowedToken(Address),
+    /// Monotonically increasing `u64` counter of sub-escrow fills created for a given trade id.
     TradeFillCounter(u64),
+    /// Persistent storage slot for a single `SubEscrow` fill, keyed by `(trade_id, fill_id)`.
     SubEscrow(u64, u64),
+    /// Allow-list membership (`bool`) for an asset-type `Symbol` (e.g. `AIRTIME`, `DATA`).
     AllowedCategory(Symbol),
+    /// Unix timestamp (ledger time, seconds) after which a disputed trade's window closes, keyed by trade id.
     DisputeWindowCloseAt(u64),
     /// Per-contract dispute cooldown window, in seconds (issue #642). Set at
     /// `initialize` so it is readable (and, in principle, admin-tunable) the
@@ -49,37 +59,62 @@ pub const DEFAULT_DISPUTE_COOLDOWN_SECS: u64 = 3600; // 1 hour
 // Types
 // ---------------------------------------------------------------------------
 
+/// Lifecycle status of a [`TradeOffer`] (issue #150).
 #[contracttype]
 #[derive(Clone, PartialEq, Debug)]
 pub enum TradeStatus {
+    /// Listed and open for one or more buyers to deposit into.
     Open,
+    /// At least one buyer has deposited but capacity remains (multi-fill listings).
     PartiallyFilled,
+    /// Fully funded; no further deposits are accepted.
     Locked,
+    /// All sub-escrow fills have been released or refunded; terminal state.
     Completed,
+    /// A buyer has raised a dispute within the dispute window; terminal pending resolution.
     Disputed,
+    /// Cancelled by the seller or admin before being filled; terminal state.
     Cancelled,
 }
 
+/// A seller's trade listing and its escrow accounting (issue #150).
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct TradeOffer {
+    /// Unique trade id, allocated from `DataKey::TradeCounter`.
     pub id: u64,
+    /// The seller `Address` who created the listing and will receive payment.
     pub seller: Address,
-    pub token: Address,      // USDC or NGNC contract address
-    pub total_amount: i128,  // total token amount in stroops
-    pub filled_amount: i128, // filled token amount in stroops
-    pub asset_type: Symbol,  // e.g. symbol_short!("AIRTIME")
+    /// Token contract `Address` used for settlement (e.g. USDC or NGNC), must be allow-listed.
+    pub token: Address,
+    /// Total amount offered, in stroops (1 XLM = 10_000_000 stroops; same unit for other SEP-41 tokens).
+    pub total_amount: i128,
+    /// Amount already claimed across all sub-escrow fills, in stroops.
+    pub filled_amount: i128,
+    /// Asset category symbol, e.g. `symbol_short!("AIRTIME")`, must be on the allowed categories list.
+    pub asset_type: Symbol,
+    /// Current lifecycle status of the trade.
     pub status: TradeStatus,
-    pub expires_at: u64, // Unix timestamp (ledger time)
+    /// Unix timestamp (ledger time, seconds) after which the listing can no longer be filled.
+    pub expires_at: u64,
 }
 
+/// A single buyer's deposit against a [`TradeOffer`] (issue #150).
+///
+/// Multiple `SubEscrow` entries can exist per trade id, one per buyer fill,
+/// keyed by `DataKey::SubEscrow(trade_id, fill_id)`.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct SubEscrow {
+    /// Id of this fill, unique within its parent trade (see `DataKey::TradeFillCounter`).
     pub fill_id: u64,
+    /// The buyer `Address` who deposited into this fill.
     pub buyer: Address,
+    /// Amount deposited by this buyer, in stroops.
     pub amount: i128,
+    /// `true` once funds have been released to the seller for this fill.
     pub released: bool,
+    /// `true` once funds have been refunded back to the buyer for this fill.
     pub refunded: bool,
 }
 

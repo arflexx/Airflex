@@ -35,8 +35,10 @@ import {
   reviewFraudFlagSchema,
   paginationSchema,
   auditLogQuerySchema,
+  updateKycStatusSchema,
   type ResolveDisputeInput,
   type ReviewFraudFlagInput,
+  type UpdateKycStatusInput,
 } from "../schemas";
 import type { TradeOffer } from "../types/trade";
 import { FraudDetectionService, type FraudFlagStatus } from "../services/fraudDetection";
@@ -625,6 +627,80 @@ router.patch(
       return;
     }
     res.status(409).json({ error: `Fraud flag is already ${rows[0]!.status}` });
+  }
+);
+
+// ---------------------------------------------------------------------------
+// KYC status management (issue #74)
+// ---------------------------------------------------------------------------
+
+/**
+ * PATCH /api/v1/admin/users/:id/kyc   body: { status: "unverified" | "pending" | "verified", note? }
+ *
+ * Admin-only override of a user's `kyc_status`. Used to approve/reject a
+ * submitted KYC document (see routes/kyc.ts, which only ever moves a user
+ * into "pending") or to manually revert a verified user.
+ *
+ * 404 if the user doesn't exist. Records an audit log entry: "kyc.approved"
+ * when the new status is "verified", otherwise "kyc.rejected".
+ */
+router.patch(
+  "/users/:id/kyc",
+  authenticate,
+  authorize("admin"),
+  validate(updateKycStatusSchema),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!id || !UUID_PATTERN.test(id)) {
+      res.status(400).json({ error: "Invalid user id" });
+      return;
+    }
+
+    const { status, note } = req.body as UpdateKycStatusInput;
+
+    const { rows: beforeRows } = await pool.query<{ kyc_status: string | null }>(
+      `SELECT kyc_status FROM users WHERE id = $1 LIMIT 1`,
+      [id]
+    );
+
+    if (!beforeRows.length) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+
+    const previousStatus = beforeRows[0]!.kyc_status ?? "unverified";
+
+    const { rows } = await pool.query<{
+      id: string;
+      kyc_status: string | null;
+      updated_at: string;
+    }>(
+      `UPDATE users
+       SET kyc_status = $1, updated_at = NOW()
+       WHERE id = $2
+       RETURNING id, kyc_status, updated_at`,
+      [status, id]
+    );
+
+    const user = rows[0]!;
+
+    await recordAuditLogAfterCommit({
+      ...auditActor(req),
+      action: status === "verified" ? "kyc.approved" : "kyc.rejected",
+      targetType: "user",
+      targetId: id,
+      before: { kyc_status: previousStatus },
+      after: { kyc_status: user.kyc_status, note: note ?? null },
+      metadata: auditContext(req),
+    });
+
+    res.status(200).json({
+      data: {
+        id: user.id,
+        kycStatus: user.kyc_status,
+        updatedAt: user.updated_at,
+      },
+    });
   }
 );
 
