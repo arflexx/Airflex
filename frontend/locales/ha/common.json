@@ -32,6 +32,9 @@
     "noListings": "Babu lissafi masu aiki a yanzu",
     "noListingsBody": "Ka zama na farko don saka airtime ko data ɗinka. Masu sayarwa suna karɓar kuɗi nan take da zarar an tabbatar da isarwa a chain.",
     "sellAsset": "Sayar Airtime / Data",
+    "noFilteredListings": "Ba a samo wani lissafi da ya dace da tacewarku ba",
+    "noFilteredListingsBody": "Gwada canza ko share tacewarku don ganin ƴan karin lissafi masu aiki.",
+    "clearFilters": "Share tacewa",
     "showingPage": "Ana nuna shafi 1 na {total}. Shiga don tantancewa da paginate lissafi.",
     "docs": "Takardu",
     "github": "GitHub",
@@ -122,6 +125,13 @@
     "copyright": "© {year} AirFlex. Bude tushe a ƙarƙashin MIT License.",
     "github": "GitHub"
   },
+  "Offline": {
+    "title": "Ba ka kan intanet",
+    "message": "{siteName} na bukatar haɗin intanet don loda wannan shafin. Duba hanyar sadarwarka sannan a sake gwadawa — tallace-tallacenka da walat ɗinka suna lafiya.",
+    "retry": "Sake gwadawa",
+    "reconnectingTitle": "Ana sake haɗawa…",
+    "reconnectingMessage": "An dawo da haɗin yanar gizo. Ana mayar da kai…"
+  },
   "Trade": {
     "loading": "Ana ɗauka…",
     "expired": "Ya ƙare",
@@ -156,7 +166,11 @@
     "offerHasExpired": "Wannan tayin ya ƙare.",
     "timeRemaining": "Lokaci da ya rage: {time}",
     "offerExpiredAria": "Wannan tayin ya ƙare",
-    "buyAria": "Saya {asset} na ₦{amount} daga {seller}"
+    "buyAria": "Saya {asset} na ₦{amount} daga {seller}",
+    "errorTradeNotFound": "This trade is no longer available.",
+    "errorTradeNotAvailable": "This trade is no longer available for purchase.",
+    "errorTradeNoListing": "This trade has no associated contract listing and cannot be purchased.",
+    "errorSelfBuyForbidden": "You cannot buy your own trade listing."
   },
   "Sell": {
     "metaTitle": "Sayar da Airtime",

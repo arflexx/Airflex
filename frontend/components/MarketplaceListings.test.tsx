@@ -4,9 +4,11 @@ import "@testing-library/jest-dom";
 import MarketplaceListings from "./MarketplaceListings";
 import type { TradeOffer } from "../../server/src/types/trade";
 
+const mockRouterPush = jest.fn();
+
 jest.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(),
-  useRouter: () => ({ push: jest.fn() }),
+  useRouter: () => ({ push: mockRouterPush }),
   usePathname: () => "/",
 }));
 
@@ -21,6 +23,10 @@ jest.mock("next-intl", () => ({
       noListings: "No active listings right now",
       noListingsBody: "Be the first to list your airtime or data.",
       sellAsset: "Sell Airtime / Data",
+      browseListings: "Browse Listings",
+      noFilteredListings: "No listings found matching your filters",
+      noFilteredListingsBody: "Try adjusting or clearing your filters to see more available listings.",
+      clearFilters: "Clear filters",
       showingPage: "Showing page 1 of 1",
     };
     if (key === "offersAvailable") {
@@ -169,6 +175,17 @@ describe("MarketplaceListings Filter Panel (Issue #328)", () => {
 
     expect(screen.getByText("No active listings right now")).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  // Issue #604 — empty state CTA navigates to the marketplace landing page.
+  it("navigates to the marketplace when the empty state CTA is clicked", () => {
+    mockRouterPush.mockClear();
+    render(<MarketplaceListings initialTrades={[]} />);
+
+    const cta = screen.getByRole("button", { name: /browse listings/i });
+    fireEvent.click(cta);
+
+    expect(mockRouterPush).toHaveBeenCalledWith("/");
   });
 });
 

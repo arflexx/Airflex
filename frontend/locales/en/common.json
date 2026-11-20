@@ -32,6 +32,9 @@
     "noListings": "No active listings right now",
     "noListingsBody": "Be the first to list your airtime or data. Sellers get paid instantly once delivery is confirmed on-chain.",
     "sellAsset": "Sell Airtime / Data",
+    "noFilteredListings": "No listings found matching your filters",
+    "noFilteredListingsBody": "Try adjusting or clearing your filters to see more available listings.",
+    "clearFilters": "Clear filters",
     "showingPage": "Showing page 1 of {total}. Sign in to filter and paginate listings.",
     "docs": "Docs",
     "github": "GitHub",
@@ -122,6 +125,13 @@
     "copyright": "© {year} AirFlex. Open source under the MIT License.",
     "github": "GitHub"
   },
+  "Offline": {
+    "title": "You're offline",
+    "message": "{siteName} needs a connection to load this page. Check your network and try again — your saved trades and wallet are safe.",
+    "retry": "Retry",
+    "reconnectingTitle": "Reconnecting…",
+    "reconnectingMessage": "Network connection restored. Taking you back…"
+  },
   "Trade": {
     "loading": "Loading…",
     "expired": "Expired",
@@ -156,7 +166,11 @@
     "offerHasExpired": "This offer has expired.",
     "timeRemaining": "Time remaining: {time}",
     "offerExpiredAria": "This offer has expired",
-    "buyAria": "Buy {asset} worth ₦{amount} from {seller}"
+    "buyAria": "Buy {asset} worth ₦{amount} from {seller}",
+    "errorTradeNotFound": "This trade is no longer available.",
+    "errorTradeNotAvailable": "This trade is no longer available for purchase.",
+    "errorTradeNoListing": "This trade has no associated contract listing and cannot be purchased.",
+    "errorSelfBuyForbidden": "You cannot buy your own trade listing."
   },
   "Sell": {
     "metaTitle": "Sell Airtime",
