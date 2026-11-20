@@ -56,7 +56,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Initialise CodeQL tools and create the analysis database.
       # config-file points to .codeql/codeql-config.yml which documents
