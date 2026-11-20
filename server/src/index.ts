@@ -136,14 +136,6 @@ app.use(apiVersion);
 // Routes
 // ---------------------------------------------------------------------------
 
-app.get("/health", (_req: Request, res: Response) => {
-  res.status(200).json({
-    status: "ok",
-    version: "1.0.0",
-    timestamp: new Date().toISOString(),
-  });
-});
-
 app.get("/ready", async (_req: Request, res: Response) => {
   try {
     await query("SELECT 1");

@@ -61,3 +61,34 @@ export function decrypt(ciphertext: string): string {
 
   return decrypted.toString("utf8");
 }
+
+/**
+ * Verifies a Paystack webhook HMAC-SHA512 signature (issue #623).
+ *
+ * @param rawBody - Raw Buffer or string of the request body
+ * @param signature - Value of the X-Paystack-Signature header
+ * @param secret - PAYSTACK_SECRET_KEY
+ * @returns true if valid, false otherwise
+ */
+export function verifyPaystackSignature(
+  rawBody: Buffer | string | undefined,
+  signature: string | undefined,
+  secret: string | undefined
+): boolean {
+  if (!rawBody || !signature || !secret) {
+    return false;
+  }
+
+  const hmac = crypto.createHmac("sha512", secret);
+  if (typeof rawBody === "string") {
+    hmac.update(rawBody, "utf8");
+  } else {
+    hmac.update(rawBody);
+  }
+  const expected = hmac.digest("hex");
+
+  const a = Buffer.from(expected, "utf8");
+  const b = Buffer.from(signature, "utf8");
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
