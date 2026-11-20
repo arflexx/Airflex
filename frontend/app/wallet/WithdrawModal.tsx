@@ -387,6 +387,7 @@ export default function WithdrawModal({
               name="amount"
               value={amount}
               max={parseFloat(currentBalance) || undefined}
+              decimalPlaces={0}
               onChange={(val) => setAmount(val ? String(val) : "")}
               placeholder={t("enterAmount")}
               disabled={isSubmitting}

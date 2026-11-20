@@ -4,7 +4,7 @@ This document lists all error codes thrown by the AirFlex Escrow and Marketplace
 
 Discriminants are the values of the `ContractError` enum in
 `contracts/escrow/src/lib.rs` and `contracts/marketplace/src/lib.rs`. Codes `1`–`14`
-are shared by both contracts; escrow appends `15`–`16`. The server-side mirror in
+are shared by both contracts; escrow appends `15`–`17`. The server-side mirror in
 `server/src/services/contractErrors.ts` maps every code back to a typed error.
 
 **Never renumber an existing variant** — new variants are always appended with the
@@ -30,7 +30,8 @@ next integer, because deployed callers decode by discriminant.
 | `14` | `NotAParty` | The caller is neither the seller nor a buyer of the trade. | Escrow & Marketplace |
 | `15` | `PauseCooldownNotExpired` | `unpause` was called before the 5-minute pause cooldown elapsed. | Escrow |
 | `15` | `StorageLimitExceeded` | The seller has reached the maximum permitted number of active listings in storage. | Marketplace |
-| `16` | `DuplicateFill` | The buyer already holds an active (unreleased, unrefunded) sub-escrow on this trade — one active fill per buyer per trade (issue #294). | Escrow |
+| `16` | `InvalidCategory` | `asset_type` symbol is not on the admin-managed allowed categories list. | Escrow |
+| `17` | `DuplicateFill` | The buyer already holds an active (unreleased, unrefunded) sub-escrow on this trade — one active fill per buyer per trade (issue #294). | Escrow |
 
 ## Escrow Contract — Canonical Error Code Table
 
@@ -55,6 +56,7 @@ New codes are always appended; existing values are never changed.
 | `14` | `NotAParty` | Caller is not the seller or any buyer on this trade. |
 | `15` | `PauseCooldownNotExpired` | Pause cooldown window has not elapsed before unpause. |
 | `16` | `InvalidCategory` | `asset_type` symbol is not on the admin-managed allowed categories list. |
+| `17` | `DuplicateFill` | Buyer already holds an active (unreleased, unrefunded) sub-escrow on this trade. |
 
 ## Handling Errors
 

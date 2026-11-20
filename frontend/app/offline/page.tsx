@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { Spinner } from "../../components/ui/Spinner";
 import { getSavedLocale } from "../../hooks/useLocaleStorage";
 import type { AppLocale } from "../../i18n/routing";
@@ -48,8 +49,32 @@ function getRetryHref(): string {
   return `${pathname}${search}`;
 }
 
+/**
+ * The route the service worker falls back to (and thus the route a user is
+ * most likely to have actually been trying to reach) is whatever the browser
+ * was navigating *from*. `document.referrer` carries that — when it's
+ * same-origin we send the Retry button there instead of hardcoding "/", so
+ * retrying genuinely re-attempts the page the user lost (issue #610).
+ */
+function resolveRetryTarget(): string {
+  if (typeof document === "undefined" || typeof window === "undefined") {
+    return "/";
+  }
+  if (!document.referrer) return "/";
+  try {
+    const referrer = new URL(document.referrer);
+    if (referrer.origin !== window.location.origin) return "/";
+    // Never bounce back to /offline itself.
+    if (referrer.pathname.replace(/\/$/, "") === "/offline") return "/";
+    return `${referrer.pathname}${referrer.search}` || "/";
+  } catch {
+    return "/";
+  }
+}
+
 export default function OfflinePage() {
   const router = useRouter();
+  const t = useTranslations("Offline");
   const [reconnecting, setReconnecting] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [retryHref, setRetryHref] = useState("/");
@@ -77,6 +102,12 @@ export default function OfflinePage() {
       window.removeEventListener("online", handleOnline);
     };
   }, [router]);
+
+  /** Attempts to reload the route the user was on before landing here. */
+  function handleRetry() {
+    if (typeof window === "undefined") return;
+    window.location.href = retryTarget;
+  }
 
   return (
     <div

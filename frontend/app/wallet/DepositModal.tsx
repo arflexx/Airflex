@@ -481,6 +481,7 @@ export default function DepositModal({
                 name="amount"
                 value={amount}
                 min={MIN_DEPOSIT_NAIRA}
+                decimalPlaces={0}
                 onChange={(val) => {
                   setAmount(val ? String(val) : "");
                   if (error) setError(null);

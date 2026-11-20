@@ -51,7 +51,17 @@ Called by the buyer to lock funds. Transfers `listing.price` tokens from buyer t
 **Admin-only.** Transfers funds to the specified recipient (buyer or seller) to resolve a dispute.
 
 ### `get_listing(listing_id) → Listing`
-Returns the full listing struct for a given ID.
+Returns the **hot** listing fields only: `id`, `seller`, `token`, `price`,
+`quantity`, `status`, `expires_at`, `buyer`. This is what every state-mutating
+call (`deposit_to_escrow`, `release_payment`, `cancel_and_refund`,
+`resolve_dispute`, `update_listing`, `cancel_listing`) reads on every
+invocation, so it is kept in its own compact ledger entry.
+
+### `get_listing_details(listing_id) → ListingDetails`
+Returns both the hot `Listing` record above **and** the cold metadata:
+`asset_category`, `asset_type`, `created_at`. Use this only when the
+descriptive/display fields are actually needed — most callers should prefer
+`get_listing`.
 
 ### `get_reputation(user: Address) → Reputation`
 Returns a seller's on-chain reputation: `completed_trades`, `disputed_trades`, `total_volume`.
@@ -63,6 +73,33 @@ Returns the total number of listings ever created.
 Admin-only circuit breakers.
 
 ---
+
+## Storage Layout — Hot/Cold Offer Split (Issue #641)
+
+A listing's data is split across two persistent ledger entries so routine
+reads/writes never pay for rarely-accessed descriptive fields:
+
+| Key | Struct | Fields | Read by |
+|---|---|---|---|
+| `DataKey::Listing(id)` (hot) | `Listing` | `id`, `seller`, `token`, `price`, `quantity`, `status`, `expires_at`, `buyer` | Every state-mutating call and `get_listing` |
+| `DataKey::ListingMeta(id)` (cold) | `ListingMetadata` | `asset_category`, `asset_type`, `created_at` | Only `get_listing_details` |
+
+Both entries are written once at `create_listing` and share the same TTL
+policy (`17_280` / `17_280 * 30` ledgers). Only the hot entry is touched by
+`deposit_to_escrow`, `release_payment`, `cancel_and_refund`,
+`resolve_dispute`, `update_listing`, and `cancel_listing` — the cold entry is
+immutable after creation and is fetched only by `get_listing_details`.
+
+Approximate per-offer footprint:
+- Hot (`Listing`): 2 `Address` fields + 2 `i128` + 1 enum + 1 `u64` + 1
+  `Option<Address>` — the fields every lookup during an active trade needs.
+- Cold (`ListingMetadata`): 1 enum + 1 `Symbol` + 1 `u64` — write-once
+  descriptive data.
+
+Splitting these means a hot-path call (e.g. `release_payment`) never
+deserializes or re-serializes the cold metadata it doesn't use, keeping its
+instruction and storage-write cost bounded as more descriptive fields are
+added to `ListingMetadata` in the future.
 
 ## Listing Status Lifecycle
 
