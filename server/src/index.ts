@@ -13,6 +13,7 @@ import { apiVersion } from "./middleware/apiVersion";
 import { requestId } from "./middleware/requestId";
 import { pool, query } from "./db/pool";
 import { cache } from "./services/cache";
+import { checkHealth } from "./services/health";
 
 import { assertEnvValid } from "./config/validateEnv";
 import { corsMiddleware } from "./config/cors";
