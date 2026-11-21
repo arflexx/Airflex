@@ -22,6 +22,7 @@ This document outlines the threat modeling analysis for AirFlex Soroban smart co
 * **Mitigation**:
   * **Checks-Effects-Interactions Pattern**: Contract state is set to `Completed` or `Cancelled` *before* invoking external token transfer calls.
   * **Token Whitelisting**: Only vetted asset contracts approved via `add_allowed_token` can be used for trade escrow.
+  * **Reentrancy Guard (issue #507)**: The marketplace `deposit_to_escrow`, `release_payment`, `cancel_and_refund`, and `resolve_dispute` functions set a boolean flag in Soroban **temporary storage** (`DataKey::Reentrancy`) at function entry. Any reentrant call that arrives while the flag is `true` returns `ContractError::ReentrancyDetected` (discriminant `18`) immediately, before any state is read or modified. Temporary storage is scoped to the current transaction and zeroed when the transaction ends, so the flag never persists across ledger boundaries and cannot block future legitimate calls. The guard is cleared explicitly on both the success path and every early error return to minimise the window and make the cleanup auditable. See `contracts/ERROR_CODES.md` for the full entry on `ReentrancyDetected`.
 
 ---
 
