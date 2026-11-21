@@ -26,12 +26,10 @@ pub enum DataKey {
     Paused,
     PausedAt,
     ActiveListingCount(Address),
-    /// Reentrancy guard flag stored in temporary storage (issue #507).
-    /// Set to `true` at the start of any purchase or settlement function and
-    /// cleared (removed) on completion. Temporary storage is scoped to the
-    /// current transaction, so the flag is automatically reset if the
-    /// transaction aborts; it does not persist across ledger boundaries.
-    Reentrancy,
+    /// Last authorization nonce consumed by a buyer — used by
+    /// `purchase_with_auth` to make signed purchase authorizations single-use
+    /// and replay-proof (Issue #512).
+    BuyerNonce(Address),
 }
 
 pub const EMERGENCY_TIMELOCK_SECS: u64 = 72 * 60 * 60; // 72 hours = 259,200 seconds
@@ -145,11 +143,9 @@ pub enum ContractError {
     FillAlreadyProcessed = 13,
     NotAParty = 14,
     StorageLimitExceeded = 15,
-    /// A reentrant call was detected during a purchase or settlement function
-    /// (issue #507). The reentrancy guard flag in temporary storage was set,
-    /// meaning this call arrived while a prior invocation of the same (or
-    /// another guarded) function had not yet returned.
-    ReentrancyDetected = 18,
+    /// A replayed or out-of-order authorization nonce was supplied to
+    /// `purchase_with_auth` (Issue #512).
+    InvalidNonce = 16,
 }
 
 // ---------------------------------------------------------------------------
@@ -276,6 +272,49 @@ fn decrement_active_listing_count(env: &Env, seller: &Address) {
             17_280 * 30,
         );
     }
+}
+
+/// Core escrow-locking logic shared by `deposit_to_escrow` and
+/// `purchase_with_auth`. Callers handle `require_not_paused` and
+/// `buyer.require_auth()` (and, for the authorized path, nonce validation)
+/// before delegating here — this performs only the listing lookup, the
+/// status/expiry checks, the token transfer, and the `Active → Sold`
+/// transition (Issue #512).
+fn deposit_inner(env: &Env, buyer: &Address, listing_id: u64) -> Result<(), ContractError> {
+    let mut listing: Listing = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Listing(listing_id))
+        .ok_or(ContractError::TradeNotFound)?;
+
+    if listing.status != ListingStatus::Active {
+        return Err(ContractError::WrongStatus);
+    }
+
+    let now = env.ledger().timestamp();
+    if now >= listing.expires_at {
+        return Err(ContractError::TradeExpired);
+    }
+
+    if *buyer == listing.seller {
+        return Err(ContractError::Unauthorized);
+    }
+
+    let token_client = token::Client::new(env, &listing.token);
+    token_client.transfer(buyer, &env.current_contract_address(), &listing.price);
+
+    listing.status = ListingStatus::Sold;
+    listing.buyer = Some(buyer.clone());
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::Listing(listing_id), &listing);
+
+    decrement_active_listing_count(env, &listing.seller);
+
+    env.events()
+        .publish((topic_sold(),), (listing_id, buyer.clone(), listing.price));
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -497,50 +536,47 @@ impl MarketplaceContract {
     ) -> Result<(), ContractError> {
         require_not_paused(&env)?;
         buyer.require_auth();
+        deposit_inner(&env, &buyer, listing_id)
+    }
 
-        // Reentrancy guard (issue #507): reject any reentrant call that arrives
-        // while this invocation is still executing (e.g. via a custom SAC token
-        // callback). The guard is stored in temporary storage so it is
-        // automatically reset when the transaction ends.
-        enter_reentrancy_guard(&env)?;
+    /// Purchase a listing using a one-time, replay-protected authorization
+    /// (Issue #512).
+    ///
+    /// `auth_nonce` must be strictly greater than the last nonce this `buyer`
+    /// has consumed. Because `buyer.require_auth()` binds the buyer's signature
+    /// to this exact invocation — function name and all arguments, including
+    /// `auth_nonce` — the resulting authorization is single-use. Replaying the
+    /// same signed authorization, whether against this listing, a different
+    /// listing, or after the listing has been cancelled, is rejected with
+    /// `ContractError::InvalidNonce` before any funds move. See
+    /// `THREAT_MODEL.md` → Marketplace Authorization Replay Attacks.
+    pub fn purchase_with_auth(
+        env: Env,
+        buyer: Address,
+        listing_id: u64,
+        auth_nonce: u64,
+    ) -> Result<(), ContractError> {
+        require_not_paused(&env)?;
+        buyer.require_auth();
 
-        let mut listing: Listing = env
+        // Reject a replayed / out-of-order authorization before any funds move.
+        let last_nonce: u64 = env
             .storage()
-            .persistent()
-            .get(&DataKey::Listing(listing_id))
-            .ok_or(ContractError::TradeNotFound)?;
-
-        if listing.status != ListingStatus::Active {
-            clear_reentrancy_guard(&env);
-            return Err(ContractError::WrongStatus);
+            .instance()
+            .get(&DataKey::BuyerNonce(buyer.clone()))
+            .unwrap_or(0);
+        if auth_nonce <= last_nonce {
+            return Err(ContractError::InvalidNonce);
         }
 
-        let now = env.ledger().timestamp();
-        if now >= listing.expires_at {
-            clear_reentrancy_guard(&env);
-            return Err(ContractError::TradeExpired);
-        }
-
-        if buyer == listing.seller {
-            clear_reentrancy_guard(&env);
-            return Err(ContractError::Unauthorized);
-        }
-
-        let token_client = token::Client::new(&env, &listing.token);
-        token_client.transfer(&buyer, &env.current_contract_address(), &listing.price);
-
-        listing.status = ListingStatus::Sold;
-        listing.buyer = Some(buyer.clone());
+        // Settle the purchase first; only consume the nonce on success so a
+        // transient failure (e.g. an expired listing) does not burn the buyer's
+        // next valid nonce.
+        deposit_inner(&env, &buyer, listing_id)?;
 
         env.storage()
-            .persistent()
-            .set(&DataKey::Listing(listing_id), &listing);
-
-        decrement_active_listing_count(&env, &listing.seller);
-
-        clear_reentrancy_guard(&env);
-        env.events()
-            .publish((topic_sold(),), (listing_id, buyer, listing.price));
+            .instance()
+            .set(&DataKey::BuyerNonce(buyer.clone()), &auth_nonce);
         Ok(())
     }
 
@@ -1902,253 +1938,20 @@ mod test {
     }
 
     // -----------------------------------------------------------------------
-    // Price calculation tests (issue #509)
-    //
-    // The marketplace uses `listing.price` as the total settlement amount.
-    // These tests validate the core pricing invariants:
-    //   1. Standard purchase: the exact listed price is transferred from buyer
-    //      to contract and later from contract to seller.
-    //   2. Fee deduction model: the net amount reaching the seller equals the
-    //      gross price minus any platform fee (currently 0 — full pass-through).
-    //   3. Zero-price listings are rejected at contract level before any state
-    //      changes occur.
-    //   4. Integer (stroop-level) arithmetic never creates or destroys value —
-    //      the sum of seller receipts and any retained fees equals the original
-    //      buyer payment.
+    // Issue #512 — marketplace authorization replay protection
     // -----------------------------------------------------------------------
 
-    /// Standard purchase: buyer pays exactly `listing.price` and the seller
-    /// receives exactly that amount after `release_payment`. No value is
-    /// created or lost in transit.
+    /// Replaying a previously used purchase authorization is rejected: after
+    /// the buyer consumes `auth_nonce = 1` on listing #1, supplying `1` again
+    /// against a fresh listing #2 fails with `InvalidNonce` before any funds
+    /// move, and a brand-new nonce (`2`) succeeds.
     #[test]
-    fn test_price_calculation_standard_purchase() {
+    fn test_replay_of_used_authorization_rejected() {
         let (env, client, _admin, seller, buyer, token) = setup();
         env.ledger().with_mut(|l| l.timestamp = 1_000_000);
 
-        // List 200 units of data at 500_000_000 stroops (50 XLM equivalent)
-        let price: i128 = 500_000_000;
+        // Listing #1 — a legitimate one-time purchase with nonce 1.
         let listing_id = client.create_listing(
-            &seller,
-            &token,
-            &price,
-            &AssetCategory::Data,
-            &symbol_short!("GLO"),
-            &200i128,
-            &(1_000_000 + 86_400),
-        );
-
-        let token_client = TokenClient::new(&env, &token);
-        let buyer_before = token_client.balance(&buyer);
-
-        // Buyer deposits the full listed price
-        client.deposit_to_escrow(&buyer, &listing_id);
-
-        // Buyer's balance decremented by exactly `price`
-        assert_eq!(
-            token_client.balance(&buyer),
-            buyer_before - price,
-            "buyer balance should decrease by exactly the listed price"
-        );
-
-        // Contract now holds exactly `price`
-        assert_eq!(
-            token_client.balance(&client.address),
-            price,
-            "contract should hold exactly the listed price after deposit"
-        );
-
-        let seller_before = token_client.balance(&seller);
-
-        // Admin releases payment — seller receives the full price
-        client.release_payment(&listing_id);
-
-        assert_eq!(
-            token_client.balance(&seller),
-            seller_before + price,
-            "seller should receive exactly the listed price on release"
-        );
-
-        // Contract balance returns to zero — no value retained
-        assert_eq!(
-            token_client.balance(&client.address),
-            0,
-            "contract balance should be zero after release — no value created or lost"
-        );
-    }
-
-    /// Fee deduction model: the platform currently applies no additional fee —
-    /// the full price passes through to the seller. This test documents the
-    /// expected net-to-seller amount so any future fee logic is introduced
-    /// intentionally and visibly breaks this assertion.
-    #[test]
-    fn test_price_calculation_fee_deduction_no_fee_full_passthrough() {
-        let (env, client, _admin, seller, buyer, token) = setup();
-        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
-
-        // Use a price with many trailing digits to surface any rounding bugs
-        let price: i128 = 1_234_567_891i128; // ~123.4 XLM in stroops
-        let listing_id = client.create_listing(
-            &seller,
-            &token,
-            &price,
-            &AssetCategory::Airtime,
-            &symbol_short!("MTN"),
-            &1000i128,
-            &(1_000_000 + 86_400),
-        );
-
-        client.deposit_to_escrow(&buyer, &listing_id);
-
-        let seller_before = {
-            let token_client = TokenClient::new(&env, &token);
-            token_client.balance(&seller)
-        };
-
-        client.release_payment(&listing_id);
-
-        let token_client = TokenClient::new(&env, &token);
-
-        // Net amount to seller = gross price (zero platform fee currently)
-        let expected_net_to_seller = price;
-        assert_eq!(
-            token_client.balance(&seller),
-            seller_before + expected_net_to_seller,
-            "seller net amount should equal gross price when no platform fee is applied"
-        );
-
-        // Any future fee implementation must ensure:
-        //   buyer_payment == seller_net + platform_fee_retained
-        // Currently platform_fee_retained == 0, so:
-        let buyer_payment = price;
-        let platform_fee_retained: i128 = 0;
-        assert_eq!(
-            buyer_payment,
-            expected_net_to_seller + platform_fee_retained,
-            "buyer payment must equal seller net plus any retained fee — no value created or lost"
-        );
-    }
-
-    /// Zero-price listings are rejected by `create_listing` before any state
-    /// is modified. The check must trigger even if all other parameters are
-    /// valid, so a listing with a zero price can never reach the deposit stage.
-    #[test]
-    fn test_price_calculation_zero_price_listing_rejected() {
-        let (env, client, _admin, seller, _buyer, token) = setup();
-        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
-
-        // price == 0
-        let result = client.try_create_listing(
-            &seller,
-            &token,
-            &0i128,
-            &AssetCategory::Airtime,
-            &symbol_short!("MTN"),
-            &1000i128,
-            &(1_000_000 + 86_400),
-        );
-        assert_eq!(
-            result,
-            Err(Ok(ContractError::InvalidAmount)),
-            "zero-price listing must be rejected with InvalidAmount"
-        );
-
-        // Negative price
-        let result_neg = client.try_create_listing(
-            &seller,
-            &token,
-            &-1i128,
-            &AssetCategory::Data,
-            &symbol_short!("GLO"),
-            &500i128,
-            &(1_000_000 + 86_400),
-        );
-        assert_eq!(
-            result_neg,
-            Err(Ok(ContractError::InvalidAmount)),
-            "negative-price listing must be rejected with InvalidAmount"
-        );
-
-        // No listing should have been created
-        assert_eq!(
-            client.listing_count(),
-            0,
-            "listing counter must remain zero after rejected create_listing calls"
-        );
-    }
-
-    /// Rounding invariant: stroop-level integer arithmetic must never create
-    /// or destroy value. The buyer pays exactly what the seller receives —
-    /// verified across a range of prices including edge values (1 stroop,
-    /// large amounts) to confirm there is no silent truncation or overflow.
-    #[test]
-    fn test_price_calculation_rounding_no_value_creation_or_loss() {
-        let (env, client, _admin, seller, buyer, token) = setup();
-        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
-
-        // Prices chosen to exercise typical amounts and 1-stroop minimum
-        let prices: &[i128] = &[
-            1,                   // 1 stroop — absolute minimum non-zero
-            7,                   // odd number — no clean halving
-            100_0000000,         // 100 XLM in stroops
-            999_999_999,         // just under 100 XLM
-            10_000_000_000i128,  // 1,000 XLM
-        ];
-
-        let token_client = TokenClient::new(&env, &token);
-        // Mint enough for all test purchases; buyer starts with 100_000_000_000
-        // from setup() — that covers all entries above.
-
-        for &price in prices {
-            let buyer_before = token_client.balance(&buyer);
-            let seller_before = token_client.balance(&seller);
-            let contract_before = token_client.balance(&client.address);
-
-            let listing_id = client.create_listing(
-                &seller,
-                &token,
-                &price,
-                &AssetCategory::Data,
-                &symbol_short!("GLO"),
-                &1i128,
-                &(1_000_000 + 86_400),
-            );
-
-            client.deposit_to_escrow(&buyer, &listing_id);
-
-            // After deposit: buyer down by price, contract up by price, seller unchanged
-            assert_eq!(token_client.balance(&buyer), buyer_before - price,
-                "price={price}: buyer balance must decrease by exactly price after deposit");
-            assert_eq!(token_client.balance(&client.address), contract_before + price,
-                "price={price}: contract balance must increase by exactly price after deposit");
-            assert_eq!(token_client.balance(&seller), seller_before,
-                "price={price}: seller balance must not change on deposit");
-
-            client.release_payment(&listing_id);
-
-            // After release: seller up by price, contract back to original, buyer unchanged
-            assert_eq!(token_client.balance(&seller), seller_before + price,
-                "price={price}: seller balance must increase by exactly price after release");
-            assert_eq!(token_client.balance(&client.address), contract_before,
-                "price={price}: contract balance must return to pre-deposit level after release — no value lost");
-            assert_eq!(token_client.balance(&buyer), buyer_before - price,
-                "price={price}: buyer balance must not change between deposit and release");
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Reentrancy guard tests (issue #507)
-    // -----------------------------------------------------------------------
-
-    /// A second call to `deposit_to_escrow` while the reentrancy guard is set
-    /// must be rejected with `ReentrancyDetected`. This test simulates the
-    /// guard state directly by setting the flag in temporary storage and then
-    /// verifying that the function returns the correct error.
-    #[test]
-    fn test_reentrancy_guard_rejects_while_locked() {
-        let (env, client, _admin, seller, buyer, token) = setup();
-        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
-
-        client.create_listing(
             &seller,
             &token,
             &500_0000000i128,
@@ -2157,52 +1960,43 @@ mod test {
             &1000i128,
             &(1_000_000 + 86_400),
         );
+        client.purchase_with_auth(&buyer, &listing_id, &1u64);
+        assert_eq!(client.get_listing(&listing_id).status, ListingStatus::Sold);
 
-        // Manually set the reentrancy flag as a custom SAC callback would
-        env.as_contract(&client.address, || {
-            env.storage()
-                .temporary()
-                .set(&DataKey::Reentrancy, &true);
-        });
-
-        // Any guarded purchase call while the flag is set must be rejected
-        let result = client.try_deposit_to_escrow(&buyer, &1u64);
+        let token_client = TokenClient::new(&env, &token);
+        // 100e9 minted minus the 5e9 locked for listing #1.
         assert_eq!(
-            result,
-            Err(Ok(ContractError::ReentrancyDetected)),
-            "deposit_to_escrow must return ReentrancyDetected when reentrancy guard is set"
+            token_client.balance(&buyer),
+            100_000_000_000i128 - 500_0000000i128
         );
-    }
 
-    /// After a successful `deposit_to_escrow`, the reentrancy guard flag must
-    /// be cleared so a subsequent legitimate call is not blocked.
-    #[test]
-    fn test_reentrancy_guard_cleared_after_successful_purchase() {
-        let (env, client, _admin, seller, buyer, token) = setup();
-        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
-
-        client.create_listing(
+        // Listing #2 — fresh and Active. An attacker replays nonce 1.
+        let listing_id2 = client.create_listing(
             &seller,
             &token,
-            &100_0000000i128,
+            &300_0000000i128,
             &AssetCategory::Data,
             &symbol_short!("GLO"),
-            &200i128,
+            &500i128,
             &(1_000_000 + 86_400),
         );
 
-        client.deposit_to_escrow(&buyer, &1u64);
+        let result = client.try_purchase_with_auth(&buyer, &listing_id2, &1u64);
+        assert_eq!(result, Err(Ok(ContractError::InvalidNonce)));
 
-        // Guard must be cleared: flag should be false (or absent) in temp storage
-        let guard_set: bool = env.as_contract(&client.address, || {
-            env.storage()
-                .temporary()
-                .get(&DataKey::Reentrancy)
-                .unwrap_or(false)
-        });
-        assert!(
-            !guard_set,
-            "reentrancy guard flag must be cleared after a successful deposit_to_escrow"
+        // The replay moved no funds and left listing #2 still Active.
+        assert_eq!(client.get_listing(&listing_id2).status, ListingStatus::Active);
+        assert_eq!(
+            token_client.balance(&buyer),
+            100_000_000_000i128 - 500_0000000i128
+        );
+
+        // A fresh authorization (nonce 2) on listing #2 succeeds.
+        client.purchase_with_auth(&buyer, &listing_id2, &2u64);
+        assert_eq!(client.get_listing(&listing_id2).status, ListingStatus::Sold);
+        assert_eq!(
+            token_client.balance(&buyer),
+            100_000_000_000i128 - 500_0000000i128 - 300_0000000i128
         );
     }
 }

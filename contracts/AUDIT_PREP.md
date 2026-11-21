@@ -107,7 +107,7 @@ stateDiagram-v2
 
 1. **Storage Entry Expiry & TTL Edge Cases**: Are there any race conditions where `DataKey::Trade` entries expire during an active dispute before `resolve_dispute` is executed?
 2. **Partial Fill Arithmetic & Precision Loss**: When a trade is partially filled across multiple buyers, can rounding issues or integer overflow occur in `amount * price` calculations?
-3. **Replay & Front-Running Vulnerabilities**: Does `deposit_to_escrow` allow front-running by malicious buyers when gas prices fluctuate or during network congestion?
+3. **Replay & Front-Running Vulnerabilities**: Does `deposit_to_escrow` allow front-running by malicious buyers when gas prices fluctuate or during network congestion? **Replay mitigation (Issue #512)**: `deposit_to_escrow` binds the buyer's signature to the exact invocation via `require_auth`, and the dedicated `purchase_with_auth(env, buyer, listing_id, auth_nonce)` path enforces a strictly-increasing per-buyer nonce (`DataKey::BuyerNonce`) so any off-chain-signed purchase authorization is single-use — replay is rejected with `ContractError::InvalidNonce`. See [THREAT_MODEL.md](./THREAT_MODEL.md) → Marketplace Authorization Replay Attacks.
 4. **Reentrancy Protection**: Are token transfers via `token::Client` safe against reentrancy if custom SAC tokens execute callbacks?
 
 ---
