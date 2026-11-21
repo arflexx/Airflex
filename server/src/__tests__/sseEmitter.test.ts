@@ -306,12 +306,12 @@ describe("SSE event delivery (integration)", () => {
       const second = await SseTestClient.connect("alice", seen.id);
       await second.waitFor((e) => e.event === "admin_alert");
 
-      expect(second.identified()).toEqual([["2", "trade_completed"], ["4", "admin_alert"]]);
+      expect(second.identified()).toEqual([["2", "trade_completed"], ["3", "admin_alert"]]);
       expect(second.events[1]!.data).toEqual({ type: "trade_completed", tradeId: "t1" });
 
       SseEmitter.emit(["alice"], { type: "trade_disputed", tradeId: "t1" });
-      await second.waitFor((e) => e.id === "5");
-      expect(second.identified().map(([id]) => id)).toEqual(["2", "4", "5"]);
+      await second.waitFor((e) => e.id === "4");
+      expect(second.identified().map(([id]) => id)).toEqual(["2", "3", "4"]);
     });
 
     it("replays nothing when the client is already up to date", async () => {

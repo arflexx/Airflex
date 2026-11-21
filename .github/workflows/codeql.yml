@@ -1,11 +1,11 @@
 name: CodeQL SAST
 
-# ---------------------------------------------------------------------------
+# =============================================================================
 # Triggers
-# ---------------------------------------------------------------------------
+# =============================================================================
 # Runs on every pull request targeting main, on pushes to main, and on a
-# weekly schedule so drift in dependencies can surface security findings
-# even when no code changes are made.
+# weekly schedule so dependency-introduced drift surfaces security findings
+# even when no code is changed.
 on:
   push:
     branches: [main]
@@ -20,57 +20,172 @@ concurrency:
   group: codeql-${{ github.ref }}
   cancel-in-progress: true
 
-# ---------------------------------------------------------------------------
+# =============================================================================
 # Permissions
-# ---------------------------------------------------------------------------
+# =============================================================================
 # Least-privilege: only the permissions CodeQL actually needs.
 permissions:
   actions: read
   contents: read
   security-events: write  # required to upload SARIF results to the Security tab
 
-# ---------------------------------------------------------------------------
+# =============================================================================
 # Jobs
-# ---------------------------------------------------------------------------
+# =============================================================================
 jobs:
 
-  # -------------------------------------------------------------------------
-  # CodeQL analysis — JavaScript / TypeScript
-  # -------------------------------------------------------------------------
-  analyze:
-    name: CodeQL Analysis (javascript)
+  # ---------------------------------------------------------------------------
+  # Job 1: CodeQL — JavaScript / TypeScript
+  # ---------------------------------------------------------------------------
+  # Scans the server/ and frontend/ workspaces (and apps/docs-site/).
+  # Uses the security-extended query suite which covers the full set of
+  # vulnerability classes beyond the default suite, including:
+  #   - SQL injection           (CWE-089)
+  #   - Path traversal          (CWE-022)
+  #   - Code injection          (CWE-094)
+  #   - Improper input validation (CWE-020)
+  #   - Insecure randomness     (CWE-338)
+  #   - ReDoS, prototype pollution, XSS, and more
+  #
+  # Suppressed findings are documented in .codeql/codeql-config.yml with
+  # justification comments.  New HIGH or CRITICAL findings fail this job.
+  # ---------------------------------------------------------------------------
+  analyze-typescript:
+    name: CodeQL — JavaScript / TypeScript
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Initialise the CodeQL tools and create the database.
-      # The "javascript" language covers TypeScript as well.
+      # Initialise CodeQL tools and create the analysis database.
+      # config-file points to .codeql/codeql-config.yml which documents
+      # any suppressed alerts and re-declares the security-extended suite.
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
           languages: javascript
-          # Enable the full extended query suite to catch the vulnerability
-          # classes listed in the acceptance criteria:
-          #   - SQL injection
-          #   - Path traversal
-          #   - Code injection
-          #   - Improper input validation
-          #   - Insecure randomness
+          # security-extended is the most comprehensive query suite.
+          # It is also declared in .codeql/codeql-config.yml so the
+          # suppression record is co-located with the query selection.
           queries: security-extended
+          config-file: .codeql/codeql-config.yml
 
-      # CodeQL can auto-build JavaScript/TypeScript projects; no manual
-      # build step is required here because the source is interpreted.
+      # CodeQL auto-build handles JS/TS without a manual compile step.
       - name: Autobuild
         uses: github/codeql-action/autobuild@v3
 
-      # Run the analysis and upload results to the GitHub Security tab.
-      # Results are also available as a SARIF artefact for external tooling.
+      # Analyse and upload SARIF to the GitHub Security tab.
+      # fail-on: error makes the step exit non-zero when any finding is
+      # classified as "error" severity by CodeQL — this maps to HIGH and
+      # CRITICAL vulnerabilities.  MEDIUM / LOW findings are still uploaded
+      # and visible in the Security tab but do not block the workflow.
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
         with:
           category: "/language:javascript"
-          # Upload results even if a previous step failed, so partial
-          # results are never silently discarded.
+          # Upload results even on partial failure so no findings are lost.
           upload: always
+          # Fail the job on any new HIGH or CRITICAL finding.
+          # Findings that existed before and are tracked in GitHub's alert
+          # database are not re-raised here unless they are newly introduced.
+          fail-on: error
+
+  # ---------------------------------------------------------------------------
+  # Job 2: Rust SAST — cargo audit + cargo clippy
+  # ---------------------------------------------------------------------------
+  # The Soroban smart contracts (contracts/) are written in Rust and cannot
+  # be scanned by CodeQL.  This job runs two complementary SAST tools:
+  #
+  #   1. cargo audit
+  #      Checks every dependency in Cargo.lock against the RustSec Advisory
+  #      Database (https://rustsec.org).  Exits non-zero on any CRITICAL or
+  #      HIGH advisory, failing the workflow.
+  #
+  #   2. cargo clippy -D warnings
+  #      Treats every Clippy lint as an error.  Clippy includes correctness,
+  #      style, performance, and a growing set of security-relevant lints
+  #      (e.g. clippy::integer_arithmetic, clippy::unwrap_used when configured).
+  #      The contracts CI job already runs clippy; running it here too means
+  #      security-finding context appears in the Security workflow alongside
+  #      the CodeQL results.
+  #
+  # Both tools operate entirely offline against the checked-out source and
+  # Cargo.lock — no network access to crates.io is required after the
+  # advisory DB is fetched.
+  # ---------------------------------------------------------------------------
+  rust-sast:
+    name: Rust SAST — contracts
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: contracts
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Pin the Rust toolchain to stable (matches contracts/ci.yml).
+      # Include the wasm32-unknown-unknown target so clippy can evaluate
+      # the contracts in their compilation target context.
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+
+      # Restore the Cargo registry cache to avoid re-downloading crates.
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts/target
+          key: cargo-sast-${{ hashFiles('contracts/Cargo.lock') }}
+          restore-keys: cargo-sast-
+
+      # Fetch the RustSec advisory database into ~/.cargo/advisory-db.
+      # cargo-audit is pre-installed on ubuntu-latest GitHub runners; if
+      # it is ever absent install it with:
+      #   cargo install cargo-audit --locked
+      #
+      # --deny warnings  → exit non-zero on any advisory (not just errors)
+      # --deny unsound   → exit non-zero on unsoundness advisories
+      # We allow "unmaintained" at the warn level only; unmaintained crates
+      # are reported but do not block the workflow unless they also have an
+      # active vulnerability advisory.
+      - name: cargo audit — dependency advisory scan
+        run: |
+          if ! command -v cargo-audit &> /dev/null; then
+            cargo install cargo-audit --locked
+          fi
+          cargo audit \
+            --deny warnings \
+            --deny unsound \
+            --ignore RUSTSEC-0000-0000
+        # Note: replace RUSTSEC-0000-0000 with any advisory IDs you need to
+        # suppress after review.  Document suppressions in .codeql/codeql-config.yml
+        # with the advisory ID, justification, and reviewer.
+
+      # Clippy in deny-warnings mode catches correctness, performance, and
+      # security-relevant lints.  Runs against the wasm32-unknown-unknown
+      # target to match how the contracts are actually compiled.
+      #
+      # Key lints that surface security issues:
+      #   - clippy::integer_arithmetic (overflow in financial calculations)
+      #   - clippy::unwrap_used        (panics in contract execution)
+      #   - clippy::expect_used        (panics in contract execution)
+      #   - clippy::as_conversions     (silent truncating casts)
+      - name: cargo clippy — static lint analysis
+        run: |
+          cargo clippy \
+            --target wasm32-unknown-unknown \
+            --all-targets \
+            -- \
+            -D warnings \
+            -W clippy::integer_arithmetic \
+            -W clippy::unwrap_used \
+            -W clippy::expect_used \
+            -W clippy::as_conversions

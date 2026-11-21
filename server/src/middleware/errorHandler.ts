@@ -12,6 +12,12 @@ import logger from "../utils/logger";
  *  - In production: returns a generic { error: "Internal server error" } so
  *    stack traces are never leaked to API consumers.
  *  - In development: includes the error message and stack for easier debugging.
+ *  - Always includes a machine-readable `code` field alongside `error`
+ *    (issue #618), formatted consistently regardless of environment:
+ *      - an explicit `err.code` (e.g. from a typed error like
+ *        `VerificationError`/`VelocityError`) is passed through as-is;
+ *      - otherwise 5xx errors fall back to "INTERNAL_ERROR" and 4xx errors
+ *        fall back to "UNKNOWN_ERROR".
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function errorHandler(
@@ -29,15 +35,19 @@ export function errorHandler(
     err.message
   );
 
-  const status = (err as Error & { status?: number; statusCode?: number }).status ??
-    (err as Error & { status?: number; statusCode?: number }).statusCode ??
-    500;
+  const errMeta = err as Error & { status?: number; statusCode?: number; code?: string };
+  const status = errMeta.status ?? errMeta.statusCode ?? 500;
+  const code = errMeta.code ?? (status >= 500 ? "INTERNAL_ERROR" : "UNKNOWN_ERROR");
 
   if (process.env["NODE_ENV"] === "production") {
-    res.status(status).json({ error: "Internal server error" });
+    res.status(status).json({
+      error: "Internal server error",
+      code: status >= 500 ? "INTERNAL_ERROR" : code,
+    });
   } else {
     res.status(status).json({
       error: err.message,
+      code,
       stack: err.stack,
     });
   }

@@ -96,19 +96,26 @@ export async function runMigrations(options?: MigrateOptions): Promise<Migration
       logger.info(`[migrate] Applying: ${file}`);
 
       const startedAt = Date.now();
-      await client.query("BEGIN");
+      const isConcurrent = /CONCURRENTLY/i.test(sql);
+      if (!isConcurrent) {
+        await client.query("BEGIN");
+      }
       try {
         await client.query(sql);
         await client.query(
           "INSERT INTO schema_migrations (filename, applied_at) VALUES ($1, NOW());",
           [file]
         );
-        await client.query("COMMIT");
+        if (!isConcurrent) {
+          await client.query("COMMIT");
+        }
         applied.push(file);
         const durationMs = Date.now() - startedAt;
         logger.info(`[migrate] Applied: ${file} (${durationMs}ms)`);
       } catch (err) {
-        await client.query("ROLLBACK");
+        if (!isConcurrent) {
+          await client.query("ROLLBACK");
+        }
         const message = err instanceof Error ? err.message : String(err);
         logger.error(
           { err, file },
@@ -161,13 +168,21 @@ export async function rollbackLastMigration(options?: MigrateOptions): Promise<s
     // a failed down step leaves both the schema and the record untouched.
     const downPath = path.join(getMigrationsDir(options?.migrationsDir), "down", lastMigration.filename);
     if (fs.existsSync(downPath)) {
-      await client.query("BEGIN");
+      const downSql = fs.readFileSync(downPath, "utf-8");
+      const isConcurrent = /CONCURRENTLY/i.test(downSql);
+      if (!isConcurrent) {
+        await client.query("BEGIN");
+      }
       try {
-        await client.query(fs.readFileSync(downPath, "utf-8"));
+        await client.query(downSql);
         await client.query(`DELETE FROM schema_migrations WHERE id = $1;`, [lastMigration.id]);
-        await client.query("COMMIT");
+        if (!isConcurrent) {
+          await client.query("COMMIT");
+        }
       } catch (err) {
-        await client.query("ROLLBACK");
+        if (!isConcurrent) {
+          await client.query("ROLLBACK");
+        }
         logger.error({ err, file: lastMigration.filename }, `[migrate] Down step FAILED: ${lastMigration.filename}`);
         throw err;
       }

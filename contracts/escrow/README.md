@@ -40,11 +40,39 @@ Escalates a trade to `Disputed` status for manual admin resolution. Only `Locked
 (fully filled) trades can be disputed; `PartiallyFilled` and `Open` trades return
 `WrongStatus`.
 
+**Dispute cooldown (Issue #642):** a per-trade `dispute_cooldown_seconds`
+window (default `3600`, set at `initialize`) gates repeat calls — calling
+`flag_dispute` again on the same trade before the cooldown elapses returns
+`DISPUTE_COOLDOWN_ACTIVE` instead of silently succeeding or being spammed.
+Once the cooldown has elapsed, calling it again on an already-`Disputed`
+trade succeeds as a re-escalation (bumping the last-flagged timestamp and
+re-emitting the dispute events) rather than erroring.
+
 ### `get_trade(trade_id) → TradeOffer`
 Read-only view of a specific trade.
 
 ### `pause()` / `unpause()`
 Admin-only circuit breakers to halt all state-mutating operations.
+
+---
+
+## Events (Issue #639)
+
+The contract publishes a canonical event for every escrow state transition,
+each carrying `(escrow_id, actor, amount, timestamp)` so indexers, audit
+tooling, and the backend oracle can subscribe on-chain instead of polling
+`get_trade`:
+
+| Topic | Emitted by | `actor` | `amount` |
+|---|---|---|---|
+| `EscrowCreated` | `create_listing` | seller | listing's total amount |
+| `EscrowReleased` | `release_payment`, `release_by_timelock` | seller (recipient) | the released sub-escrow's fill amount |
+| `EscrowRefunded` | `cancel_and_refund` | buyer (recipient), once per refunded fill | the refunded sub-escrow's fill amount |
+| `EscrowDisputed` | `flag_dispute` | caller who flagged | the trade's currently-filled amount |
+
+These are emitted in addition to (not instead of) the contract's existing
+short-form topics (`created`, `locked`, `released`, `completed`, `cancelled`,
+`disputed`, …), which remain unchanged for backward compatibility.
 
 ---
 

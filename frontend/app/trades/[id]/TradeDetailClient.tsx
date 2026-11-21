@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useContext, useRef } from "react";
 import { useTranslations } from "next-intl";
 import type { TradeOffer } from "../../../../server/src/types/trade";
 import { getToken, getUser, isAuthenticated } from "../../lib/auth";
@@ -23,6 +23,7 @@ import {
   EscrowTransactionLink,
   shouldShowEscrowLink,
 } from "../../../components/EscrowTransactionLink";
+import { ToastContext } from "../../../components/ToastProvider";
 import { DisputeModal } from "./dispute/DisputeModal";
 
 // ---------------------------------------------------------------------------
@@ -166,12 +167,25 @@ function ConfirmationPanel({ trade, txHash }: { trade: TradeOffer; txHash: strin
 interface BuyResponse {
   data?: TradeOffer & { escrow_tx_hash?: string };
   error?: string;
+  code?: string;
 }
 
 interface PrepareBuyResponse {
   data?: { xdr: string; networkPassphrase: string; publicKey: string };
   error?: string;
+  code?: string;
 }
+
+/**
+ * Trade-specific error codes from `server/src/types/trade.ts` that the buy
+ * flow (`buy/prepare` + `buy`) can return (issue #618). API consumers should
+ * branch on `code` rather than parsing `error`, which may change wording.
+ */
+type BuyErrorCode =
+  | "TRADE_NOT_FOUND"
+  | "TRADE_NOT_AVAILABLE"
+  | "TRADE_NO_LISTING"
+  | "TRADE_SELF_BUY_FORBIDDEN";
 
 interface Props {
   trade: TradeOffer;
@@ -211,6 +225,27 @@ export default function TradeDetailClient({ trade }: Props) {
   const isLocked = status === "Locked";
   const canBuy   = authed && isActive && !countdown.expired && !isSeller;
 
+  // Toast surface for buy-failure feedback (issue #612). Optional-chained:
+  // falls back to the inline `buyError` banner alone if no <ToastProvider>
+  // happens to be mounted above this tree.
+  const toastCtx = useContext(ToastContext);
+
+  /**
+   * Optimistic trade status (issue #612) — following the `useOptimisticBalance`
+   * pattern, this is a display-only value layered on top of the confirmed
+   * `status`. The instant the buyer clicks "Buy" (`buying` flips true
+   * synchronously, before any network round-trip), the status badge jumps to
+   * "Locked" so the UI reflects acceptance immediately. If the request fails,
+   * `buying` resets to `false` in `handleBuy`'s `finally` block and this
+   * value snaps straight back to the still-unchanged confirmed `status` — an
+   * automatic rollback with no extra state to get out of sync. All gating
+   * logic (`isActive`, `isLocked`, `canBuy`, the dispute section, etc.) keeps
+   * using the confirmed `status`, not this one, so the Buy button itself
+   * stays mounted (disabled + spinner) for the duration of the request
+   * instead of disappearing.
+   */
+  const displayStatus: TradeOffer["status"] = buying ? "Locked" : status;
+
   const RATING_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
   const canRateSeller =
     isBuyer &&
@@ -220,11 +255,43 @@ export default function TradeDetailClient({ trade }: Props) {
   // Render the opaque display handle — never the seller's UUID (issue #330).
   const sellerAlias = trade.seller_handle ?? "@airflex";
 
+  /**
+   * Maps a backend `code` (issue #618) to a user-facing message. Falls back
+   * to the server-provided `error` string (or the generic purchase-failed
+   * copy) for codes this component doesn't special-case, e.g. 401/422,
+   * which are handled separately, or future codes the client predates.
+   */
+  function messageForBuyError(code: string | undefined, serverMessage: string | undefined): string {
+    switch (code as BuyErrorCode | undefined) {
+      case "TRADE_NOT_FOUND":
+        return t("errorTradeNotFound");
+      case "TRADE_NOT_AVAILABLE":
+        return t("errorTradeNotAvailable");
+      case "TRADE_NO_LISTING":
+        return t("errorTradeNoListing");
+      case "TRADE_SELF_BUY_FORBIDDEN":
+        return t("errorSelfBuyForbidden");
+      default:
+        return serverMessage ?? t("purchaseFailed");
+    }
+  }
+
   /** Sends the user back through authentication, returning here afterwards. */
   function reauthenticate() {
     clearSessionKey();
     const returnTo = encodeURIComponent(`/trades/${trade.id}`);
     window.location.href = `/auth/signup?returnTo=${returnTo}`;
+  }
+
+  /**
+   * Surfaces a buy failure both inline (existing `buyError` banner) and as a
+   * toast (issue #612), and implicitly rolls the optimistic status badge back
+   * — the caller's `finally` clears `buying`, which `displayStatus` already
+   * derives from.
+   */
+  function failBuy(message: string) {
+    setBuyError(message);
+    toastCtx?.error(message);
   }
 
   /**
@@ -239,11 +306,27 @@ export default function TradeDetailClient({ trade }: Props) {
   async function handleBuy() {
     if (!canBuy) return;
 
+    // Optimistic UI (Issue #609): the status flips to "Locked" — this
+    // domain's equivalent of "accepted" — the instant the user clicks, rather
+    // than waiting for the full prepare → sign → submit round-trip. `status`
+    // (not `trade.status`) is what the rest of the component renders from, so
+    // this is purely local state; `previousStatus` lets any failure below
+    // restore exactly what was on screen before the click.
+    const previousStatus = status;
     setBuyError(null);
     setBuying(true);
+    setStatus("Locked");
+
+    /** Rolls the optimistic status back and surfaces the failure as a toast. */
+    function rollback(message: string) {
+      setStatus(previousStatus);
+      setBuyError(message);
+      setToast({ type: "error", message });
+    }
 
     const token = getToken();
     if (!token) {
+      setStatus(previousStatus);
       reauthenticate();
       return;
     }
@@ -256,7 +339,7 @@ export default function TradeDetailClient({ trade }: Props) {
       );
 
       if (!prepared.data) {
-        setBuyError(prepared.error ?? t("purchaseFailed"));
+        failBuy(prepared.error ?? t("purchaseFailed"));
         return;
       }
 
@@ -274,19 +357,21 @@ export default function TradeDetailClient({ trade }: Props) {
           // The key lives in memory only, so a reload or a new tab lands here.
           // Re-authenticating is the way back in — there is nothing cached to
           // fall back on, by design.
+          setStatus(previousStatus);
           reauthenticate();
           return;
         }
         if (err instanceof UnlockFailedError) {
           if (err.status === 401) {
+            setStatus(previousStatus);
             reauthenticate();
             return;
           }
-          setBuyError(t("purchaseFailed"));
+          failBuy(t("purchaseFailed"));
           return;
         }
         if (err instanceof AccountMismatchError) {
-          setBuyError(t("purchaseFailed"));
+          failBuy(t("purchaseFailed"));
           return;
         }
         throw err;
@@ -303,12 +388,13 @@ export default function TradeDetailClient({ trade }: Props) {
       setConfirmed(true);
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
+        setStatus(previousStatus);
         reauthenticate();
       } else if (error instanceof ApiError) {
         const data = error.data as { error?: string } | undefined;
-        setBuyError(data?.error ?? t("purchaseFailed"));
+        failBuy(data?.error ?? t("purchaseFailed"));
       } else {
-        setBuyError(t("networkError"));
+        failBuy(t("networkError"));
       }
     } finally {
       setBuying(false);
@@ -369,7 +455,7 @@ export default function TradeDetailClient({ trade }: Props) {
         {/* Coloured header strip */}
         <div className="flex items-center justify-between gap-3 bg-violet-50 px-5 py-4 border-b border-violet-100 dark:bg-violet-900/20 dark:border-violet-800">
           <AssetBadge assetType={trade.asset_type} />
-          <Badge variant={status === "Active" ? "Open" : (status as any)} />
+          <Badge variant={displayStatus === "Active" ? "Open" : (displayStatus as any)} />
         </div>
 
         {/* Detail rows */}

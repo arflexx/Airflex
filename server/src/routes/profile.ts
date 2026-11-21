@@ -3,11 +3,21 @@ import { createHash } from "crypto";
 import pool from "../db";
 import { authenticate, AuthenticatedRequest } from "../middleware/authenticate";
 import { validate } from "../middleware/validate";
-import { profileUpdateSchema, type ProfileUpdateInput } from "../schemas";
+import {
+  profileUpdateSchema,
+  requestPhoneChangeSchema,
+  confirmPhoneChangeSchema,
+  type ProfileUpdateInput,
+  type RequestPhoneChangeInput,
+  type ConfirmPhoneChangeInput,
+} from "../schemas";
 import { QueueService } from "../jobs";
 import type { TradeOffer, TradeStatus } from "../types/trade";
 import logger from "../utils/logger";
-import { maskPhone } from "../utils/phone";
+import { maskPhone, normalizePhone } from "../utils/phone";
+import { enforceOtpRateLimit } from "../middleware/rateLimitOtp";
+import { recordAuditLog, auditContext } from "../services/auditLog";
+import { cache } from "../services/cache";
 
 const router = Router();
 
@@ -76,16 +86,20 @@ async function sendDeletionConfirmationSms(
 // ---------------------------------------------------------------------------
 
 /**
- * Returns the authenticated user's profile metadata.
+ * Returns the authenticated user's profile metadata (issue #74).
  *
  * Response shape:
  * {
  *   data: {
  *     id: string
  *     maskedPhone: string       // e.g. "+234 *** *** 5678"
- *     createdAt: string         // ISO timestamp
+ *     createdAt: string         // ISO timestamp (registration date)
+ *     role: string              // "user" | "admin" | "super_admin"
  *     totalTradesCompleted: number
  *     stellarPublicKey: string
+ *     kycStatus: string         // "unverified" | "pending" | "verified"
+ *     referralCode: string
+ *     virtualAccountNumber: string
  *   }
  * }
  */
@@ -102,8 +116,11 @@ router.get(
       stellar_public_key: string | null;
       kyc_status: string | null;
       referral_code: string | null;
+      role: string | null;
+      virtual_account_number: string | null;
     }>(
-      `SELECT id, phone, created_at, stellar_public_key, kyc_status, referral_code
+      `SELECT id, phone, created_at, stellar_public_key, kyc_status, referral_code,
+              role, virtual_account_number
        FROM users
        WHERE id = $1
        LIMIT 1`,
@@ -128,13 +145,15 @@ router.get(
 
     res.status(200).json({
       data: {
-        id:                   user.id,
-        maskedPhone:          maskPhone(user.phone),
-        createdAt:            user.created_at,
+        id:                    user.id,
+        maskedPhone:           maskPhone(user.phone),
+        createdAt:             user.created_at,
+        role:                  user.role ?? "user",
         totalTradesCompleted,
-        stellarPublicKey:     user.stellar_public_key ?? "",
-        kycStatus:            user.kyc_status ?? "unverified",
-        referralCode:         user.referral_code ?? "",
+        stellarPublicKey:      user.stellar_public_key ?? "",
+        kycStatus:             user.kyc_status ?? "unverified",
+        referralCode:          user.referral_code ?? "",
+        virtualAccountNumber:  user.virtual_account_number ?? "",
       },
     });
   }
@@ -642,6 +661,164 @@ router.post(
 
     res.status(200).json({
       message: "Account deletion cancelled. Your account is fully restored.",
+    });
+  }
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/profile/phone/request  (authenticated) — issues #620, #629
+// ---------------------------------------------------------------------------
+
+async function sendPhoneChangeOtp(phone: string, otp: string): Promise<void> {
+  const apiKey = process.env["TERMII_API_KEY"];
+  if (!apiKey) {
+    logger.info({ phone, otp }, "[profile] TERMII_API_KEY not set — OTP recorded for test/dev");
+    return;
+  }
+
+  try {
+    await fetch("https://api.ng.termii.com/api/sms/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        to: phone,
+        from: "AirFlex",
+        sms: `Your AirFlex phone verification code is ${otp}. Valid for 10 minutes.`,
+        type: "plain",
+        channel: "generic",
+        api_key: apiKey,
+      }),
+    });
+  } catch (err) {
+    logger.error({ err: (err as Error).message, phone }, "[profile] Failed to send OTP via Termii");
+  }
+}
+
+/**
+ * Initiates phone number update for the authenticated user.
+ * Sends an OTP to the new normalized phone number and stores the pending change in Redis with a 10-minute TTL.
+ */
+router.post(
+  "/phone/request",
+  authenticate,
+  validate(requestPhoneChangeSchema),
+  async (req, res) => {
+    const { sub: userId } = (req as AuthenticatedRequest).user;
+    const { phone } = req.body as RequestPhoneChangeInput;
+
+    const normalized = normalizePhone(phone);
+
+    // Prevent duplicate phone across accounts
+    const { rows: existing } = await pool.query<{ id: string }>(
+      `SELECT id FROM users WHERE phone = $1 LIMIT 1`,
+      [normalized]
+    );
+
+    if (existing.length > 0 && existing[0]!.id !== userId) {
+      res.status(409).json({ error: "That phone number is already registered to another account" });
+      return;
+    }
+
+    // Rate limit OTP requests to prevent spam
+    const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
+    if (!(await enforceOtpRateLimit(normalized, ip, res))) {
+      return;
+    }
+
+    // Generate 6-digit numeric OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    // Store pending change in Redis with 10-minute TTL (600 seconds)
+    const pendingKey = `pending_phone_change:${userId}`;
+    await cache.set(
+      pendingKey,
+      JSON.stringify({ phone: normalized, otp, createdAt: Date.now() }),
+      10 * 60
+    );
+
+    await sendPhoneChangeOtp(normalized, otp);
+
+    res.status(200).json({
+      message: "OTP sent to new phone number. Valid for 10 minutes.",
+      phone: normalized,
+    });
+  }
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/profile/phone/confirm  (authenticated) — issues #620, #629
+// ---------------------------------------------------------------------------
+
+/**
+ * Confirms phone number update with OTP.
+ * Updates the user's phone, frees the old phone for reuse, and records an audit log entry.
+ */
+router.post(
+  "/phone/confirm",
+  authenticate,
+  validate(confirmPhoneChangeSchema),
+  async (req, res) => {
+    const { sub: userId, role } = (req as AuthenticatedRequest).user;
+    const { otp } = req.body as ConfirmPhoneChangeInput;
+
+    const pendingKey = `pending_phone_change:${userId}`;
+    const raw = await cache.get(pendingKey);
+
+    if (!raw) {
+      res.status(400).json({
+        error: "No pending phone change request found or the request has expired.",
+      });
+      return;
+    }
+
+    let pending: { phone: string; otp: string };
+    try {
+      pending = JSON.parse(raw);
+    } catch {
+      res.status(400).json({ error: "Invalid pending phone change data." });
+      return;
+    }
+
+    if (pending.otp !== otp.trim()) {
+      res.status(400).json({ error: "Invalid OTP code." });
+      return;
+    }
+
+    // Read current phone for audit log
+    const { rows: userRows } = await pool.query<{ phone: string }>(
+      `SELECT phone FROM users WHERE id = $1 LIMIT 1`,
+      [userId]
+    );
+
+    const oldPhone = userRows[0]?.phone ?? "";
+
+    // Update phone in users table (old phone is freed for reuse)
+    await pool.query(
+      `UPDATE users SET phone = $1, updated_at = NOW() WHERE id = $2`,
+      [pending.phone, userId]
+    );
+
+    // Invalidate pending change in Redis
+    await cache.set(pendingKey, "", -1);
+
+    // Record audit log
+    await recordAuditLog({
+      actorId: userId,
+      actorRole: role ?? "user",
+      action: "user.phone_changed",
+      targetType: "user",
+      targetId: userId,
+      before: { phone: oldPhone },
+      after: { phone: pending.phone },
+      metadata: auditContext(req),
+    });
+
+    logger.info({ userId, oldPhone, newPhone: pending.phone }, "[profile] Phone number changed successfully");
+
+    res.status(200).json({
+      success: true,
+      message: "Phone number updated successfully.",
+      phone: pending.phone,
     });
   }
 );

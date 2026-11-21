@@ -188,6 +188,25 @@ describe("UI Primitives", () => {
       );
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     });
+
+    it("has no axe accessibility violations when open (issue #601)", async () => {
+      const { container } = render(
+        <Modal
+          isOpen
+          onClose={jest.fn()}
+          title="Confirm Action"
+          description="Are you sure you want to proceed?"
+          footer={
+            <button type="button" onClick={jest.fn()}>
+              Confirm
+            </button>
+          }
+        >
+          <p>Dialog body content.</p>
+        </Modal>
+      );
+      expect(await axe(container)).toHaveNoViolations();
+    });
   });
 
   describe("Spinner", () => {
