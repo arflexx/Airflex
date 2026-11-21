@@ -138,12 +138,12 @@ export async function getDataExportRequest(
 // ---------------------------------------------------------------------------
 
 /**
- * Signing key derived from JWT_SECRET with a fixed context string, so a
+ * Signing key derived from ENCRYPTION_KEY with a fixed context string, so a
  * download signature can never be confused with (or replayed as) a JWT.
  */
 function signingKey(): Buffer {
-  const secret = process.env["JWT_SECRET"];
-  if (!secret) throw new Error("JWT_SECRET is required to sign data export URLs");
+  const secret = process.env["ENCRYPTION_KEY"];
+  if (!secret) throw new Error("ENCRYPTION_KEY is required to sign data export URLs");
   return createHmac("sha256", secret).update("airflex:data-export-url:v1").digest();
 }
 
