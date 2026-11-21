@@ -1,6 +1,12 @@
-import { FraudDetectionService, VelocityError, REPEATED_FAILED_TRADES } from "./fraudDetection";
+import {
+  FraudDetectionService,
+  VelocityError,
+  REPEATED_FAILED_TRADES,
+  evaluateFraudSignals,
+} from "./fraudDetection";
 import pool from "../db";
 import { cache } from "./cache";
+import logger from "../utils/logger";
 
 jest.mock("../db", () => ({
   query: jest.fn(),
@@ -296,6 +302,440 @@ describe("FraudDetectionService — repeated failed trades (issue #491)", () => 
       mockPoolQuery.mockResolvedValueOnce({ rows: [] });
 
       expect(await FraudDetectionService.reviewFraudFlag("flag-x", "admin-1", "reviewed", null)).toBeNull();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Velocity rules (issue #657)
+// ---------------------------------------------------------------------------
+
+describe("FraudDetectionService — velocity rules (issue #657)", () => {
+  const mockPoolQuery = pool.query as jest.Mock;
+  const mockCacheGet = cache.get as jest.Mock;
+  const mockCacheSet = cache.set as jest.Mock;
+
+  const HOUR_MS = 60 * 60 * 1000;
+  const VELOCITY_ENV = [
+    "MAX_TRADES_PER_HOUR",
+    "MAX_DEPOSITS_PER_DAY",
+    "MAX_WITHDRAWALS_PER_DAY",
+    "FAILED_TRADE_THRESHOLD",
+    "FAILED_TRADE_WINDOW_SECONDS",
+  ];
+
+  /** TTL-aware stand-in for Redis, driven by the mocked clock. */
+  let store: Map<string, { value: string; expiresAt: number }>;
+  let now: number;
+  const originalEnv = process.env;
+
+  function seed(key: string, value: unknown, ttlMs = HOUR_MS) {
+    store.set(key, {
+      value: typeof value === "string" ? value : JSON.stringify(value),
+      expiresAt: now + ttlMs,
+    });
+  }
+
+  function storedCount(key: string): number | undefined {
+    const entry = store.get(key);
+    return entry ? (JSON.parse(entry.value) as { count: number }).count : undefined;
+  }
+
+  /** Runs `checkVelocity` and reports the outcome instead of throwing. */
+  async function attempt(userId: string, action: string): Promise<"allowed" | VelocityError> {
+    try {
+      await FraudDetectionService.checkVelocity(userId, action);
+      return "allowed";
+    } catch (err) {
+      if (err instanceof VelocityError) return err;
+      throw err;
+    }
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env = { ...originalEnv };
+    for (const name of VELOCITY_ENV) delete process.env[name];
+
+    store = new Map();
+    mockCacheGet.mockImplementation(async (key: string) => {
+      // Yield first so concurrent callers genuinely interleave.
+      await Promise.resolve();
+      const entry = store.get(key);
+      if (!entry) return null;
+      if (entry.expiresAt <= now) {
+        store.delete(key);
+        return null;
+      }
+      return entry.value;
+    });
+    mockCacheSet.mockImplementation(async (key: string, value: string, ttlSeconds: number) => {
+      store.set(key, { value, expiresAt: now + ttlSeconds * 1000 });
+    });
+    mockPoolQuery.mockResolvedValue({ rows: [], rowCount: 1 });
+
+    now = Date.parse("2026-11-20T10:00:00Z");
+    jest.spyOn(Date, "now").mockImplementation(() => now);
+    jest.spyOn(logger, "warn").mockImplementation(() => undefined);
+    jest.spyOn(logger, "error").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    process.env = originalEnv;
+  });
+
+  describe("limit boundaries", () => {
+    beforeEach(() => {
+      process.env["MAX_TRADES_PER_HOUR"] = "5";
+    });
+
+    it("allows trades under the limit without flagging", async () => {
+      for (let i = 0; i < 3; i++) {
+        await expect(FraudDetectionService.checkVelocity("user-1", "trade_creation")).resolves.toEqual({
+          allowed: true,
+        });
+      }
+
+      expect(storedCount("velocity:trade_creation:user-1")).toBe(3);
+      expect(mockPoolQuery).not.toHaveBeenCalled();
+    });
+
+    it("allows the trade that lands exactly on the limit without flagging", async () => {
+      for (let i = 0; i < 5; i++) {
+        expect(await attempt("user-1", "trade_creation")).toBe("allowed");
+      }
+
+      expect(storedCount("velocity:trade_creation:user-1")).toBe(5);
+      expect(mockPoolQuery).not.toHaveBeenCalled();
+    });
+
+    it("flags the first trade over the limit: 429, suspicious_activity row, counter unchanged", async () => {
+      for (let i = 0; i < 5; i++) await attempt("user-1", "trade_creation");
+      now += 10 * 60_000; // 10 minutes into the 1h window
+
+      const outcome = await attempt("user-1", "trade_creation");
+
+      expect(outcome).toBeInstanceOf(VelocityError);
+      const err = outcome as VelocityError;
+      expect(err.status).toBe(429);
+      expect(err.retryAfterSeconds).toBe(50 * 60);
+
+      expect(mockPoolQuery).toHaveBeenCalledTimes(1);
+      const [sql, params] = mockPoolQuery.mock.calls[0] as [string, unknown[]];
+      expect(sql).toContain("INSERT INTO suspicious_activity");
+      expect(params.slice(0, 2)).toEqual(["user-1", "trade_creation"]);
+      expect(JSON.parse(params[2] as string)).toEqual({
+        rule: "MAX_TRADES_PER_HOUR",
+        limit: 5,
+        attemptedCount: 6,
+        retryAfterSeconds: 3000,
+      });
+      // A rejected attempt is not counted.
+      expect(storedCount("velocity:trade_creation:user-1")).toBe(5);
+    });
+
+    it("keeps rejecting while the window is open", async () => {
+      seed("velocity:trade_creation:user-1", { count: 5, resetAt: now + HOUR_MS });
+
+      expect(await attempt("user-1", "trade_creation")).toBeInstanceOf(VelocityError);
+      expect(await attempt("user-1", "trade_creation")).toBeInstanceOf(VelocityError);
+      expect(mockPoolQuery).toHaveBeenCalledTimes(2);
+    });
+
+    it("never reports a Retry-After below 1 second", async () => {
+      seed("velocity:trade_creation:user-1", { count: 5, resetAt: now + 200 });
+
+      const err = (await attempt("user-1", "trade_creation")) as VelocityError;
+
+      expect(err.retryAfterSeconds).toBe(1);
+    });
+
+    it("still rejects (and logs) when the suspicious_activity insert fails", async () => {
+      seed("velocity:trade_creation:user-1", { count: 5, resetAt: now + HOUR_MS });
+      mockPoolQuery.mockRejectedValueOnce(new Error("db down"));
+
+      expect(await attempt("user-1", "trade_creation")).toBeInstanceOf(VelocityError);
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ dbErr: expect.any(Error) }),
+        "[FraudDetection] Failed to log suspicious activity to DB"
+      );
+    });
+
+    it("tracks users and actions independently", async () => {
+      seed("velocity:trade_creation:user-1", { count: 5, resetAt: now + HOUR_MS });
+
+      expect(await attempt("user-2", "trade_creation")).toBe("allowed");
+      expect(await attempt("user-1", "deposit")).toBe("allowed");
+      expect(await attempt("user-1", "trade_creation")).toBeInstanceOf(VelocityError);
+    });
+  });
+
+  describe("rule resolution", () => {
+    it.each<[string, string, number, number]>([
+      ["trade_creation", "MAX_TRADES_PER_HOUR", 10, 3600],
+      ["deposit_initiate", "MAX_DEPOSITS_PER_DAY", 5, 86400],
+      ["withdrawal_request", "MAX_WITHDRAWALS_PER_DAY", 3, 86400],
+      ["profile_update", "DEFAULT_VELOCITY_RULE", 10, 3600],
+    ])("%s uses %s (default limit %i, %is window)", async (action, ruleName, limit, windowSeconds) => {
+      const key = `velocity:${action}:user-1`;
+
+      seed(key, { count: limit - 1, resetAt: now + windowSeconds * 1000 });
+      expect(await attempt("user-1", action)).toBe("allowed");
+
+      const err = (await attempt("user-1", action)) as VelocityError;
+      expect(err).toBeInstanceOf(VelocityError);
+      expect(err.retryAfterSeconds).toBe(windowSeconds);
+      const params = mockPoolQuery.mock.calls[0]![1] as unknown[];
+      expect(JSON.parse(params[2] as string)).toMatchObject({ rule: ruleName, limit });
+    });
+
+    it("stores a new counter with a TTL equal to the rule window", async () => {
+      await attempt("user-1", "withdrawal_request");
+
+      expect(mockCacheSet).toHaveBeenCalledWith(
+        "velocity:withdrawal_request:user-1",
+        JSON.stringify({ count: 1, resetAt: now + 86_400_000 }),
+        86_400
+      );
+    });
+
+    it("honours configured limits", async () => {
+      process.env["MAX_WITHDRAWALS_PER_DAY"] = "1";
+
+      expect(await attempt("user-1", "withdraw")).toBe("allowed");
+      expect(await attempt("user-1", "withdraw")).toBeInstanceOf(VelocityError);
+    });
+
+    it.each(["abc", "0", "-2"])(
+      "falls back to the default when the configured limit is invalid (%s)",
+      async (value) => {
+        process.env["MAX_TRADES_PER_HOUR"] = value;
+        seed("velocity:trade_creation:user-1", { count: 10, resetAt: now + HOUR_MS });
+
+        // The default of 10 still applies: an invalid value must not disable the rule.
+        expect(await attempt("user-1", "trade_creation")).toBeInstanceOf(VelocityError);
+      }
+    );
+
+    it("normalises the action name in the counter key", async () => {
+      await attempt("user-1", "TRADE_Creation");
+
+      expect(mockCacheSet).toHaveBeenCalledWith("velocity:trade_creation:user-1", expect.any(String), 3600);
+    });
+  });
+
+  describe("stored counter formats", () => {
+    beforeEach(() => {
+      process.env["MAX_TRADES_PER_HOUR"] = "5";
+    });
+
+    it("reads a legacy plain-integer counter", async () => {
+      seed("velocity:trade_creation:user-1", "5");
+
+      expect(await attempt("user-1", "trade_creation")).toBeInstanceOf(VelocityError);
+    });
+
+    it("treats an unparseable counter as zero", async () => {
+      seed("velocity:trade_creation:user-1", "garbage");
+
+      expect(await attempt("user-1", "trade_creation")).toBe("allowed");
+      expect(storedCount("velocity:trade_creation:user-1")).toBe(1);
+    });
+
+    it("treats an object without a numeric count as zero", async () => {
+      seed("velocity:trade_creation:user-1", { count: "lots", resetAt: now + HOUR_MS });
+
+      expect(await attempt("user-1", "trade_creation")).toBe("allowed");
+      expect(storedCount("velocity:trade_creation:user-1")).toBe(1);
+    });
+
+    it("starts a fresh window when the stored resetAt has already passed", async () => {
+      // TTLs are rounded up, so an entry can briefly outlive its window.
+      seed("velocity:trade_creation:user-1", { count: 5, resetAt: now - 1 });
+
+      expect(await attempt("user-1", "trade_creation")).toBe("allowed");
+      expect(JSON.parse(store.get("velocity:trade_creation:user-1")!.value)).toEqual({
+        count: 1,
+        resetAt: now + HOUR_MS,
+      });
+    });
+  });
+
+  describe("midnight boundary", () => {
+    it("does not reset the daily deposit limit at midnight: the 24h window is rolling", async () => {
+      now = Date.parse("2026-11-20T23:59:00Z");
+      for (let i = 0; i < 5; i++) {
+        expect(await attempt("user-1", "deposit")).toBe("allowed");
+      }
+
+      now = Date.parse("2026-11-21T00:00:30Z"); // calendar day rolled over
+      const err = (await attempt("user-1", "deposit")) as VelocityError;
+
+      expect(err).toBeInstanceOf(VelocityError);
+      expect(err.retryAfterSeconds).toBe(86_400 - 90);
+    });
+
+    it("allows deposits again once 24h have passed since the window opened", async () => {
+      now = Date.parse("2026-11-20T23:59:00Z");
+      for (let i = 0; i < 5; i++) await attempt("user-1", "deposit");
+
+      now = Date.parse("2026-11-21T23:59:01Z");
+
+      expect(await attempt("user-1", "deposit")).toBe("allowed");
+      expect(storedCount("velocity:deposit:user-1")).toBe(1);
+    });
+
+    it("an hourly window spanning midnight keeps counting across the date change", async () => {
+      process.env["MAX_TRADES_PER_HOUR"] = "2";
+      now = Date.parse("2026-11-20T23:45:00Z");
+      await attempt("user-1", "trade_creation");
+      now = Date.parse("2026-11-20T23:59:59Z");
+      await attempt("user-1", "trade_creation");
+
+      now = Date.parse("2026-11-21T00:00:01Z");
+      expect(await attempt("user-1", "trade_creation")).toBeInstanceOf(VelocityError);
+
+      now = Date.parse("2026-11-21T00:45:00Z"); // window opened 23:45, now closed
+      expect(await attempt("user-1", "trade_creation")).toBe("allowed");
+    });
+
+    it("counts failed trades either side of midnight within one window", async () => {
+      mockPoolQuery.mockResolvedValue({ rows: [{ id: "flag-1" }], rowCount: 1 });
+      now = Date.parse("2026-11-20T23:50:00Z");
+      for (let i = 0; i < 4; i++) {
+        await FraudDetectionService.recordFailedTrade("user-1", `trade-${i}`, "CONFIRMATION_REJECTED");
+        now += 60_000;
+      }
+
+      now = Date.parse("2026-11-21T00:05:00Z");
+      const outcome = await FraudDetectionService.recordFailedTrade("user-1", "trade-4", "VERIFICATION_FAILED");
+
+      expect(outcome).toEqual({ failureCount: 5, flagged: true });
+    });
+  });
+
+  describe("concurrent requests at the limit", () => {
+    beforeEach(() => {
+      process.env["MAX_TRADES_PER_HOUR"] = "5";
+    });
+
+    it("lets exactly one of several simultaneous requests take the last slot", async () => {
+      seed("velocity:trade_creation:user-1", { count: 4, resetAt: now + HOUR_MS });
+
+      const outcomes = await Promise.all(
+        Array.from({ length: 5 }, () => attempt("user-1", "trade_creation"))
+      );
+
+      expect(outcomes.filter((o) => o === "allowed")).toHaveLength(1);
+      expect(outcomes.filter((o) => o instanceof VelocityError)).toHaveLength(4);
+      expect(storedCount("velocity:trade_creation:user-1")).toBe(5);
+    });
+
+    it("allows exactly `limit` simultaneous requests from an empty window", async () => {
+      const outcomes = await Promise.all(
+        Array.from({ length: 5 }, () => attempt("user-1", "trade_creation"))
+      );
+
+      expect(outcomes.every((o) => o === "allowed")).toBe(true);
+      expect(storedCount("velocity:trade_creation:user-1")).toBe(5);
+      expect(mockPoolQuery).not.toHaveBeenCalled();
+    });
+
+    it("rejects exactly one of `limit + 1` simultaneous requests", async () => {
+      const outcomes = await Promise.all(
+        Array.from({ length: 6 }, () => attempt("user-1", "trade_creation"))
+      );
+
+      expect(outcomes.filter((o) => o instanceof VelocityError)).toHaveLength(1);
+      expect(mockPoolQuery).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not hold one user's request behind another user's limit", async () => {
+      seed("velocity:trade_creation:user-1", { count: 5, resetAt: now + HOUR_MS });
+
+      const [blocked, allowed] = await Promise.all([
+        attempt("user-1", "trade_creation"),
+        attempt("user-2", "trade_creation"),
+      ]);
+
+      expect(blocked).toBeInstanceOf(VelocityError);
+      expect(allowed).toBe("allowed");
+    });
+  });
+
+  describe("combined rules", () => {
+    it("blocks with every triggered reason when several signals fire", () => {
+      expect(
+        evaluateFraudSignals({ velocityExceeded: true, deviceKnownFraud: true, relatedAccounts: 3 })
+      ).toEqual({ blocked: true, reasons: ["velocity", "device", "cross_account"] });
+    });
+
+    it("treats one related account as normal and two or more as cross-account", () => {
+      expect(evaluateFraudSignals({ relatedAccounts: 1 })).toEqual({ blocked: false, reasons: [] });
+      expect(evaluateFraudSignals({ relatedAccounts: 2 })).toEqual({
+        blocked: true,
+        reasons: ["cross_account"],
+      });
+    });
+
+    it("does not block when every signal is explicitly negative", () => {
+      expect(
+        evaluateFraudSignals({ velocityExceeded: false, deviceKnownFraud: false, relatedAccounts: 0 })
+      ).toEqual({ blocked: false, reasons: [] });
+    });
+
+    it("feeds a velocity violation into the combined decision", async () => {
+      process.env["MAX_DEPOSITS_PER_DAY"] = "1";
+      await attempt("user-1", "deposit");
+      const velocityExceeded = (await attempt("user-1", "deposit")) instanceof VelocityError;
+
+      expect(evaluateFraudSignals({ velocityExceeded, deviceKnownFraud: true })).toEqual({
+        blocked: true,
+        reasons: ["velocity", "device"],
+      });
+    });
+
+    it("raises both the velocity violation and the failed-trade flag for the same user", async () => {
+      process.env["MAX_TRADES_PER_HOUR"] = "1";
+      process.env["FAILED_TRADE_THRESHOLD"] = "2";
+      mockPoolQuery.mockResolvedValue({ rows: [{ id: "flag-1" }], rowCount: 1 });
+
+      await attempt("user-1", "trade_creation");
+      await FraudDetectionService.recordFailedTrade("user-1", "t-1", "VERIFICATION_FAILED");
+      const velocity = await attempt("user-1", "trade_creation");
+      const failed = await FraudDetectionService.recordFailedTrade("user-1", "t-2", "VERIFICATION_FAILED");
+
+      expect(velocity).toBeInstanceOf(VelocityError);
+      expect(failed.flagged).toBe(true);
+      const statements = mockPoolQuery.mock.calls.map(([sql]) => sql as string);
+      expect(statements.some((sql) => sql.includes("INSERT INTO suspicious_activity"))).toBe(true);
+      expect(statements.some((sql) => sql.includes("INSERT INTO fraud_flags"))).toBe(true);
+    });
+  });
+
+  describe("remaining branches", () => {
+    it("ignores a failed-trade history that is valid JSON but not a list", async () => {
+      seed("failed-trades:user-1", { unexpected: true });
+
+      const outcome = await FraudDetectionService.recordFailedTrade("user-1", "t-1", "VERIFICATION_FAILED");
+
+      expect(outcome.failureCount).toBe(1);
+    });
+
+    it("flagAccount reports false when the driver returns a null rowCount", async () => {
+      mockPoolQuery.mockResolvedValueOnce({ rows: [], rowCount: null });
+
+      await expect(FraudDetectionService.flagAccount("user-1", "X", {})).resolves.toBe(false);
+    });
+
+    it("listFraudFlags reports a total of 0 when the count query returns no row", async () => {
+      mockPoolQuery.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [] });
+
+      await expect(FraudDetectionService.listFraudFlags({ limit: 10, offset: 0 })).resolves.toEqual({
+        flags: [],
+        total: 0,
+      });
     });
   });
 });

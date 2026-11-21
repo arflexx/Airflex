@@ -176,3 +176,72 @@ export function renderTradeDisputeOpened(
   const resolved = resolveNotificationLocale(locale);
   return renderWithFallbacks(template.messages[resolved], { ...context }, template.defaults[resolved]);
 }
+
+// ---------------------------------------------------------------------------
+// Strict rendering (restored — NotificationService depends on renderTemplate)
+// ---------------------------------------------------------------------------
+
+export type TemplatePayload = Record<string, string | number>;
+
+/** Thrown when a template references a placeholder the payload doesn't supply. */
+export class MissingTemplateVariableError extends Error {
+  constructor(public readonly missing: string[]) {
+    super(`Missing template variable(s): ${missing.join(", ")}`);
+    this.name = "MissingTemplateVariableError";
+  }
+}
+
+const PLACEHOLDER = /\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+
+const HTML_ESCAPES: Record<string, string> = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;",
+};
+
+/** Escapes a value for safe interpolation into HTML text or attributes. */
+export function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (ch) => HTML_ESCAPES[ch]!);
+}
+
+/** Returns the unique placeholder names referenced by a template, in order. */
+export function extractPlaceholders(template: string): string[] {
+  const names = new Set<string>();
+  for (const match of template.matchAll(PLACEHOLDER)) {
+    names.add(match[1]!);
+  }
+  return [...names];
+}
+
+/** Names with no usable value: undefined, null, or an empty/whitespace-only string. */
+function findMissing(names: string[], payload: TemplatePayload): string[] {
+  return names.filter((name) => {
+    const value = payload[name] as string | number | null | undefined;
+    return value === undefined || value === null || String(value).trim() === "";
+  });
+}
+
+/**
+ * Substitutes `{name}` placeholders in a template with payload values.
+ *
+ * Throws `MissingTemplateVariableError` listing every placeholder that has no
+ * value (undefined, null, or an empty/whitespace-only string). Extra payload
+ * keys are ignored. Pass `escape` to transform each value before substitution
+ * (e.g. `escapeHtml` for HTML bodies).
+ */
+export function renderTemplate(
+  template: string,
+  payload: TemplatePayload,
+  escape: (value: string) => string = (value) => value
+): string {
+  const missing = findMissing(extractPlaceholders(template), payload);
+  if (missing.length > 0) {
+    throw new MissingTemplateVariableError(missing);
+  }
+
+  return template.replace(PLACEHOLDER, (_token, name: string) =>
+    escape(String(payload[name]))
+  );
+}

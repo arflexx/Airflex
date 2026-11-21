@@ -96,6 +96,30 @@ function failedTradesKey(userId: string): string {
   return `failed-trades:${userId}`;
 }
 
+/**
+ * Tail of the pending velocity checks for each counter key. The cache API is
+ * GET/SET only (no atomic INCR), so concurrent checks for the same user and
+ * action are serialised in-process — otherwise N simultaneous requests at
+ * `limit - 1` would all read the same count and all be allowed.
+ */
+const velocityLocks = new Map<string, Promise<void>>();
+
+async function withKeyLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const previous = velocityLocks.get(key) ?? Promise.resolve();
+  const run = previous.then(fn);
+  const tail = run.then(
+    () => undefined,
+    () => undefined
+  );
+  velocityLocks.set(key, tail);
+  try {
+    return await run;
+  } finally {
+    // Only the last waiter clears the entry, so the map doesn't grow unbounded.
+    if (velocityLocks.get(key) === tail) velocityLocks.delete(key);
+  }
+}
+
 export class FraudDetectionService {
   /**
    * Resolve velocity rule limits and windows based on action and env vars.
@@ -104,17 +128,17 @@ export class FraudDetectionService {
     const norm = action.toLowerCase();
 
     if (norm.includes("trade")) {
-      const limit = parseInt(process.env["MAX_TRADES_PER_HOUR"] || "10", 10);
+      const limit = positiveIntFromEnv("MAX_TRADES_PER_HOUR", 10);
       return { limit, windowSeconds: 3600, name: "MAX_TRADES_PER_HOUR" };
     }
 
     if (norm.includes("deposit")) {
-      const limit = parseInt(process.env["MAX_DEPOSITS_PER_DAY"] || "5", 10);
+      const limit = positiveIntFromEnv("MAX_DEPOSITS_PER_DAY", 5);
       return { limit, windowSeconds: 86400, name: "MAX_DEPOSITS_PER_DAY" };
     }
 
     if (norm.includes("withdraw")) {
-      const limit = parseInt(process.env["MAX_WITHDRAWALS_PER_DAY"] || "3", 10);
+      const limit = positiveIntFromEnv("MAX_WITHDRAWALS_PER_DAY", 3);
       return { limit, windowSeconds: 86400, name: "MAX_WITHDRAWALS_PER_DAY" };
     }
 
@@ -127,20 +151,41 @@ export class FraudDetectionService {
    * Throws VelocityError (429) if rule is violated.
    */
   static async checkVelocity(userId: string, action: string): Promise<{ allowed: boolean }> {
-    const rule = this.getRule(action);
     const key = `velocity:${action.toLowerCase()}:${userId}`;
+    return withKeyLock(key, () => this.checkVelocityUnlocked(key, userId, action));
+  }
+
+  private static async checkVelocityUnlocked(
+    key: string,
+    userId: string,
+    action: string
+  ): Promise<{ allowed: boolean }> {
+    const rule = this.getRule(action);
 
     const raw = await cache.get(key);
+    const now = Date.now();
     let count = 0;
-    let resetAt = Date.now() + rule.windowSeconds * 1000;
+    let resetAt = now + rule.windowSeconds * 1000;
 
     if (raw) {
+      let parsed: unknown;
       try {
-        const parsed = JSON.parse(raw) as { count: number; resetAt: number };
-        count = parsed.count;
-        resetAt = parsed.resetAt;
+        parsed = JSON.parse(raw);
       } catch {
-        count = parseInt(raw, 10) || 0;
+        parsed = raw;
+      }
+
+      if (parsed !== null && typeof parsed === "object") {
+        const entry = parsed as { count?: unknown; resetAt?: unknown };
+        // A window whose resetAt has passed (the cache TTL is rounded up, so an
+        // entry can outlive its window briefly) starts a fresh count.
+        if (typeof entry.resetAt === "number" && entry.resetAt > now) {
+          count = typeof entry.count === "number" && entry.count > 0 ? entry.count : 0;
+          resetAt = entry.resetAt;
+        }
+      } else {
+        // Legacy plain-integer counter (e.g. "3"); keeps the fresh window.
+        count = parseInt(String(parsed), 10) || 0;
       }
     }
 

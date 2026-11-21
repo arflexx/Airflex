@@ -1,5 +1,5 @@
 import { Express, Request, Response } from 'express';
-import { query } from '../db/pool';
+import { query, getPoolStats, type PoolStats } from '../db/pool';
 import { cache } from '../services/cache';
 import authRouter from './auth';
 import tradesRouter from './trades';
@@ -78,6 +78,15 @@ export function registerRoutes(app: Express): void {
       redisStatus = 'error';
     }
 
+    // Connection pool utilisation (issue #680): max/total/active/idle/waiting.
+    // Informational only — a busy pool does not fail the probe.
+    let poolStats: PoolStats | null = null;
+    try {
+      poolStats = getPoolStats();
+    } catch {
+      poolStats = null;
+    }
+
     const healthy = dbStatus === 'ok' && redisStatus === 'ok';
     const statusCode = healthy ? 200 : 503;
 
@@ -85,6 +94,7 @@ export function registerRoutes(app: Express): void {
       status: healthy ? 'ok' : 'error',
       db: dbStatus,
       redis: redisStatus,
+      pool: poolStats,
       uptime: process.uptime(),
       version: process.env['npm_package_version'] ?? '1.0.0',
       timestamp: new Date().toISOString(),

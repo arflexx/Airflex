@@ -1,17 +1,23 @@
 /**
  * notifications.ts — Out-of-band notification service.
  *
- * Sends best-effort SMS notifications via the Termii messaging API for key
- * trade lifecycle events (trade locked, completed, disputed, and withdrawals).
+ * Sends best-effort SMS notifications for key trade lifecycle events (trade
+ * locked, completed, disputed, and withdrawals).
  *
  * Design notes
  * ------------
  * - `send(userId, event, payload)` resolves the user's registered phone number
- *   from PostgreSQL and dispatches an SMS using the template that matches the
- *   event type.
- * - Notifications are **best-effort**: any failure (missing API key, Termii
- *   error, DB lookup failure) is logged with `logger.warn` and swallowed. A
- *   notification failure must never fail the parent operation.
+ *   from PostgreSQL, renders the template that matches the event type, and
+ *   **enqueues** a `send-notification` job (issue #678). The Termii API is only
+ *   ever called from the queue worker (jobs/processors/send-notification.ts),
+ *   which retries transient failures — so no HTTP request waits on SMS
+ *   delivery and a Termii outage never slows a trade route down.
+ * - Every job payload is validated against `sendNotificationJobSchema` (Zod)
+ *   before it is enqueued; an invalid payload is logged and dropped.
+ * - Notifications are **best-effort**: any failure (DB lookup failure, missing
+ *   template variable, invalid payload, enqueue failure) is logged with
+ *   `logger.warn` and swallowed. A notification failure must never fail the
+ *   parent operation.
  * - The `opt_out_notifications` flag on the user record is respected — opted-out
  *   users receive no SMS.
  * - Templates live in `notificationTemplates.ts` as string constants.
@@ -19,9 +25,15 @@
 
 import pool from "../db";
 import logger from "../utils/logger";
+import { QueueService } from "../jobs/queue";
+import {
+  sendNotificationJobSchema,
+  type SendNotificationData,
+} from "../jobs/processors/send-notification";
 import {
   NOTIFICATION_TEMPLATES,
   renderTemplate,
+  renderTradeDisputeOpened,
   type NotificationTemplateKey,
 } from "./notificationTemplates";
 
@@ -58,12 +70,6 @@ interface DisputeParticipant extends NotificationTarget {
 }
 
 // ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const TERMII_SMS_URL = "https://api.ng.termii.com/api/sms/send";
-
-// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -90,52 +96,45 @@ async function loadAdmins(): Promise<NotificationTarget[]> {
 }
 
 /**
- * Dispatches the SMS for a single target. Throws on failure so the caller can
- * log and swallow (best-effort semantics are handled in `sendToTarget`).
+ * Validates and enqueues a `send-notification` job. Returns the job id, or
+ * null when the payload failed validation. Throws if the enqueue itself fails
+ * (the caller logs and swallows).
  */
-async function dispatchSms(
-  target: NotificationTarget,
-  text: string
-): Promise<void> {
-  const apiKey = process.env["TERMII_API_KEY"];
-  if (!apiKey) {
-    throw new Error("TERMII_API_KEY environment variable is not set");
+export async function enqueueNotification(data: SendNotificationData): Promise<string | null> {
+  const parsed = sendNotificationJobSchema.safeParse(data);
+  if (!parsed.success) {
+    logger.warn(
+      { userId: data.userId, event: data.event, issues: parsed.error.issues },
+      "[notifications] Invalid notification payload — not enqueued"
+    );
+    return null;
   }
-
-  // Throws MissingTemplateVariableError on an incomplete payload, which
-  // sendToTarget logs and swallows — better no SMS than a malformed one.
-  const renderedText = renderTemplate(NOTIFICATION_TEMPLATES[event], payload);
-
-  const res = await fetch(TERMII_SMS_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      api_key: apiKey,
-      to: target.phone,
-      from: "AirFlex",
-      sms: renderedText,
-      type: "plain",
-      channel: "generic",
-    }),
-  });
-
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Termii SMS API error ${res.status}: ${body}`);
-  }
+  return QueueService.enqueue("send-notification", parsed.data);
 }
 
-/** Renders a template and sends it to a single target (best-effort). */
+/** Renders a template and queues it for a single target (best-effort). */
 async function sendToTarget(
   target: NotificationTarget,
   event: NotificationEvent,
   payload: NotificationPayload
 ): Promise<void> {
-  await deliverText(target, event, renderTemplate(NOTIFICATION_TEMPLATES[event], payload));
+  let text: string;
+  try {
+    // Throws MissingTemplateVariableError on an incomplete payload — better
+    // no SMS than a malformed one.
+    text = renderTemplate(NOTIFICATION_TEMPLATES[event], payload);
+  } catch (err) {
+    logger.warn(
+      { userId: target.id, event, err: (err as Error).message },
+      "[notifications] Failed to render notification template"
+    );
+    return;
+  }
+  await deliverText(target, event, text);
 }
 
 /**
- * Sends already-rendered text to a single target, honouring opt-out and
+ * Queues already-rendered text for a single target, honouring opt-out and
  * swallowing (and logging) any failure. `event` is only used for logging.
  */
 async function deliverText(
@@ -152,15 +151,23 @@ async function deliverText(
   }
 
   try {
-    await dispatchSms(target, text);
-    logger.info(
-      { userId: target.id, event },
-      "[notifications] SMS dispatched"
-    );
+    const jobId = await enqueueNotification({
+      phone: target.phone,
+      type: "custom",
+      message: text,
+      userId: target.id,
+      event,
+    });
+    if (jobId) {
+      logger.info(
+        { userId: target.id, event, jobId },
+        "[notifications] SMS queued"
+      );
+    }
   } catch (err) {
     logger.warn(
       { userId: target.id, event, err: (err as Error).message },
-      "[notifications] Failed to send SMS"
+      "[notifications] Failed to enqueue SMS"
     );
   }
 }
@@ -171,7 +178,7 @@ async function deliverText(
 
 export const NotificationService = {
   /**
-   * Sends a notification to a single user. Best-effort: never throws.
+   * Queues a notification for a single user. Best-effort: never throws.
    */
   async send(
     userId: string,
@@ -201,7 +208,7 @@ export const NotificationService = {
   },
 
   /**
-   * Sends a notification to multiple users (e.g. both trade parties).
+   * Queues a notification for multiple users (e.g. both trade parties).
    * Best-effort: never throws.
    */
   async sendToMany(
@@ -216,7 +223,7 @@ export const NotificationService = {
   },
 
   /**
-   * Sends a notification to every admin user. Best-effort: never throws.
+   * Queues a notification for every admin user. Best-effort: never throws.
    */
   async sendToAdmins(
     event: NotificationEvent,
@@ -239,8 +246,8 @@ export const NotificationService = {
   },
 
   /**
-   * Sends the `trade_dispute_opened` notification to both participants of a
-   * trade (issue #490). Each recipient's message names the *other* party as
+   * Queues the `trade_dispute_opened` notification for both participants of
+   * a trade (issue #490). Each recipient's message names the *other* party as
    * the counterparty. Best-effort: never throws.
    */
   async notifyTradeDisputeOpened(input: TradeDisputeOpenedInput): Promise<void> {

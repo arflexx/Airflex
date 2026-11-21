@@ -23,6 +23,12 @@ export interface ScheduledTask {
   name: string;
   intervalMs: number;
   run: () => Promise<unknown>;
+  /**
+   * Delay before the first run. Defaults to INITIAL_DELAY_MS (60s); cache
+   * pre-warm tasks pass 0 so the cache is populated as soon as the server
+   * starts instead of after the first interval (issue #676).
+   */
+  initialDelayMs?: number;
 }
 
 const timers: NodeJS.Timeout[] = [];
@@ -44,7 +50,7 @@ export function schedule(task: ScheduledTask): void {
     const interval = setInterval(() => void runSafely(task), task.intervalMs);
     interval.unref();
     timers.push(interval);
-  }, INITIAL_DELAY_MS);
+  }, task.initialDelayMs ?? INITIAL_DELAY_MS);
   initial.unref();
   timers.push(initial);
 
