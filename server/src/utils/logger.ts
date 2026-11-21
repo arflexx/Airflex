@@ -1,3 +1,4 @@
+import { isSpanContextValid, trace } from "@opentelemetry/api";
 import { getRequestId } from "./requestContext";
 
 type LogContext = Record<string, unknown>;
@@ -26,6 +27,17 @@ function formatContext(context: LogContext): LogContext {
   );
 }
 
+/**
+ * Trace/span ids of the active OpenTelemetry span (issue #482), so a log line
+ * can be joined to its trace. Empty when tracing is disabled or no span is
+ * active — `@opentelemetry/api` falls back to a no-op without the SDK.
+ */
+function traceContext(): { traceId?: string; spanId?: string } {
+  const spanContext = trace.getActiveSpan()?.spanContext();
+  if (!spanContext || !isSpanContextValid(spanContext)) return {};
+  return { traceId: spanContext.traceId, spanId: spanContext.spanId };
+}
+
 function write(level: string, context: LogContext, message: string): void {
   const timestamp = new Date().toISOString();
   // Correlation ID of the current request (issue #481); an explicit
@@ -39,6 +51,7 @@ function write(level: string, context: LogContext, message: string): void {
         level: level.toLowerCase(),
         message,
         ...(requestId ? { requestId } : {}),
+        ...traceContext(),
         timestamp,
       })}\n`,
     );

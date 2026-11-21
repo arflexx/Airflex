@@ -153,6 +153,30 @@ describe("trade lifecycle spans (issue #482)", () => {
     expect(span.events.map((e) => e.name)).not.toContain("trade.rejected");
   });
 
+  it("correlates the stage span with the request id and sets dotted domain attributes", async () => {
+    const requestId = "4f3c2b1a-0000-4000-8000-00000000abcd";
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ token_version: 1 }] }) // authenticate
+      .mockResolvedValueOnce({ rows: [tradeRow()] }) // load trade
+      .mockResolvedValueOnce({ rows: [tradeRow({ status: "Disputed" })] }); // UPDATE
+
+    const res = await request(app)
+      .post(`/api/v1/trades/${TRADE_ID}/dispute`)
+      .set("Authorization", `Bearer ${makeJwt(BUYER_ID)}`)
+      .set("X-Request-Id", requestId)
+      .send({ reason: "Airtime was never delivered to my number" });
+
+    expect(res.status).toBe(200);
+    expect(res.headers["x-request-id"]).toBe(requestId);
+
+    expect(finishedSpan("trade.dispute").attributes).toMatchObject({
+      "request.id": requestId,
+      "trade.id": TRADE_ID,
+      "user.id": BUYER_ID,
+      "trade.status": "Disputed",
+    });
+  });
+
   it("marks a dispute the route rejects with a trade.rejected event", async () => {
     mockQuery
       .mockResolvedValueOnce({ rows: [{ token_version: 1 }] })

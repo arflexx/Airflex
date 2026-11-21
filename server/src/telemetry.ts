@@ -32,6 +32,7 @@ import {
   type Span,
 } from "@opentelemetry/api";
 import logger from "./utils/logger";
+import { getRequestId } from "./utils/requestContext";
 
 // Guard: skip telemetry in test environments or when explicitly disabled
 if (
@@ -134,6 +135,19 @@ export const TRADE_ATTRIBUTES = {
   tradeId: "trade_id",
   userId: "user_id",
   status: "status",
+  /** Request correlation id (X-Request-Id), shared with the structured logs. */
+  requestId: "request.id",
+} as const;
+
+/**
+ * Dotted (namespaced) aliases for the domain attributes, following the
+ * OpenTelemetry attribute naming guidelines. They are written alongside the
+ * original keys above so existing dashboards and queries keep working.
+ */
+export const TRADE_ATTRIBUTE_ALIASES = {
+  tradeId: "trade.id",
+  userId: "user.id",
+  status: "trade.status",
 } as const;
 
 export interface TradeSpanAttributes {
@@ -145,10 +159,29 @@ export interface TradeSpanAttributes {
 
 function toAttributes(attrs: TradeSpanAttributes): Attributes {
   const out: Attributes = {};
-  if (attrs.tradeId) out[TRADE_ATTRIBUTES.tradeId] = attrs.tradeId;
-  if (attrs.userId) out[TRADE_ATTRIBUTES.userId] = attrs.userId;
-  if (attrs.status) out[TRADE_ATTRIBUTES.status] = attrs.status;
+  if (attrs.tradeId) {
+    out[TRADE_ATTRIBUTES.tradeId] = attrs.tradeId;
+    out[TRADE_ATTRIBUTE_ALIASES.tradeId] = attrs.tradeId;
+  }
+  if (attrs.userId) {
+    out[TRADE_ATTRIBUTES.userId] = attrs.userId;
+    out[TRADE_ATTRIBUTE_ALIASES.userId] = attrs.userId;
+  }
+  if (attrs.status) {
+    out[TRADE_ATTRIBUTES.status] = attrs.status;
+    out[TRADE_ATTRIBUTE_ALIASES.status] = attrs.status;
+  }
   return out;
+}
+
+/**
+ * Correlation attributes for the current request: the X-Request-Id opened by
+ * the requestId middleware (issue #481). Spans started outside a request —
+ * background jobs, the system-raised dispute path — simply omit it.
+ */
+function correlationAttributes(): Attributes {
+  const requestId = getRequestId();
+  return requestId ? { [TRADE_ATTRIBUTES.requestId]: requestId } : {};
 }
 
 /**
@@ -207,7 +240,7 @@ export function withTradeSpan<T>(
 ): Promise<T> {
   return withSpan(
     TRADE_SPAN_NAMES[stage],
-    { [TRADE_ATTRIBUTES.stage]: stage, ...toAttributes(attrs) },
+    { [TRADE_ATTRIBUTES.stage]: stage, ...correlationAttributes(), ...toAttributes(attrs) },
     fn
   );
 }
