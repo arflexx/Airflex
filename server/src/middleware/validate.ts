@@ -55,7 +55,6 @@ export function validate<T>(
     res.status(statusCode).json({
       error: "Validation failed",
       errors,
-      details: errors,
     });
   };
 }
