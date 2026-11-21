@@ -435,3 +435,33 @@ describe("GET /api/v1/admin/users cursor-based pagination (issue #616)", () => {
     expect(res.body.nextCursor).toBeNull();
   });
 });
+
+describe("GET /api/v1/admin/users cursor pagination input validation (issue #625)", () => {
+  const adminToken = jwt.sign(
+    { sub: "99999999-9999-9999-9999-999999999999", role: "admin", tokenVersion: 1 },
+    JWT_SECRET,
+    { expiresIn: "1h" }
+  );
+
+  it.each(["0", "101", "not-a-number"])("rejects invalid limit %s before querying", async (limit) => {
+    mockQuery.mockReset();
+    const res = await request(app)
+      .get(`/api/v1/admin/users?limit=${limit}`)
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid query parameters");
+    expect(mockQuery).not.toHaveBeenCalledWith(expect.stringMatching(/FROM page_users pu/i), expect.anything());
+  });
+
+  it("rejects a blank cursor before querying", async () => {
+    mockQuery.mockReset();
+    const res = await request(app)
+      .get("/api/v1/admin/users?cursor=%20")
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid query parameters");
+    expect(mockQuery).not.toHaveBeenCalledWith(expect.stringMatching(/FROM page_users pu/i), expect.anything());
+  });
+});
