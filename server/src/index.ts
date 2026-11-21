@@ -13,6 +13,7 @@ import { apiVersion } from "./middleware/apiVersion";
 import { requestId } from "./middleware/requestId";
 import { pool, query } from "./db/pool";
 import { cache } from "./services/cache";
+import { checkHealth } from "./services/health";
 
 import { assertEnvValid } from "./config/validateEnv";
 import { corsMiddleware } from "./config/cors";
@@ -135,14 +136,6 @@ app.use(apiVersion);
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
-
-app.get("/health", (_req: Request, res: Response) => {
-  res.status(200).json({
-    status: "ok",
-    version: "1.0.0",
-    timestamp: new Date().toISOString(),
-  });
-});
 
 app.get("/ready", async (_req: Request, res: Response) => {
   try {

@@ -14,57 +14,156 @@ use soroban_sdk::{
 
 #[contracttype]
 pub enum DataKey {
+    /// The admin `Address` set at `initialize`; never reassigned except via `set_admin`.
     Admin,
+    /// Monotonically increasing `u64` counter used to allocate the next `Trade(u64)` id.
     TradeCounter,
+    /// Persistent storage slot for a single `TradeOffer`, keyed by trade id.
     Trade(u64),
+    /// Circuit-breaker flag (`bool`); when `true` state-mutating calls are rejected.
     Paused,
+    /// Unix timestamp (ledger time, seconds) at which `pause` was last called.
     PausedAt,
+    /// Allow-list membership (`bool`) for a token contract `Address` accepted as trade collateral.
     AllowedToken(Address),
+    /// Monotonically increasing `u64` counter of sub-escrow fills created for a given trade id.
     TradeFillCounter(u64),
+    /// Persistent storage slot for a single `SubEscrow` fill, keyed by `(trade_id, fill_id)`.
     SubEscrow(u64, u64),
+    /// Allow-list membership (`bool`) for an asset-type `Symbol` (e.g. `AIRTIME`, `DATA`).
     AllowedCategory(Symbol),
+    /// Unix timestamp (ledger time, seconds) after which a disputed trade's window closes, keyed by trade id.
     DisputeWindowCloseAt(u64),
+    /// Per-contract dispute cooldown window, in seconds (issue #642). Set at
+    /// `initialize` so it is readable (and, in principle, admin-tunable) the
+    /// same way every other configuration value in this contract is.
+    DisputeCooldownSecs,
+    /// Ledger timestamp of the most recent `flag_dispute` call on this trade
+    /// (issue #642), used to reject a repeat call before the cooldown window
+    /// has elapsed.
+    LastDisputeAt(u64),
+    /// Maximum `total_amount` (in the token's smallest unit, e.g. stroops) a
+    /// single listing may lock (issue #636). Set at `initialize`, updated via
+    /// `update_max_amount`.
+    MaxAmount,
 }
 
 pub const EMERGENCY_TIMELOCK_SECS: u64 = 72 * 60 * 60; // 72 hours = 259,200 seconds
 pub const MAX_EXPIRY_SECS: u64 = 30 * 24 * 60 * 60; // 30 days = 2,592,000 seconds
 pub const DISPUTE_WINDOW_SECS: u64 = 24 * 60 * 60; // 24 hours = 86,400 seconds
+/// Default per-listing cap written at `initialize` (issue #636). It is
+/// effectively uncapped so existing integrations keep working; deployments set
+/// the real cap straight after init via `update_max_amount` (see deploy.sh).
+pub const DEFAULT_MAX_AMOUNT: i128 = i128::MAX;
+/// Default minimum time between successive `flag_dispute` calls on the same
+/// trade (issue #642). A malicious party repeatedly calling `flag_dispute`
+/// could otherwise spam the dispute path to exhaust the counterparty's
+/// ability to respond, or to game dispute-resolution timing. Stored into
+/// instance storage at `initialize` and read back on every `flag_dispute`
+/// call.
+pub const DEFAULT_DISPUTE_COOLDOWN_SECS: u64 = 3600; // 1 hour
+
+// ---------------------------------------------------------------------------
+// Deposit amount bounds (issue #506)
+// ---------------------------------------------------------------------------
+
+/// Minimum deposit amount in stroops (1 XLM = 10,000,000 stroops).
+///
+/// Enforced in `deposit_to_escrow` to prevent dust attacks: a buyer sending a
+/// 1-stroop fill consumes a sub-escrow storage slot and a fill-counter entry
+/// for a negligible economic contribution, which could be used to spam listings
+/// or grief sellers.
+///
+/// Set to 1_000_000 stroops (0.1 XLM) — small enough to be inclusive for
+/// micro-trade use-cases while rejecting non-economical dust fills.
+pub const MIN_DEPOSIT_AMOUNT: i128 = 1_000_000; // 0.1 XLM in stroops
+
+/// Maximum deposit amount in stroops.
+///
+/// Enforced in `deposit_to_escrow` to prevent integer overflow edge cases
+/// and to cap the single-fill exposure that a compromised signing key could
+/// lock. `i128::MAX` is 170,141,183,460,469,231,731,687,303,715,884,105,727,
+/// which is far beyond any realistic trade size; using a capped maximum makes
+/// the invariant explicit and auditable.
+///
+/// Set to 1_000_000_000_000_000 stroops (100,000,000 XLM) — safely within
+/// `i128` and above any foreseeable single-trade maximum on this platform.
+pub const MAX_DEPOSIT_AMOUNT: i128 = 1_000_000_000_000_000; // 100,000,000 XLM in stroops
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
+/// Lifecycle status of a [`TradeOffer`] (issue #150).
 #[contracttype]
 #[derive(Clone, PartialEq, Debug)]
 pub enum TradeStatus {
+    /// Listed and open for one or more buyers to deposit into.
     Open,
+    /// At least one buyer has deposited but capacity remains (multi-fill listings).
     PartiallyFilled,
+    /// Fully funded; no further deposits are accepted.
     Locked,
+    /// All sub-escrow fills have been released or refunded; terminal state.
     Completed,
+    /// A buyer has raised a dispute within the dispute window; terminal pending resolution.
     Disputed,
+    /// Cancelled by the seller or admin before being filled; terminal state.
     Cancelled,
+}
+
+/// Outcome an arbitrator assigns to a disputed trade (Issue #508).
+///
+/// `Release` — the seller prevails: every still-escrowed sub-escrow is released
+/// to the seller and the trade completes.
+/// `Refund`  — the buyer prevails: every still-escrowed sub-escrow is returned
+/// to its buyer and the trade is cancelled.
+///
+/// See `AUDIT_PREP.md` → `TradeStatus` state machine.
+#[contracttype]
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum DisputeResolution {
+    Release,
+    Refund,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct TradeOffer {
+    /// Unique trade id, allocated from `DataKey::TradeCounter`.
     pub id: u64,
+    /// The seller `Address` who created the listing and will receive payment.
     pub seller: Address,
-    pub token: Address,      // USDC or NGNC contract address
-    pub total_amount: i128,  // total token amount in stroops
-    pub filled_amount: i128, // filled token amount in stroops
-    pub asset_type: Symbol,  // e.g. symbol_short!("AIRTIME")
+    /// Token contract `Address` used for settlement (e.g. USDC or NGNC), must be allow-listed.
+    pub token: Address,
+    /// Total amount offered, in stroops (1 XLM = 10_000_000 stroops; same unit for other SEP-41 tokens).
+    pub total_amount: i128,
+    /// Amount already claimed across all sub-escrow fills, in stroops.
+    pub filled_amount: i128,
+    /// Asset category symbol, e.g. `symbol_short!("AIRTIME")`, must be on the allowed categories list.
+    pub asset_type: Symbol,
+    /// Current lifecycle status of the trade.
     pub status: TradeStatus,
-    pub expires_at: u64, // Unix timestamp (ledger time)
+    /// Unix timestamp (ledger time, seconds) after which the listing can no longer be filled.
+    pub expires_at: u64,
 }
 
+/// A single buyer's deposit against a [`TradeOffer`] (issue #150).
+///
+/// Multiple `SubEscrow` entries can exist per trade id, one per buyer fill,
+/// keyed by `DataKey::SubEscrow(trade_id, fill_id)`.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct SubEscrow {
+    /// Id of this fill, unique within its parent trade (see `DataKey::TradeFillCounter`).
     pub fill_id: u64,
+    /// The buyer `Address` who deposited into this fill.
     pub buyer: Address,
+    /// Amount deposited by this buyer, in stroops.
     pub amount: i128,
+    /// `true` once funds have been released to the seller for this fill.
     pub released: bool,
+    /// `true` once funds have been refunded back to the buyer for this fill.
     pub refunded: bool,
 }
 
@@ -97,6 +196,12 @@ pub enum ContractError {
     PauseCooldownNotExpired = 15,
     InvalidCategory = 16,
     DuplicateFill = 17,
+    /// `flag_dispute` was called on this trade before `dispute_cooldown_seconds`
+    /// had elapsed since the previous dispute flag (issue #642).
+    DisputeCooldownActive = 18,
+    /// `create_listing` amount is above the admin-configured `MaxAmount`
+    /// (issue #636).
+    AmountExceedsMax = 19,
 }
 
 // ---------------------------------------------------------------------------
@@ -121,6 +226,9 @@ fn topic_cancelled() -> Symbol {
 } // 9 chars (max limit for symbol_short!)
 fn topic_disputed() -> Symbol {
     symbol_short!("disputed")
+} // 8 chars
+fn topic_resolved() -> Symbol {
+    symbol_short!("resolved")
 } // 8 chars
 fn topic_contract() -> Symbol {
     symbol_short!("contract")
@@ -150,6 +258,25 @@ fn topic_transfer() -> Symbol {
     symbol_short!("transfer")
 } // 8 chars
 
+// Canonical state-transition events (issue #639). Each carries
+// `(escrow_id, actor, amount, timestamp)` so indexers, audit tooling, and the
+// backend oracle can subscribe to on-chain state changes instead of polling
+// `get_trade`. Documented in `contracts/escrow/README.md`. These names are
+// > 9 characters, so they must use `Symbol::new(env, "...")` rather than
+// `symbol_short!` (see note above).
+fn topic_escrow_created(env: &Env) -> Symbol {
+    Symbol::new(env, "EscrowCreated")
+}
+fn topic_escrow_released(env: &Env) -> Symbol {
+    Symbol::new(env, "EscrowReleased")
+}
+fn topic_escrow_refunded(env: &Env) -> Symbol {
+    Symbol::new(env, "EscrowRefunded")
+}
+fn topic_escrow_disputed(env: &Env) -> Symbol {
+    Symbol::new(env, "EscrowDisputed")
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -164,6 +291,15 @@ fn require_not_paused(env: &Env) -> Result<(), ContractError> {
         return Err(ContractError::ContractPaused);
     }
     Ok(())
+}
+
+/// Contracts initialised before issue #636 have no `MaxAmount` entry; treat
+/// them as uncapped until the admin calls `update_max_amount`.
+fn get_max_amount(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::MaxAmount)
+        .unwrap_or(DEFAULT_MAX_AMOUNT)
 }
 
 fn get_admin(env: &Env) -> Result<Address, ContractError> {
@@ -257,6 +393,14 @@ impl EscrowContract {
         env.storage()
             .instance()
             .set(&DataKey::AllowedCategory(data), &true);
+        // Dispute cooldown (issue #642) — set at initialization, default 3600s.
+        env.storage()
+            .instance()
+            .set(&DataKey::DisputeCooldownSecs, &DEFAULT_DISPUTE_COOLDOWN_SECS);
+        // Per-listing amount cap (issue #636).
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxAmount, &DEFAULT_MAX_AMOUNT);
         // Bump instance TTL so it survives long-running trades
         env.storage().instance().extend_ttl(17_280, 17_280 * 30);
         Ok(())
@@ -360,6 +504,12 @@ impl EscrowContract {
             return Err(ContractError::InvalidAmount);
         }
 
+        // Every fill is bounded by the remaining listing amount, so capping
+        // the listing total caps the funds any single escrow can lock.
+        if amount > get_max_amount(&env) {
+            return Err(ContractError::AmountExceedsMax);
+        }
+
         let now = env.ledger().timestamp();
         if expires_at <= now || expires_at > now + MAX_EXPIRY_SECS {
             return Err(ContractError::InvalidExpiry);
@@ -390,7 +540,14 @@ impl EscrowContract {
             .extend_ttl(&DataKey::Trade(id), 17_280, 17_280 * 30);
 
         env.events()
-            .publish((topic_created(), asset_type), (id, seller, amount));
+            .publish((topic_created(), asset_type), (id, seller.clone(), amount));
+
+        // Canonical state-transition event (issue #639): escrow_id, actor,
+        // amount, timestamp.
+        env.events().publish(
+            (topic_escrow_created(&env),),
+            (id, seller, amount, now),
+        );
 
         Ok(id)
     }
@@ -403,6 +560,27 @@ impl EscrowContract {
     /// Emits a `topics: ["token", "allowed"]` event carrying the token
     /// address, so off-chain indexers and admin tooling can observe changes
     /// to the allow-list without polling every token individually.
+    /// Admin-only: set the maximum `amount` a single listing may lock
+    /// (issue #636). Must be positive. Existing listings are unaffected.
+    /// Emits `topics: ["max_amt"]` with `(old_max, new_max)`.
+    pub fn update_max_amount(env: Env, new_max: i128) -> Result<(), ContractError> {
+        let admin = get_admin(&env)?;
+        admin.require_auth();
+        if new_max <= 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+        let old_max = get_max_amount(&env);
+        env.storage().instance().set(&DataKey::MaxAmount, &new_max);
+        env.events()
+            .publish((symbol_short!("max_amt"),), (old_max, new_max));
+        Ok(())
+    }
+
+    /// Current per-listing amount cap (issue #636).
+    pub fn max_amount(env: Env) -> i128 {
+        get_max_amount(&env)
+    }
+
     pub fn add_allowed_token(env: Env, token: Address) -> Result<(), ContractError> {
         let admin = get_admin(&env)?;
         admin.require_auth();
@@ -526,6 +704,16 @@ impl EscrowContract {
         }
 
         if fill_amount <= 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+
+        // Reject dust fills below the minimum to prevent spam / storage exhaustion
+        // (issue #506). Reject over-sized fills to guard against overflow edge
+        // cases and cap single-fill exposure.
+        if fill_amount < MIN_DEPOSIT_AMOUNT {
+            return Err(ContractError::InvalidAmount);
+        }
+        if fill_amount > MAX_DEPOSIT_AMOUNT {
             return Err(ContractError::InvalidAmount);
         }
 
@@ -669,6 +857,14 @@ impl EscrowContract {
             (trade_id, fill_id, trade.seller.clone()),
         );
 
+        // Canonical state-transition event (issue #639): escrow_id, actor,
+        // amount, timestamp.
+        let now = env.ledger().timestamp();
+        env.events().publish(
+            (topic_escrow_released(&env),),
+            (trade_id, trade.seller.clone(), sub_escrow.amount, now),
+        );
+
         if completed {
             env.events()
                 .publish((topic_completed(),), (trade_id, trade.seller.clone()));
@@ -785,6 +981,14 @@ impl EscrowContract {
             (trade_id, fill_id, trade.seller.clone()),
         );
 
+        // Canonical state-transition event (issue #639): escrow_id, actor,
+        // amount, timestamp. `now` was already read above to check the
+        // dispute-window timelock.
+        env.events().publish(
+            (topic_escrow_released(&env),),
+            (trade_id, trade.seller.clone(), sub_escrow.amount, now),
+        );
+
         if completed {
             env.events()
                 .publish((topic_completed(),), (trade_id, trade.seller.clone()));
@@ -862,6 +1066,15 @@ impl EscrowContract {
                             .persistent()
                             .set(&DataKey::SubEscrow(trade_id, i), &sub);
                         refunded_amount += sub.amount;
+
+                        // Canonical state-transition event (issue #639):
+                        // escrow_id, actor, amount, timestamp. Emitted per
+                        // refunded buyer, since a single `cancel_and_refund`
+                        // call can settle several sub-escrows at once.
+                        env.events().publish(
+                            (topic_escrow_refunded(&env),),
+                            (trade_id, sub.buyer.clone(), sub.amount, now),
+                        );
                     }
                 }
             }
@@ -939,6 +1152,18 @@ impl EscrowContract {
     /// only attempted once a trade is locked, so a buyer who deposited a
     /// single stroop has no delivery grievance yet and must not be able to
     /// freeze the seller's listing.
+    ///
+    /// Dispute-spam guard (issue #642): a repeat call on the same trade —
+    /// whether re-flagging an already-`Disputed` trade or (if this contract
+    /// ever reopens disputed trades in the future) flagging it again after
+    /// resolution — is rejected with `DisputeCooldownActive` until
+    /// `dispute_cooldown_seconds` (default 3600s, set at `initialize`) has
+    /// elapsed since the previous flag. This stops either party from
+    /// spamming the dispute path to exhaust the counterparty's ability to
+    /// respond, or to game dispute-resolution timing. Once the cooldown has
+    /// elapsed, flagging again on an already-`Disputed` trade is accepted as
+    /// a re-escalation (e.g. to bump the last-flagged timestamp and re-notify
+    /// the admin/oracle) rather than an error.
     pub fn flag_dispute(env: Env, caller: Address, trade_id: u64) -> Result<(), ContractError> {
         require_not_paused(&env)?;
         caller.require_auth();
@@ -949,11 +1174,23 @@ impl EscrowContract {
             .get(&DataKey::Trade(trade_id))
             .ok_or(ContractError::TradeNotFound)?;
 
-        if trade.status == TradeStatus::Disputed {
-            return Err(ContractError::AlreadyDisputed);
+        let now = env.ledger().timestamp();
+        let cooldown: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::DisputeCooldownSecs)
+            .unwrap_or(DEFAULT_DISPUTE_COOLDOWN_SECS);
+        if let Some(last_dispute_at) = env
+            .storage()
+            .persistent()
+            .get::<_, u64>(&DataKey::LastDisputeAt(trade_id))
+        {
+            if now < last_dispute_at.saturating_add(cooldown) {
+                return Err(ContractError::DisputeCooldownActive);
+            }
         }
 
-        if trade.status != TradeStatus::Locked {
+        if trade.status != TradeStatus::Locked && trade.status != TradeStatus::Disputed {
             return Err(ContractError::WrongStatus);
         }
 
@@ -987,8 +1224,132 @@ impl EscrowContract {
         env.storage()
             .persistent()
             .set(&DataKey::Trade(trade_id), &trade);
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::LastDisputeAt(trade_id), &now);
+        env.storage().persistent().extend_ttl(
+            &DataKey::LastDisputeAt(trade_id),
+            17_280,
+            17_280 * 30,
+        );
+
         env.events()
-            .publish((topic_disputed(),), (trade_id, caller));
+            .publish((topic_disputed(),), (trade_id, caller.clone()));
+
+        // Canonical state-transition event (issue #639): escrow_id, actor,
+        // amount, timestamp. `amount` is the trade's currently-filled
+        // (escrowed) balance at the time of the dispute.
+        env.events().publish(
+            (topic_escrow_disputed(&env),),
+            (trade_id, caller, trade.filled_amount, now),
+        );
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_dispute — arbitrator (admin) settles a disputed trade (Issue #508)
+    // -----------------------------------------------------------------------
+
+    /// Settles a `Disputed` trade, releasing every still-escrowed sub-escrow
+    /// either back to its buyer (`Refund`) or to the seller (`Release`).
+    ///
+    /// Mirrors the state machine documented in `AUDIT_PREP.md`:
+    ///   `Disputed --> Completed : resolve_dispute(Release) [Admin]`
+    ///   `Disputed --> Cancelled : resolve_dispute(Refund)  [Admin]`
+    ///
+    /// Authorisation is gated on the contract admin (the platform's
+    /// arbitration key) via `admin.require_auth()`, so a caller that is not
+    /// the arbitrator cannot move escrowed funds — the host rejects the
+    /// invocation before any state changes (see
+    /// `test_non_arbitrator_cannot_resolve_dispute`).
+    pub fn resolve_dispute(
+        env: Env,
+        trade_id: u64,
+        resolution: DisputeResolution,
+    ) -> Result<(), ContractError> {
+        require_not_paused(&env)?;
+
+        let admin = get_admin(&env)?;
+        admin.require_auth();
+
+        let mut trade: TradeOffer = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Trade(trade_id))
+            .ok_or(ContractError::TradeNotFound)?;
+
+        if trade.status != TradeStatus::Disputed {
+            return Err(ContractError::WrongStatus);
+        }
+
+        let fill_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TradeFillCounter(trade_id))
+            .unwrap_or(0);
+        if fill_count == 0 {
+            return Err(ContractError::TradeNotFound);
+        }
+
+        let token_client = token::Client::new(&env, &trade.token);
+
+        // Settle every still-escrowed sub-escrow in the direction the
+        // arbitrator ruled. Fills already settled before the dispute (if any)
+        // are left untouched.
+        for i in 1..=fill_count {
+            if let Some(mut sub) = env
+                .storage()
+                .persistent()
+                .get::<_, SubEscrow>(&DataKey::SubEscrow(trade_id, i))
+            {
+                if sub.released || sub.refunded {
+                    continue;
+                }
+
+                let recipient = match &resolution {
+                    DisputeResolution::Refund => sub.buyer.clone(),
+                    DisputeResolution::Release => trade.seller.clone(),
+                };
+                token_client.transfer(
+                    &env.current_contract_address(),
+                    &recipient,
+                    &sub.amount,
+                );
+
+                match &resolution {
+                    DisputeResolution::Refund => sub.refunded = true,
+                    DisputeResolution::Release => sub.released = true,
+                }
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::SubEscrow(trade_id, i), &sub);
+
+                env.events()
+                    .publish((topic_resolved(),), (trade_id, i, recipient));
+            }
+        }
+
+        // Transition the whole trade per the documented state machine:
+        // Release -> Completed, Refund -> Cancelled.
+        trade.status = match &resolution {
+            DisputeResolution::Release => TradeStatus::Completed,
+            DisputeResolution::Refund => TradeStatus::Cancelled,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::Trade(trade_id), &trade);
+
+        match &resolution {
+            DisputeResolution::Release => {
+                env.events()
+                    .publish((topic_completed(),), (trade_id, trade.seller.clone()));
+            }
+            DisputeResolution::Refund => {
+                env.events().publish((topic_cancelled(),), (trade_id,));
+            }
+        }
+
         Ok(())
     }
 
@@ -1160,6 +1521,77 @@ mod test {
     // -----------------------------------------------------------------------
     // Existing functional tests (updated to use Result-returning functions)
     // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // Issue #636: per-listing amount cap
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_max_amount_defaults_to_uncapped() {
+        let (_env, client, _admin, _seller, _buyer, _token) = setup();
+        assert_eq!(client.max_amount(), DEFAULT_MAX_AMOUNT);
+    }
+
+    #[test]
+    fn test_create_listing_at_max_amount_succeeds() {
+        let (env, client, _admin, seller, _buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+        client.update_max_amount(&1_000_0000000i128);
+
+        assert!(client.try_create_listing(&seller, &token, &1_000_0000000i128, &symbol_short!("AIRTIME"), &(1_000_000 + 86_400)).is_ok());
+    }
+
+    #[test]
+    fn test_create_listing_above_max_amount_fails() {
+        let (env, client, _admin, seller, _buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+        client.update_max_amount(&1_000_0000000i128);
+
+        assert_eq!(
+            client.try_create_listing(&seller, &token, &1_000_0000001i128, &symbol_short!("AIRTIME"), &(1_000_000 + 86_400)),
+            Err(Ok(ContractError::AmountExceedsMax))
+        );
+        assert_eq!(client.trade_count(), 0);
+    }
+
+    #[test]
+    fn test_admin_can_raise_and_lower_max_amount() {
+        let (env, client, _admin, seller, _buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        client.update_max_amount(&100i128);
+        assert_eq!(client.try_create_listing(&seller, &token, &101i128, &symbol_short!("AIRTIME"), &(1_000_000 + 86_400)), Err(Ok(ContractError::AmountExceedsMax)));
+
+        client.update_max_amount(&1_000i128);
+        assert_eq!(client.max_amount(), 1_000);
+        assert!(client.try_create_listing(&seller, &token, &101i128, &symbol_short!("AIRTIME"), &(1_000_000 + 86_400)).is_ok());
+    }
+
+    #[test]
+    fn test_update_max_amount_rejects_non_positive() {
+        let (_env, client, _admin, _seller, _buyer, _token) = setup();
+        assert_eq!(client.try_update_max_amount(&0i128), Err(Ok(ContractError::InvalidAmount)));
+        assert_eq!(client.try_update_max_amount(&-5i128), Err(Ok(ContractError::InvalidAmount)));
+    }
+
+    #[test]
+    fn test_update_max_amount_requires_admin_auth() {
+        let (env, client, _admin, seller, _buyer, _token) = setup();
+        env.set_auths(&[]);
+        let result = client
+            .mock_auths(&[MockAuth {
+                address: &seller,
+                invoke: &MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "update_max_amount",
+                    args: (5i128,).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .try_update_max_amount(&5i128);
+        assert!(result.is_err());
+        assert_eq!(client.max_amount(), DEFAULT_MAX_AMOUNT);
+    }
 
     #[test]
     fn test_create_listing() {
@@ -1824,8 +2256,18 @@ mod test {
         assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
     }
 
+    // -----------------------------------------------------------------------
+    // Issue #642 — dispute cooldown (anti-spam on flag_dispute)
+    // -----------------------------------------------------------------------
+
+    /// First dispute on a Locked trade succeeds; an immediate second flag —
+    /// from either the same or a different party — is rejected with the new
+    /// `DisputeCooldownActive` error rather than being silently accepted or
+    /// panicking, superseding the old `AlreadyDisputed`-only behaviour now
+    /// that re-flagging is permitted once the cooldown elapses (see
+    /// `test_flag_dispute_succeeds_again_after_cooldown_elapses` below).
     #[test]
-    fn test_err_already_disputed() {
+    fn test_err_dispute_cooldown_active_on_immediate_redispute() {
         let (env, client, _admin, seller, buyer, token) = setup();
         env.ledger().with_mut(|l| l.timestamp = 1_000_000);
 
@@ -1837,11 +2279,141 @@ mod test {
             &(1_000_000 + 86_400),
         );
         client.deposit_to_escrow(&buyer, &trade_id, &500_0000000i128);
-        // First flag
+
+        // First flag succeeds.
         client.flag_dispute(&seller, &trade_id);
-        // Second flag on already-Disputed trade
+        assert_eq!(client.get_trade(&trade_id).status, TradeStatus::Disputed);
+
+        // Immediate second flag (same ledger timestamp) on the same trade —
+        // from the other party — is rejected by the cooldown guard.
         let result = client.try_flag_dispute(&buyer, &trade_id);
-        assert_eq!(result, Err(Ok(ContractError::AlreadyDisputed)));
+        assert_eq!(result, Err(Ok(ContractError::DisputeCooldownActive)));
+    }
+
+    /// Once `dispute_cooldown_seconds` (default 3600s) has elapsed since the
+    /// last flag, calling `flag_dispute` again on the same (still-Disputed)
+    /// trade succeeds rather than erroring, allowing a party to re-escalate.
+    #[test]
+    fn test_flag_dispute_succeeds_again_after_cooldown_elapses() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let trade_id = client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &symbol_short!("AIRTIME"),
+            &(1_000_000 + 86_400),
+        );
+        client.deposit_to_escrow(&buyer, &trade_id, &500_0000000i128);
+
+        client.flag_dispute(&seller, &trade_id);
+
+        // Advance past the default 3600s cooldown window.
+        env.ledger()
+            .with_mut(|l| l.timestamp = 1_000_000 + DEFAULT_DISPUTE_COOLDOWN_SECS + 1);
+
+        // Re-flagging now succeeds instead of erroring.
+        let result = client.try_flag_dispute(&buyer, &trade_id);
+        assert!(result.is_ok());
+        assert_eq!(client.get_trade(&trade_id).status, TradeStatus::Disputed);
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #639 — Soroban events for every escrow state transition
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_escrow_created_event_emitted() {
+        let (env, client, _admin, seller, _buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &symbol_short!("AIRTIME"),
+            &(1_000_000 + 86_400),
+        );
+
+        let created_symbol = Symbol::new(&env, "EscrowCreated");
+        let all_events = env.events().all();
+        let has_created = all_events
+            .iter()
+            .any(|e| e.1.iter().any(|t| t.shallow_eq(&created_symbol.to_val())));
+        assert!(has_created, "EscrowCreated event should be published");
+    }
+
+    #[test]
+    fn test_escrow_released_event_emitted() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let trade_id = client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &symbol_short!("AIRTIME"),
+            &(1_000_000 + 86_400),
+        );
+        client.deposit_to_escrow(&buyer, &trade_id, &500_0000000i128);
+        client.release_payment(&trade_id, &1);
+
+        let released_symbol = Symbol::new(&env, "EscrowReleased");
+        let all_events = env.events().all();
+        let has_released = all_events
+            .iter()
+            .any(|e| e.1.iter().any(|t| t.shallow_eq(&released_symbol.to_val())));
+        assert!(has_released, "EscrowReleased event should be published");
+    }
+
+    #[test]
+    fn test_escrow_refunded_event_emitted() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let trade_id = client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &symbol_short!("AIRTIME"),
+            &(1_000_000 + 86_400),
+        );
+        client.deposit_to_escrow(&buyer, &trade_id, &500_0000000i128);
+
+        // Buyer can only self-refund after expiry.
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000 + 86_401);
+        client.cancel_and_refund(&buyer, &trade_id);
+
+        let refunded_symbol = Symbol::new(&env, "EscrowRefunded");
+        let all_events = env.events().all();
+        let has_refunded = all_events
+            .iter()
+            .any(|e| e.1.iter().any(|t| t.shallow_eq(&refunded_symbol.to_val())));
+        assert!(has_refunded, "EscrowRefunded event should be published");
+    }
+
+    #[test]
+    fn test_escrow_disputed_event_emitted() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let trade_id = client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &symbol_short!("AIRTIME"),
+            &(1_000_000 + 86_400),
+        );
+        client.deposit_to_escrow(&buyer, &trade_id, &500_0000000i128);
+        client.flag_dispute(&seller, &trade_id);
+
+        let disputed_symbol = Symbol::new(&env, "EscrowDisputed");
+        let all_events = env.events().all();
+        let has_disputed = all_events
+            .iter()
+            .any(|e| e.1.iter().any(|t| t.shallow_eq(&disputed_symbol.to_val())));
+        assert!(has_disputed, "EscrowDisputed event should be published");
     }
 
     #[test]
@@ -1913,6 +2485,118 @@ mod test {
         let result = client.try_get_admin();
         assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
     }
+
+    // -----------------------------------------------------------------------
+    // Input validation — deposit amount bounds (issue #506)
+    //
+    // Tests that `deposit_to_escrow` enforces MIN_DEPOSIT_AMOUNT and
+    // MAX_DEPOSIT_AMOUNT. Each test includes both a negative case (rejected)
+    // and a positive case (accepted) to confirm the boundary is correctly placed.
+    // -----------------------------------------------------------------------
+
+    /// A deposit below `MIN_DEPOSIT_AMOUNT` (dust) must be rejected with
+    /// `InvalidAmount`. A deposit at exactly `MIN_DEPOSIT_AMOUNT` must succeed.
+    #[test]
+    fn test_deposit_below_minimum_rejected() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let trade_id = client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &symbol_short!("AIRTIME"),
+            &(1_000_000 + 86_400),
+        );
+
+        // 1 stroop — far below MIN_DEPOSIT_AMOUNT (1_000_000)
+        let result = client.try_deposit_to_escrow(&buyer, &trade_id, &1i128);
+        assert_eq!(
+            result,
+            Err(Ok(ContractError::InvalidAmount)),
+            "1-stroop deposit must be rejected with InvalidAmount"
+        );
+
+        // MIN_DEPOSIT_AMOUNT - 1 — one stroop below the floor
+        let result = client.try_deposit_to_escrow(&buyer, &trade_id, &(MIN_DEPOSIT_AMOUNT - 1));
+        assert_eq!(
+            result,
+            Err(Ok(ContractError::InvalidAmount)),
+            "deposit one stroop below MIN_DEPOSIT_AMOUNT must be rejected"
+        );
+
+        // Exactly MIN_DEPOSIT_AMOUNT — must succeed (positive case)
+        client.deposit_to_escrow(&buyer, &trade_id, &MIN_DEPOSIT_AMOUNT);
+        let trade = client.get_trade(&trade_id);
+        assert_eq!(
+            trade.filled_amount, MIN_DEPOSIT_AMOUNT,
+            "deposit at exactly MIN_DEPOSIT_AMOUNT must be accepted"
+        );
+    }
+
+    /// A deposit above `MAX_DEPOSIT_AMOUNT` must be rejected with `InvalidAmount`.
+    /// A deposit at exactly `MAX_DEPOSIT_AMOUNT` (when the listing is large enough)
+    /// must succeed.
+    #[test]
+    fn test_deposit_above_maximum_rejected() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        // Create a listing sized at MAX_DEPOSIT_AMOUNT so we can test the exact boundary
+        let sac = soroban_sdk::token::StellarAssetClient::new(&env, &token);
+        // Mint enough to cover MAX_DEPOSIT_AMOUNT + 1 for the buyer
+        sac.mint(&buyer, &(MAX_DEPOSIT_AMOUNT + 1));
+
+        let trade_id = client.create_listing(
+            &seller,
+            &token,
+            &MAX_DEPOSIT_AMOUNT,
+            &symbol_short!("AIRTIME"),
+            &(1_000_000 + 86_400),
+        );
+
+        // MAX_DEPOSIT_AMOUNT + 1 — one stroop above the ceiling
+        let result = client.try_deposit_to_escrow(&buyer, &trade_id, &(MAX_DEPOSIT_AMOUNT + 1));
+        assert_eq!(
+            result,
+            Err(Ok(ContractError::InvalidAmount)),
+            "deposit one stroop above MAX_DEPOSIT_AMOUNT must be rejected"
+        );
+
+        // Exactly MAX_DEPOSIT_AMOUNT — must succeed (positive case)
+        client.deposit_to_escrow(&buyer, &trade_id, &MAX_DEPOSIT_AMOUNT);
+        let trade = client.get_trade(&trade_id);
+        assert_eq!(
+            trade.filled_amount, MAX_DEPOSIT_AMOUNT,
+            "deposit at exactly MAX_DEPOSIT_AMOUNT must be accepted"
+        );
+    }
+
+    /// Existing tests with amounts between MIN and MAX must continue to pass —
+    /// confirms the new bounds do not break backward compatibility for normal
+    /// trade sizes. All standard test amounts (200_0000000 to 500_0000000)
+    /// are within [MIN_DEPOSIT_AMOUNT, MAX_DEPOSIT_AMOUNT].
+    #[test]
+    fn test_deposit_normal_amount_within_bounds_accepted() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let trade_id = client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &symbol_short!("DATA"),
+            &(1_000_000 + 86_400),
+        );
+
+        // 500 XLM — well within bounds
+        client.deposit_to_escrow(&buyer, &trade_id, &500_0000000i128);
+
+        let trade = client.get_trade(&trade_id);
+        assert_eq!(trade.filled_amount, 500_0000000i128);
+        assert_eq!(trade.status, TradeStatus::Locked);
+    }
+}
 
     #[test]
     fn test_event_topic_lengths_and_long_topic_handling() {
@@ -2650,5 +3334,117 @@ mod fuzz {
 
         client.flag_dispute(&buyer, &trade_id);
         assert_eq!(client.get_trade(&trade_id).status, TradeStatus::Disputed);
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #508 — escrow dispute resolution
+    // -----------------------------------------------------------------------
+
+    /// Fully fills a trade and raises a dispute on it, returning the disputed
+    /// trade id. Reused by the `resolve_dispute` tests below.
+    fn disputed_trade(
+        env: &Env,
+        client: &EscrowContractClient<'static>,
+        seller: &Address,
+        buyer: &Address,
+        token: &Address,
+    ) -> u64 {
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+        let trade_id = client.create_listing(
+            seller,
+            token,
+            &500_0000000i128,
+            &symbol_short!("AIRTIME"),
+            &(1_000_000 + 86_400),
+        );
+        client.deposit_to_escrow(buyer, &trade_id, &500_0000000i128);
+        assert_eq!(client.get_trade(&trade_id).status, TradeStatus::Locked);
+        client.flag_dispute(buyer, &trade_id);
+        assert_eq!(client.get_trade(&trade_id).status, TradeStatus::Disputed);
+        trade_id
+    }
+
+    /// Raising a dispute on a fully-filled trade transitions its state to
+    /// `Disputed`.
+    #[test]
+    fn test_flag_dispute_transitions_to_disputed() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let trade_id = client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &symbol_short!("AIRTIME"),
+            &(1_000_000 + 86_400),
+        );
+        client.deposit_to_escrow(&buyer, &trade_id, &500_0000000i128);
+        assert_eq!(client.get_trade(&trade_id).status, TradeStatus::Locked);
+
+        client.flag_dispute(&buyer, &trade_id);
+
+        assert_eq!(client.get_trade(&trade_id).status, TradeStatus::Disputed);
+    }
+
+    /// The arbitrator can resolve a dispute in favour of the seller: all
+    /// escrowed funds are released to the seller and the trade completes.
+    #[test]
+    fn test_resolve_dispute_in_favour_of_seller_releases_funds() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        let trade_id = disputed_trade(&env, &client, &seller, &buyer, &token);
+
+        let token_client = TokenClient::new(&env, &token);
+        let seller_before = token_client.balance(&seller);
+        let contract_before = token_client.balance(&client.address);
+
+        client.resolve_dispute(&trade_id, &DisputeResolution::Release);
+
+        // Funds moved seller-ward; escrow drained; trade completed.
+        assert_eq!(token_client.balance(&seller), seller_before + 500_0000000i128);
+        assert_eq!(
+            token_client.balance(&client.address),
+            contract_before - 500_0000000i128
+        );
+        assert_eq!(client.get_trade(&trade_id).status, TradeStatus::Completed);
+    }
+
+    /// The arbitrator can resolve a dispute in favour of the buyer: all
+    /// escrowed funds are returned to the buyer and the trade is cancelled.
+    #[test]
+    fn test_resolve_dispute_in_favour_of_buyer_refunds_funds() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        let trade_id = disputed_trade(&env, &client, &seller, &buyer, &token);
+
+        let token_client = TokenClient::new(&env, &token);
+        // 100e9 minted minus the 5e9 locked in escrow.
+        assert_eq!(
+            token_client.balance(&buyer),
+            100_000_000_000i128 - 500_0000000i128
+        );
+
+        client.resolve_dispute(&trade_id, &DisputeResolution::Refund);
+
+        // Funds returned to the buyer; escrow drained; trade cancelled.
+        assert_eq!(token_client.balance(&buyer), 100_000_000_000i128);
+        assert_eq!(token_client.balance(&client.address), 0i128);
+        assert_eq!(client.get_trade(&trade_id).status, TradeStatus::Cancelled);
+    }
+
+    /// A non-arbitrator cannot resolve a dispute: once blanket auth mocking is
+    /// disabled, the admin's `require_auth()` inside `resolve_dispute` is
+    /// enforced for real, so a buyer invoking the call is rejected with a host
+    /// auth error before any funds move.
+    #[test]
+    #[should_panic(expected = "HostError: Error(Auth, InvalidAction)")]
+    fn test_non_arbitrator_cannot_resolve_dispute() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        let trade_id = disputed_trade(&env, &client, &seller, &buyer, &token);
+
+        // Disable blanket auth mocking so `admin.require_auth()` is enforced
+        // for real. The buyer (not the admin) is invoking the call, so the
+        // admin's authorisation is absent and the host rejects it.
+        env.set_auths(&[]);
+
+        client.resolve_dispute(&trade_id, &DisputeResolution::Release);
     }
 }

@@ -84,6 +84,7 @@ stateDiagram-v2
 1. **Off-Chain Telecom Delivery Verification**: The smart contract relies on an off-chain oracle service (or mutual agreement / automated verification processor) to verify telco airtime/data top-ups.
 2. **Soroban Persistent Storage TTL**: Storage entries (`DataKey::Trade`, `DataKey::Listing`) must be bumped periodically to prevent archival.
 3. **No Dynamic Price Feeds On-Chain**: Trade prices are fixed at listing creation time in NGN/XLM equivalent.
+4. **Dispute Cooldown Window (Issue #642)**: `flag_dispute` enforces a `dispute_cooldown_seconds` window (default `3600`, set at `initialize`) per trade to prevent dispute-spam griefing; see [THREAT_MODEL.md §6](./THREAT_MODEL.md) and `ContractError::DisputeCooldownActive` in [ERROR_CODES.md](./ERROR_CODES.md).
 
 ---
 
@@ -106,7 +107,7 @@ stateDiagram-v2
 
 1. **Storage Entry Expiry & TTL Edge Cases**: Are there any race conditions where `DataKey::Trade` entries expire during an active dispute before `resolve_dispute` is executed?
 2. **Partial Fill Arithmetic & Precision Loss**: When a trade is partially filled across multiple buyers, can rounding issues or integer overflow occur in `amount * price` calculations?
-3. **Replay & Front-Running Vulnerabilities**: Does `deposit_to_escrow` allow front-running by malicious buyers when gas prices fluctuate or during network congestion?
+3. **Replay & Front-Running Vulnerabilities**: Does `deposit_to_escrow` allow front-running by malicious buyers when gas prices fluctuate or during network congestion? **Replay mitigation (Issue #512)**: `deposit_to_escrow` binds the buyer's signature to the exact invocation via `require_auth`, and the dedicated `purchase_with_auth(env, buyer, listing_id, auth_nonce)` path enforces a strictly-increasing per-buyer nonce (`DataKey::BuyerNonce`) so any off-chain-signed purchase authorization is single-use — replay is rejected with `ContractError::InvalidNonce`. See [THREAT_MODEL.md](./THREAT_MODEL.md) → Marketplace Authorization Replay Attacks.
 4. **Reentrancy Protection**: Are token transfers via `token::Client` safe against reentrancy if custom SAC tokens execute callbacks?
 
 ---
@@ -114,3 +115,17 @@ stateDiagram-v2
 ## 8. Error Codes Reference
 
 For a complete breakdown of contract error codes and custom panic signals, see [ERROR_CODES.md](./ERROR_CODES.md).
+
+---
+
+## 9. On-Chain Event Observability (Issue #639)
+
+In addition to the state recorded in `DataKey::Trade`, the escrow contract
+now emits a canonical `EscrowCreated` / `EscrowReleased` / `EscrowRefunded` /
+`EscrowDisputed` event for every state transition, each carrying
+`(escrow_id, actor, amount, timestamp)` — see the
+[escrow README's Events section](./escrow/README.md#events-issue-639) for the
+full topic table. Auditors can use these events, instead of polling
+`get_trade`, to reconstruct a trade's full history on-chain.
+`server/src/services/stellar.ts` (`fetchEscrowEvents`) fetches and parses
+them via Soroban RPC's `getEvents` for the backend oracle and indexers.

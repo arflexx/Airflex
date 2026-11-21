@@ -5,6 +5,7 @@ import { getLocale, getMessages } from "next-intl/server";
 import Navbar from "../components/Navbar";
 import LocaleInitializer from "../components/LocaleInitializer";
 import ServiceWorkerRegister from "../components/ServiceWorkerRegister";
+import { ToastProvider } from "../components/ToastProvider";
 import { AuthProvider } from "./context/AuthContext";
 import ThemeProvider from "./context/ThemeProvider";
 import "./globals.css";
@@ -69,9 +70,19 @@ export default async function RootLayout({
         <NextIntlClientProvider messages={messages}>
           <ThemeProvider>
             <AuthProvider>
-              <LocaleInitializer />
-              <Navbar />
-              {children}
+              {/*
+                Mounts the global toast surface (#133) app-wide. It previously
+                existed only as a standalone component with its own tests and
+                was never wired into the tree, so `useContext(ToastContext)`
+                anywhere resolved to null — a pre-existing gap that directly
+                blocked issue #612's "toast error via ToastProvider.tsx"
+                requirement on the trade detail page.
+              */}
+              <ToastProvider>
+                <LocaleInitializer />
+                <Navbar />
+                {children}
+              </ToastProvider>
             </AuthProvider>
           </ThemeProvider>
           {/* Registers the PWA service worker in production (issue #107) */}

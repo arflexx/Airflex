@@ -28,6 +28,31 @@ export const reviewFraudFlagSchema = z.object({
 
 export type ReviewFraudFlagInput = z.infer<typeof reviewFraudFlagSchema>;
 
+/**
+ * Schema for PATCH /api/v1/admin/users/:id/kyc request body (issue #74).
+ *
+ * `status` sets the user's `kyc_status` directly:
+ *   - "unverified" → no submission yet, or a prior submission was rejected.
+ *   - "pending"    → a document has been submitted and awaits review.
+ *   - "verified"   → KYC approved; the user may sell without restriction.
+ */
+export const updateKycStatusSchema = z.object({
+  status: z.enum(["unverified", "pending", "verified"]),
+  note: z.string().trim().max(1000).optional(),
+});
+
+export type UpdateKycStatusInput = z.infer<typeof updateKycStatusSchema>;
+
+/**
+ * Query schema for GET /api/v1/admin/users cursor-based pagination (issue #616).
+ */
+export const adminUsersQuerySchema = z.object({
+  cursor: z.string().trim().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+export type AdminUsersQueryInput = z.infer<typeof adminUsersQuerySchema>;
+
 // ---------------------------------------------------------------------------
 // Audit logs (issue #539)
 // ---------------------------------------------------------------------------
@@ -41,6 +66,7 @@ export const AUDIT_ACTIONS = [
   "user.unbanned",
   "kyc.approved",
   "kyc.rejected",
+  "user.phone_changed",
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 

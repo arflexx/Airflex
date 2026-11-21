@@ -22,6 +22,7 @@ This document outlines the threat modeling analysis for AirFlex Soroban smart co
 * **Mitigation**:
   * **Checks-Effects-Interactions Pattern**: Contract state is set to `Completed` or `Cancelled` *before* invoking external token transfer calls.
   * **Token Whitelisting**: Only vetted asset contracts approved via `add_allowed_token` can be used for trade escrow.
+  * **Reentrancy Guard (issue #507)**: The marketplace `deposit_to_escrow`, `release_payment`, `cancel_and_refund`, and `resolve_dispute` functions set a boolean flag in Soroban **temporary storage** (`DataKey::Reentrancy`) at function entry. Any reentrant call that arrives while the flag is `true` returns `ContractError::ReentrancyDetected` (discriminant `18`) immediately, before any state is read or modified. Temporary storage is scoped to the current transaction and zeroed when the transaction ends, so the flag never persists across ledger boundaries and cannot block future legitimate calls. The guard is cleared explicitly on both the success path and every early error return to minimise the window and make the cleanup auditable. See `contracts/ERROR_CODES.md` for the full entry on `ReentrancyDetected`.
 
 ---
 
@@ -51,6 +52,28 @@ This document outlines the threat modeling analysis for AirFlex Soroban smart co
   * Emergency admin recovery mechanism to restore state from on-chain event logs if archival occurs.
 
 ---
+
+### 6. Dispute Spam / Griefing via Repeated `flag_dispute` Calls (Mitigated — Issue #642)
+* **Threat Vector**: Either trading party calls `flag_dispute` repeatedly on the same trade — re-flagging immediately after the first call — to spam the dispute path, exhaust the counterparty's ability to respond in time, or game the timing of admin dispute resolution.
+* **Impact**: Medium — Griefing / denial-of-service against the counterparty and the admin resolution queue. No direct fund loss, but it degrades trust in the dispute mechanism and can be used to pressure a counterparty.
+* **Mitigation**:
+  * A per-trade `dispute_cooldown_seconds` window (default `3600`, set once at `initialize`) gates every `flag_dispute` call, tracked via a `DataKey::LastDisputeAt(trade_id)` ledger timestamp.
+  * A repeat call inside the cooldown window reverts with `ContractError::DisputeCooldownActive` (error code `18`, see [ERROR_CODES.md](./ERROR_CODES.md)) instead of silently succeeding or re-emitting dispute events.
+  * Once the cooldown has elapsed, a further call is accepted as a legitimate re-escalation (bumping the last-flagged timestamp) rather than being rejected outright, so a dispute that is still genuinely unresolved isn't permanently stuck.
+
+---
+
+### 6. Marketplace Authorization Replay Attacks
+
+* **Threat Vector**: A signed off-chain purchase authorization (for example a seller- or platform-issued voucher permitting a buyer to purchase a listing at a given price) is captured by an attacker or reused by the buyer, then replayed — against the same listing, against a *different* listing, or after the original listing has been cancelled — to force a second payment release or to hijack a listing the authorization was never meant for.
+* **Attack Scenario**: A buyer legitimately authorizes a purchase of listing A with nonce `N`. The signature is observed (mempool, a compromised relayer, or a shared co-signer). The attacker resubmits the same signed authorization, either against listing A again (if it was refunded and re-listed) or against a different listing B, expecting the contract to honour it a second time.
+* **Likelihood**: Medium — requires access to a captured authorization, but no special on-chain privileges.
+* **Impact**: High — double-spend of a single authorization, unintended purchases, and loss of the one-time guarantee buyers and sellers rely on for off-chain co-signed trades.
+* **Mitigation**:
+  * **`deposit_to_escrow`** relies on Soroban's native `buyer.require_auth()`, which binds the buyer's signature to the exact invocation (contract id, function, and *all arguments*, including `listing_id`). The same authorization therefore cannot be replayed against a different listing — the arguments differ and the host rejects the signature.
+  * **`purchase_with_auth(env, buyer, listing_id, auth_nonce)`** adds explicit, defense-in-depth replay protection for the off-chain-signed authorization flow: every call requires a strictly-increasing per-buyer `auth_nonce` (stored under `DataKey::BuyerNonce`). Because the nonce is part of the signed arguments, the authorization is single-use — replaying it is rejected with `ContractError::InvalidNonce` *before any funds move*. This also defeats replay *after* a listing is cancelled, since the consumed nonce can never be reused regardless of listing state.
+  * The nonce is only consumed on a successful settlement, so a transient failure (e.g. an expired listing) does not burn the buyer's next valid nonce.
+  * Verified by `test_replay_of_used_authorization_rejected` in `contracts/marketplace/src/lib.rs`.
 
 ---
 

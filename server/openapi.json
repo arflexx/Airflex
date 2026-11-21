@@ -3914,8 +3914,34 @@
     "/api/v1/admin/users": {
       "get": {
         "summary": "GET /api/v1/admin/users",
-        "description": "Registered Express route. Add route-specific request and response schemas when expanding this API documentation.",
+        "description": "Returns a cursor-paginated list of users with their ledger balance and trade count.",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Opaque cursor pointing to the last evaluated user ID",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Number of users to return (1-100, default 20)",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          }
+        ],
         "responses": {
+          "200": {
+            "description": "A paginated page of users with nextCursor."
+          },
           "default": {
             "description": "The response status and shape are defined by the route handler."
           },

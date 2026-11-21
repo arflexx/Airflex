@@ -12,8 +12,8 @@ if (!authToken) {
 }
 
 export const options = {
-  vus: 20,
-  duration: "3m",
+  vus: parseInt(__ENV.LOAD_TEST_VUS ?? "50", 10),
+  duration: __ENV.LOAD_TEST_DURATION ?? "2m",
   thresholds: {
     http_req_failed: ["rate<0.01"],
     http_req_duration: ["p(95)<500"],

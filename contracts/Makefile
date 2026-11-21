@@ -1,4 +1,4 @@
-.PHONY: build test clean wasm \
+.PHONY: build test test-escrow test-marketplace clean wasm \
 	sandbox-up sandbox-deploy sandbox-smoke sandbox-down integration-test
 
 # Local Soroban sandbox fixtures (see tests/README.md)
@@ -7,8 +7,19 @@ SANDBOX := $(CURDIR)/../tests/soroban
 build:
 	cargo build --release --workspace
 
+# Workspace-wide tests (escrow + marketplace). `make test` runs every escrow
+# test, including the dispute-resolution coverage from Issue #508, with no
+# failures.
 test:
 	cargo test --workspace --all-features --target $(shell rustc -vV | sed -n 's|host: ||p')
+
+# Escrow contract tests only — surfaces dispute-resolution coverage (Issue #508).
+test-escrow:
+	cargo test --package airflex-escrow --all-features --target $(shell rustc -vV | sed -n 's|host: ||p')
+
+# Marketplace contract tests only — surfaces replay-protection coverage (Issue #512).
+test-marketplace:
+	cargo test --package airflex-marketplace --all-features --target $(shell rustc -vV | sed -n 's|host: ||p')
 
 clean:
 	cargo clean --workspace

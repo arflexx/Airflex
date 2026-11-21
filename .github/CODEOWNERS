@@ -1,24 +1,96 @@
-# CODEOWNERS — GitHub uses this file to auto-request reviews.
-# Syntax: <path pattern>  <@user or @org/team>
+# =============================================================================
+# CODEOWNERS — Review Ownership Model
+# =============================================================================
 #
-# Replace the placeholder handles with real GitHub usernames or teams.
-# Docs: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+# PURPOSE
+# -------
+# This file tells GitHub which reviewers to auto-request when a pull request
+# touches each path.  At least one CODEOWNER must approve before a PR can be
+# merged (requires "Require review from Code Owners" in branch protection).
+#
+# OWNERSHIP TIERS
+# ---------------
+# 1. DEFAULT (@dark-sarge)
+#    Catches everything not covered by a more-specific rule below.
+#    This is the repository maintainer.
+#
+# 2. CONTRACTS REVIEWERS (@airflex-org/contracts-reviewers + @dark-sarge)
+#    Any change to the Soroban smart contracts must be reviewed by at least
+#    one member of the contracts-reviewers team in addition to the maintainer.
+#    Smart contracts handle real user funds; on-chain changes are irreversible.
+#    Replace @airflex-org/contracts-reviewers with your actual GitHub org team.
+#
+# 3. SECURITY REVIEWERS (@airflex-org/security-reviewers + @dark-sarge)
+#    Authentication middleware and core business-logic services are attack
+#    surfaces.  Changes require a security-aware reviewer in addition to the
+#    maintainer.  Replace @airflex-org/security-reviewers with your actual team.
+#
+# 4. DEVOPS REVIEWERS (@airflex-org/devops + @dark-sarge)
+#    CI/CD pipeline changes can bypass security controls or leak secrets.
+#    All workflow and GitHub configuration changes require DevOps sign-off.
+#    Replace @airflex-org/devops with your actual team.
+#
+# BOT EXEMPTIONS
+# --------------
+# Dependabot opens PRs as dependabot[bot]; GitHub automatically waives
+# CODEOWNER review requirements for bot-opened PRs when the repository's
+# branch-protection rule allows it.  No special entries are needed here —
+# bot PRs are handled by the dependabot-auto-merge workflow instead.
+#
+# TESTING THIS FILE
+# -----------------
+# Open a draft PR that touches a file in each protected path and confirm that
+# GitHub auto-requests the correct reviewer(s) in the "Reviewers" sidebar.
+# Paths to test:
+#   contracts/escrow/src/lib.rs      → should request contracts-reviewers + dark-sarge
+#   server/src/middleware/auth*.ts   → should request security-reviewers + dark-sarge
+#   server/src/services/stellar.ts  → should request security-reviewers + dark-sarge
+#   .github/workflows/ci.yml        → should request devops + dark-sarge
+#
+# SYNTAX REFERENCE
+# ----------------
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+# Rules are evaluated last-match-wins; more-specific patterns below override
+# the catch-all at the top.
+# =============================================================================
 
-# Default owner for everything not matched below
-*                               @dark-sarge
+# -----------------------------------------------------------------------------
+# 1. Default owner — catches everything not matched by a more-specific rule
+# -----------------------------------------------------------------------------
+*                                       @dark-sarge
 
-# Smart contracts — require an extra reviewer for any on-chain changes
-contracts/                      @dark-sarge
+# -----------------------------------------------------------------------------
+# 2. Smart contracts
+#    Any change under contracts/ requires both the maintainer AND a member of
+#    the contracts-reviewers team.  On-chain logic, escrow mechanics, and
+#    deployment configuration all live here.
+# -----------------------------------------------------------------------------
+contracts/                              @dark-sarge @airflex-org/contracts-reviewers
 
-# CI/CD — pipeline changes need maintainer sign-off
-.github/workflows/              @dark-sarge
+# -----------------------------------------------------------------------------
+# 3. Backend authentication & security-critical services
+#    Middleware handles JWT validation, RBAC, rate-limiting, and request
+#    validation.  Services include fraud detection, wallet logic, and Stellar
+#    integration.  Both paths require a security reviewer.
+# -----------------------------------------------------------------------------
+server/src/middleware/                  @dark-sarge @airflex-org/security-reviewers
+server/src/services/                    @dark-sarge @airflex-org/security-reviewers
 
-# Server — backend API
-server/                         @dark-sarge
+# -----------------------------------------------------------------------------
+# 4. CI/CD pipelines and GitHub configuration
+#    Workflow files can exfiltrate secrets, bypass required checks, or alter
+#    deployment targets.  All .github/ changes require DevOps approval.
+# -----------------------------------------------------------------------------
+.github/                                @dark-sarge @airflex-org/devops
 
-# Frontend
-frontend/                       @dark-sarge
+# -----------------------------------------------------------------------------
+# 5. Frontend
+# -----------------------------------------------------------------------------
+frontend/                               @dark-sarge
 
-# Docs
-docs/                           @dark-sarge
-*.md                            @dark-sarge
+# -----------------------------------------------------------------------------
+# 6. Docs site
+# -----------------------------------------------------------------------------
+apps/docs-site/                         @dark-sarge
+docs/                                   @dark-sarge
+*.md                                    @dark-sarge

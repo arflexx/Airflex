@@ -1,0 +1,63 @@
+# =============================================================================
+# CodeQL Configuration
+# =============================================================================
+#
+# This file configures the CodeQL analysis for the Airflex repository.
+# It is consumed by the `github/codeql-action/init` step via the
+# `config-file` parameter in .github/workflows/codeql.yml.
+#
+# SUPPRESSED FINDINGS
+# -------------------
+# Any alert suppressed here must include:
+#   - The CodeQL rule ID
+#   - The file path or path pattern where it applies
+#   - A short justification explaining why the finding is a false positive
+#     or accepted risk
+#   - The date it was reviewed and the reviewer
+#
+# To suppress a finding, add it to the `paths-ignore` section or use an
+# inline `// lgtm` / `// codeql[rule-id]` comment directly in the source.
+#
+# Current suppressions
+# --------------------
+# (none — this file is intentionally empty of suppressions at initial
+#  configuration.  Add entries here as genuine false positives are confirmed
+#  through security review.)
+#
+# EXAMPLE suppression entry (do not activate without review):
+#
+# paths-ignore:
+#   # Justification: test fixtures use hard-coded credentials intentionally;
+#   # they are never deployed and contain only dummy values.
+#   # Reviewed: 2026-11-19 by @dark-sarge
+#   - server/src/**/*.test.ts
+#
+# QUERY SUITE
+# -----------
+# The workflow uses "security-extended" which includes:
+#   - javascript/ql/src/Security/CWE-089  (SQL injection)
+#   - javascript/ql/src/Security/CWE-022  (path traversal)
+#   - javascript/ql/src/Security/CWE-094  (code injection)
+#   - javascript/ql/src/Security/CWE-020  (improper input validation)
+#   - javascript/ql/src/Security/CWE-338  (insecure randomness)
+#   - and all queries in the default suite
+#
+# HIGH / CRITICAL THRESHOLD
+# --------------------------
+# The analyze step is configured with `fail-on: error` which maps to
+# CodeQL severity "error" (HIGH and CRITICAL findings).  New findings at
+# this level fail the workflow.  MEDIUM and LOW findings are reported but
+# do not block merges — they should be triaged and addressed in follow-up
+# work items.
+# =============================================================================
+
+name: "Airflex CodeQL Configuration"
+
+queries:
+  - uses: security-extended
+
+# No paths are excluded by default.  All source directories are scanned.
+# Add path exclusions below only after a confirmed false-positive review.
+#
+# paths-ignore:
+#   - "**/*.min.js"

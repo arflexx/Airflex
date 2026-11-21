@@ -32,6 +32,9 @@
     "noListings": "Kò sí àtòjọ tó ṣiṣẹ́ báyìí",
     "noListingsBody": "Jẹ́ ẹni àkọ́kọ́ láti fi airtime tàbí data rẹ sílẹ̀. Àwọn olùtà ń gba owó lẹ́sẹ̀kẹsẹ̀ nígbà tí ìfijiṣẹ́ bá jẹ́ ìmúdájú lórí chain.",
     "sellAsset": "Ta Airtime / Data",
+    "noFilteredListings": "A kò rí àtòjọ tí ó bá àwọn yiyàn rẹ mu",
+    "noFilteredListingsBody": "Gbìyànjú àtúnṣe tàbí yíyọ àwọn yiyàn rẹ kúrò láti rí àwọn àtòjọ mìíràn tó wà.",
+    "clearFilters": "Yọ àwọn yiyàn kúrò",
     "showingPage": "Ń fi ojú-ìwé 1 ti {total} hàn. Wọlé láti ṣe àyẹ̀wò àti paginate àwọn àtòjọ.",
     "docs": "Àkọsílẹ̀",
     "github": "GitHub",
@@ -122,6 +125,13 @@
     "copyright": "© {year} AirFlex. Ìmọ̀ sílẹ̀ lábẹ́ MIT License.",
     "github": "GitHub"
   },
+  "Offline": {
+    "title": "O kò sí lórí ayélujára",
+    "message": "{siteName} nílò ìsopọ̀ láti gbé ojú-ìwé yìí jáde. Ṣàyẹ̀wò nẹ́tiwọ́kì rẹ kí o sì tún gbìyànjú — àwọn ìpàṣípààrọ̀ rẹ àti wálẹ́ẹ̀tì rẹ wà láìléwu.",
+    "retry": "Tún gbìyànjú",
+    "reconnectingTitle": "Ń tún sopọ̀…",
+    "reconnectingMessage": "Ìsopọ̀ ayélujára ti padà. Ń gbé ẹ padà…"
+  },
   "Trade": {
     "loading": "Ń kó…",
     "expired": "Ó ti parí",
@@ -156,7 +166,11 @@
     "offerHasExpired": "Ìpèsè yìí ti parí.",
     "timeRemaining": "Àkókò tó kù: {time}",
     "offerExpiredAria": "Ìpèsè yìí ti parí",
-    "buyAria": "Ra {asset} tó jẹ́ ₦{amount} láti ọwọ́ {seller}"
+    "buyAria": "Ra {asset} tó jẹ́ ₦{amount} láti ọwọ́ {seller}",
+    "errorTradeNotFound": "This trade is no longer available.",
+    "errorTradeNotAvailable": "This trade is no longer available for purchase.",
+    "errorTradeNoListing": "This trade has no associated contract listing and cannot be purchased.",
+    "errorSelfBuyForbidden": "You cannot buy your own trade listing."
   },
   "Sell": {
     "metaTitle": "Ta Airtime",
@@ -238,5 +252,12 @@
       "sendNow": "Fi ránṣẹ́ báyìí",
       "discard": "Pa á rẹ́"
     }
+  },
+  "Offline": {
+    "heading": "O kò sí lórí ayélujára",
+    "body": "AirFlex nílò asopọ̀ ayélujára láti ṣí ojú ewé yìí. Ṣàyẹ̀wò nẹ́tìwọ̀kì rẹ kí o sì tún gbìyànjú — àwọn òwò àti wálẹ́ẹ̀tì rẹ wà láìléwu.",
+    "retry": "Gbìyànjú lẹ́ẹ̀kan si",
+    "reconnectingHeading": "Ń tún sopọ̀…",
+    "reconnectingBody": "Asopọ̀ nẹ́tìwọ̀kì ti padà. Ń mú ọ padà…"
   }
 }

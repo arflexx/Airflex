@@ -1,4 +1,6 @@
 import { Express, Request, Response } from 'express';
+import { query } from '../db/pool';
+import { cache } from '../services/cache';
 import authRouter from './auth';
 import tradesRouter from './trades';
 import walletRouter from './wallet';
@@ -57,4 +59,35 @@ export function registerRoutes(app: Express): void {
   // GET /api/docs.json  — always available
   // GET /api/docs       — Swagger UI (disabled in production unless ENABLE_API_DOCS=true)
   app.use('/api', docsRouter);
+
+  // Health check endpoint (issue #626) — no authentication required
+  app.get('/health', async (_req: Request, res: Response) => {
+    let dbStatus: 'ok' | 'error' = 'ok';
+    let redisStatus: 'ok' | 'error' = 'ok';
+
+    try {
+      await query('SELECT 1');
+    } catch {
+      dbStatus = 'error';
+    }
+
+    try {
+      const redisOk = await cache.ping();
+      if (!redisOk) redisStatus = 'error';
+    } catch {
+      redisStatus = 'error';
+    }
+
+    const healthy = dbStatus === 'ok' && redisStatus === 'ok';
+    const statusCode = healthy ? 200 : 503;
+
+    res.status(statusCode).json({
+      status: healthy ? 'ok' : 'error',
+      db: dbStatus,
+      redis: redisStatus,
+      uptime: process.uptime(),
+      version: process.env['npm_package_version'] ?? '1.0.0',
+      timestamp: new Date().toISOString(),
+    });
+  });
 }
