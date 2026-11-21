@@ -288,8 +288,61 @@ export const cache = {
     }
   },
 
+  /**
+   * Returns the current generation number for a logical cache namespace
+   * (e.g. "trades:list"). Defaults to 0 when nothing has been stored yet.
+   *
+   * Used together with `bumpVersion` to invalidate a whole family of keys
+   * (every filter/pagination combination of a listing endpoint) without the
+   * RESP client needing to support KEYS/SCAN/DEL with pattern matching —
+   * callers fold the version into the cache key, so once it changes every
+   * previously cached entry simply stops being read (issue #76).
+   */
+  async getVersion(namespace: string): Promise<number> {
+    const raw = await this.get(`version:${namespace}`);
+    const parsed = raw !== null ? parseInt(raw, 10) : 0;
+    return Number.isFinite(parsed) ? parsed : 0;
+  },
+
+  /**
+   * Increments and persists the generation number for `namespace`, so the
+   * next `getVersion` call (and therefore every key computed from it) is new.
+   * Call this whenever the underlying data a cached listing depends on
+   * changes (a trade is created, or an existing trade's status changes).
+   */
+  async bumpVersion(namespace: string): Promise<number> {
+    const current = await this.getVersion(namespace);
+    const next = current + 1;
+    // 30 days — effectively "until next bump"; only used as a key fragment.
+    await this.set(`version:${namespace}`, String(next), 60 * 60 * 24 * 30);
+    return next;
+  },
+
   disconnect(): void {
     redis.disconnect();
+  },
+
+  /**
+   * Pings Redis to check connectivity (issue #626).
+   */
+  async ping(): Promise<boolean> {
+    const url = process.env["REDIS_URL"];
+    if (url) {
+      if (!redis.isConnected) {
+        try {
+          await redis.connect(url);
+        } catch {
+          return false;
+        }
+      }
+      try {
+        const pong = await redis.ping();
+        return pong !== null;
+      } catch {
+        return false;
+      }
+    }
+    return true;
   },
 
   getClient(): RedisCacheClient {

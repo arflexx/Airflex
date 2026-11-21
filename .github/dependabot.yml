@@ -1,5 +1,15 @@
+# Dependabot configuration
+#
+# Supply-chain pinning strategy (see .github/workflows/*.yml):
+#   * Every `uses:` action is pinned to a full COMMIT SHA, never a mutable tag
+#     (e.g. `@v4`) or branch ref (e.g. `@stable`, `@latest`).
+#   * Each pinned action carries a comment recording the human-readable release
+#     the SHA corresponds to (e.g. `# v4.4.0`).
+#   * Future upgrades MUST be performed manually by replacing the SHA with a new
+#     commit SHA. Dependabot automatic version bumps for GitHub Actions are
+#     disabled below (open-pull-requests-limit: 0) because they would retarget
+#     actions to mutable tags, defeating the pinning policy.
 version: 2
-
 updates:
   # -------------------------------------------------------------------------
   # Server — Node/npm dependencies
@@ -121,22 +131,25 @@ updates:
   # -------------------------------------------------------------------------
   # GitHub Actions — workflow dependencies
   # -------------------------------------------------------------------------
+  # Actions are pinned to commit SHAs in the workflows, so Dependabot must NOT
+  # auto-retarget them to mutable tags. Upgrades are applied manually as new
+  # commit SHAs (open-pull-requests-limit: 0).
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "tuesday"
+      interval: "monthly"
       time: "08:00"
       timezone: "UTC"
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
     target-branch: "main"
     assignees:
       - "airflex/maintainers"
     reviewers:
       - "airflex/maintainers"
     commit-message:
-      prefix: "chore(actions)"
+      prefix: "[deps]"
       include: "scope"
     labels:
       - "dependencies"
-      - "github-actions"
+      - "supply-chain"
+    # No ignore rules: upgrades are applied manually as commit SHAs.

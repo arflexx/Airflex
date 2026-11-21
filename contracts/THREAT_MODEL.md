@@ -22,6 +22,7 @@ This document outlines the threat modeling analysis for AirFlex Soroban smart co
 * **Mitigation**:
   * **Checks-Effects-Interactions Pattern**: Contract state is set to `Completed` or `Cancelled` *before* invoking external token transfer calls.
   * **Token Whitelisting**: Only vetted asset contracts approved via `add_allowed_token` can be used for trade escrow.
+  * **Reentrancy Guard (issue #507)**: The marketplace `deposit_to_escrow`, `release_payment`, `cancel_and_refund`, and `resolve_dispute` functions set a boolean flag in Soroban **temporary storage** (`DataKey::Reentrancy`) at function entry. Any reentrant call that arrives while the flag is `true` returns `ContractError::ReentrancyDetected` (discriminant `18`) immediately, before any state is read or modified. Temporary storage is scoped to the current transaction and zeroed when the transaction ends, so the flag never persists across ledger boundaries and cannot block future legitimate calls. The guard is cleared explicitly on both the success path and every early error return to minimise the window and make the cleanup auditable. See `contracts/ERROR_CODES.md` for the full entry on `ReentrancyDetected`.
 
 ---
 
@@ -51,6 +52,14 @@ This document outlines the threat modeling analysis for AirFlex Soroban smart co
   * Emergency admin recovery mechanism to restore state from on-chain event logs if archival occurs.
 
 ---
+
+### 6. Dispute Spam / Griefing via Repeated `flag_dispute` Calls (Mitigated — Issue #642)
+* **Threat Vector**: Either trading party calls `flag_dispute` repeatedly on the same trade — re-flagging immediately after the first call — to spam the dispute path, exhaust the counterparty's ability to respond in time, or game the timing of admin dispute resolution.
+* **Impact**: Medium — Griefing / denial-of-service against the counterparty and the admin resolution queue. No direct fund loss, but it degrades trust in the dispute mechanism and can be used to pressure a counterparty.
+* **Mitigation**:
+  * A per-trade `dispute_cooldown_seconds` window (default `3600`, set once at `initialize`) gates every `flag_dispute` call, tracked via a `DataKey::LastDisputeAt(trade_id)` ledger timestamp.
+  * A repeat call inside the cooldown window reverts with `ContractError::DisputeCooldownActive` (error code `18`, see [ERROR_CODES.md](./ERROR_CODES.md)) instead of silently succeeding or re-emitting dispute events.
+  * Once the cooldown has elapsed, a further call is accepted as a legitimate re-escalation (bumping the last-flagged timestamp) rather than being rejected outright, so a dispute that is still genuinely unresolved isn't permanently stuck.
 
 ---
 

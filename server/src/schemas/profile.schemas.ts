@@ -55,3 +55,17 @@ export const profileUpdateSchema = z
 export const updateProfileSchema = profileUpdateSchema;
 
 export type ProfileUpdateInput = z.infer<typeof profileUpdateSchema>;
+
+/**
+ * Schemas for phone number change with OTP re-verification (issue #620 / #629).
+ */
+export const requestPhoneChangeSchema = z.object({
+  phone: z.string().trim().regex(/^(\+?234|0)[789][01]\d{8}$/, "Invalid Nigerian phone number"),
+});
+
+export const confirmPhoneChangeSchema = z.object({
+  otp: z.string().trim().regex(/^\d{6}$/, "OTP must be a 6-digit code"),
+});
+
+export type RequestPhoneChangeInput = z.infer<typeof requestPhoneChangeSchema>;
+export type ConfirmPhoneChangeInput = z.infer<typeof confirmPhoneChangeSchema>;
