@@ -1,4 +1,4 @@
-import React from "react";
+import React, { Profiler } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
 import TransactionHistory, { type WalletTransaction } from "./TransactionHistory";
 import { ModalSkeleton, TransactionHistorySkeleton } from "./WalletSkeletons";
@@ -86,6 +86,62 @@ describe("TransactionHistory", () => {
 
     expect(screen.getByRole("button", { name: "Previous" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
+  });
+});
+
+/**
+ * Issue #683: the wallet page re-renders on every SSE notification (e.g. an
+ * optimistic balance update). React's <Profiler> reports each commit of its
+ * subtree, so it shows directly whether TransactionHistory re-rendered.
+ */
+describe("TransactionHistory memoization", () => {
+  const transactions = [tx(), tx({ id: "t2", amount: 250 })];
+  const noop = () => {};
+
+  function WalletPageStandIn({ onRender }: { onRender: React.ProfilerOnRenderCallback }) {
+    const [balance, setBalance] = React.useState(0);
+    const [rows, setRows] = React.useState(transactions);
+    return (
+      <>
+        <p>₦{balance} balance</p>
+        <button onClick={() => setBalance((b) => b + 100)}>sse balance update</button>
+        <button onClick={() => setRows((r) => [...r, tx({ id: "t3", amount: 999 })])}>new trade</button>
+        <Profiler id="history" onRender={onRender}>
+          <TransactionHistory
+            transactions={rows}
+            loading={false}
+            page={1}
+            pageSize={10}
+            totalTrades={rows.length}
+            totalPages={1}
+            onPageChange={noop}
+          />
+        </Profiler>
+      </>
+    );
+  }
+
+  it("does not re-render on unrelated parent updates", () => {
+    const onRender = jest.fn();
+    render(<WalletPageStandIn onRender={onRender} />);
+    expect(onRender).toHaveBeenCalledTimes(1); // mount
+
+    fireEvent.click(screen.getByText("sse balance update"));
+    fireEvent.click(screen.getByText("sse balance update"));
+
+    expect(screen.getByText("₦200 balance")).toBeInTheDocument();
+    expect(onRender).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-renders when its transactions change", () => {
+    const onRender = jest.fn();
+    render(<WalletPageStandIn onRender={onRender} />);
+
+    fireEvent.click(screen.getByText("new trade"));
+
+    expect(onRender).toHaveBeenCalledTimes(2);
+    expect(onRender.mock.calls[1]![1]).toBe("update");
+    expect(screen.getByText("₦999")).toBeInTheDocument();
   });
 });
 
