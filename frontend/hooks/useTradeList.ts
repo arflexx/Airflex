@@ -2,7 +2,19 @@
 
 import { useEffect, useState, useRef } from "react";
 import { apiFetch, ApiError } from "../lib/apiFetch";
+import { reconcileList } from "../lib/stableList";
 import type { TradeOffer } from "@airflex/shared";
+
+const tradeKey = (trade: TradeOffer): string => trade.id;
+
+/**
+ * Keeps the previous `trades` array (and unchanged trade objects) when a
+ * refetch or poll returns the same contents, so memoized list consumers don't
+ * re-render on every 30s poll or unrelated parent update.
+ */
+function stableTrades(prev: TradeOffer[], next: TradeOffer[]): TradeOffer[] {
+  return reconcileList(prev, next, tradeKey);
+}
 
 export interface UseTradeListOptions {
   page: number;
@@ -72,7 +84,7 @@ export function useTradeList(options: UseTradeListOptions): UseTradeListReturn {
     if (!isRefetch) {
       const cached = cacheMap.get(cacheKey);
       if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
-        setTrades(cached.data.trades);
+        setTrades((prev) => stableTrades(prev, cached.data.trades));
         setTotal(cached.data.total);
         setIsLoading(false);
         setError(null);
@@ -104,7 +116,7 @@ export function useTradeList(options: UseTradeListOptions): UseTradeListReturn {
       inFlightPromises.delete(cacheKey);
 
       if (isMounted.current) {
-        setTrades(result.trades);
+        setTrades((prev) => stableTrades(prev, result.trades));
         setTotal(result.total);
         setIsLoading(false);
         setIsEmpty(result.trades.length === 0);

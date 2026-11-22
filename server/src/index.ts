@@ -97,8 +97,10 @@ app.use(
   cors({
     origin: process.env["CORS_ORIGIN"] ?? "*",
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-    exposedHeaders: ["X-Api-Version"],
+    // If-None-Match / ETag let the frontend's apiFetch revalidate cached GETs
+    // (Issue #681); ETag is not CORS-safelisted, so it must be exposed.
+    allowedHeaders: ["Content-Type", "Authorization", "If-None-Match"],
+    exposedHeaders: ["X-Api-Version", "ETag"],
   })
 );
 

@@ -339,16 +339,9 @@ router.get(
          u.id,
          u.phone,
          u.created_at AS "registrationDate",
-         COALESCE(tx_agg.net_balance, 0)::float8          AS balance,
+         u.balance::float8                                AS balance,
          COALESCE(tr_agg.trade_count, 0)::int             AS "tradeCount"
        FROM users u
-       LEFT JOIN (
-         SELECT
-           user_id,
-           SUM(CASE WHEN direction = 'credit' THEN amount ELSE -amount END) AS net_balance
-         FROM transactions
-         GROUP BY user_id
-       ) tx_agg ON tx_agg.user_id = u.id
        LEFT JOIN (
          SELECT participant_id, COUNT(*) AS trade_count
          FROM (
@@ -411,11 +404,7 @@ router.get(
          u.role,
          u.created_at,
          u.stellar_public_key,
-         COALESCE((
-           SELECT SUM(CASE WHEN t.direction = 'credit' THEN t.amount ELSE -t.amount END)
-           FROM transactions t
-           WHERE t.user_id = u.id
-         ), 0)::float8 AS balance
+         u.balance::float8 AS balance
        FROM users u
        WHERE u.phone = $1
        LIMIT 1`,

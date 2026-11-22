@@ -19,7 +19,70 @@
  *   OTEL_EXPORTER_OTLP_ENDPOINT  OTLP HTTP endpoint (default: http://localhost:4318)
  *   OTEL_SERVICE_NAME            Service name reported in traces (default: airflex-server)
  *   OTEL_ENABLED                 Set to "false" to disable telemetry entirely (useful in test)
+ *
+ * Also exports withQueueJobSpan(), used by jobs/queue.ts to wrap each job in a
+ * span carrying queue depth and worker concurrency attributes. It goes through
+ * @opentelemetry/api, so it is a cheap no-op when the SDK is not started.
  */
+
+import { trace, SpanStatusCode, type Attributes } from "@opentelemetry/api";
+
+/** Attribute keys emitted on every `queue.process <name>` span. */
+export const QUEUE_SPAN_ATTRIBUTES = {
+  queue:       "queue.name",
+  depth:       "queue.depth",
+  active:      "queue.worker.active",
+  concurrency: "queue.worker.concurrency",
+  jobId:       "queue.job.id",
+  attempt:     "queue.job.attempt",
+} as const;
+
+export interface QueueJobTelemetry {
+  queue:       string;
+  /** Jobs still waiting in the queue when this one started. */
+  depth:       number;
+  /** Jobs running on this queue, including this one. */
+  active:      number;
+  /** Worker concurrency limit; null for unbounded queues. */
+  concurrency: number | null;
+  jobId:       string;
+  attempt:     number;
+}
+
+export function queueJobAttributes(t: QueueJobTelemetry): Attributes {
+  const attrs: Attributes = {
+    [QUEUE_SPAN_ATTRIBUTES.queue]:   t.queue,
+    [QUEUE_SPAN_ATTRIBUTES.depth]:   t.depth,
+    [QUEUE_SPAN_ATTRIBUTES.active]:  t.active,
+    [QUEUE_SPAN_ATTRIBUTES.jobId]:   t.jobId,
+    [QUEUE_SPAN_ATTRIBUTES.attempt]: t.attempt,
+  };
+  if (t.concurrency !== null) {
+    attrs[QUEUE_SPAN_ATTRIBUTES.concurrency] = t.concurrency;
+  }
+  return attrs;
+}
+
+/** Runs `fn` inside a `queue.process <queue>` span with queue/worker attributes. */
+export function withQueueJobSpan<T>(t: QueueJobTelemetry, fn: () => Promise<T>): Promise<T> {
+  return trace
+    .getTracer("airflex-queue", "1.0.0")
+    .startActiveSpan(
+      `queue.process ${t.queue}`,
+      { attributes: queueJobAttributes(t) },
+      async (span) => {
+        try {
+          return await fn();
+        } catch (err) {
+          span.recordException(err as Error);
+          span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
+          throw err;
+        } finally {
+          span.end();
+        }
+      }
+    );
+}
 
 // Guard: skip telemetry in test environments or when explicitly disabled
 if (

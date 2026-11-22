@@ -13,6 +13,7 @@
  */
 
 import { clearSessionKey } from "./stellarSession";
+import { clearHttpCache } from "../../lib/httpCache";
 
 const TOKEN_KEY = "airflex:token";
 
@@ -117,12 +118,16 @@ export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
 }
 
-/** Remove the JWT — call on sign-out. */
+/**
+ * Remove the JWT — call on sign-out. Also drops every cached API response and
+ * deduplicated GET (Issue #681) so nothing from this session outlives it.
+ */
 export function clearToken(): void {
   if (typeof window === "undefined") return;
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
   clearSessionCookie();
+  clearHttpCache();
 }
 
 /** True when a token is present (does not validate expiry client-side). */

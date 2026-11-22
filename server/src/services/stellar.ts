@@ -69,6 +69,147 @@ const sorobanServer = new SorobanRpc.Server(SOROBAN_RPC_URL, {
 });
 
 // ---------------------------------------------------------------------------
+// Soroban RPC timeout + retry
+// ---------------------------------------------------------------------------
+// Every Soroban RPC call goes through callSorobanRpc(), which bounds it with a
+// timeout (SOROBAN_RPC_TIMEOUT_MS, default 10s) and retries transient failures
+// — timeouts, HTTP 429 / 5xx, connection resets and TRY_AGAIN_LATER send
+// responses — with exponential back-off (SOROBAN_RPC_MAX_RETRIES, default 2).
+// A 429 Retry-After header is honoured. Contract and simulation errors are
+// never retried: they would fail the same way again.
+//
+// Retrying sendTransaction is safe: a re-sent signed envelope has the same
+// hash and sequence number, so it either lands once or comes back DUPLICATE,
+// which the callers treat as submitted and go on to poll.
+
+export const DEFAULT_SOROBAN_RPC_TIMEOUT_MS = 10_000;
+export const DEFAULT_SOROBAN_RPC_MAX_RETRIES = 2;
+const SOROBAN_RPC_RETRY_BASE_DELAY_MS = 500;
+const SOROBAN_RPC_MAX_RETRY_DELAY_MS = 10_000;
+
+export function getSorobanRpcTimeoutMs(): number {
+  const parsed = parseInt(process.env["SOROBAN_RPC_TIMEOUT_MS"] ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_SOROBAN_RPC_TIMEOUT_MS;
+}
+
+export function getSorobanRpcMaxRetries(): number {
+  const parsed = parseInt(process.env["SOROBAN_RPC_MAX_RETRIES"] ?? "", 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_SOROBAN_RPC_MAX_RETRIES;
+}
+
+export class SorobanRpcTimeoutError extends Error {
+  constructor(method: string, timeoutMs: number) {
+    super(`Soroban RPC ${method} timed out after ${timeoutMs}ms`);
+    this.name = "SorobanRpcTimeoutError";
+  }
+}
+
+/** A transient RPC condition reported in a response body rather than as an HTTP error. */
+export class SorobanRpcRetryableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SorobanRpcRetryableError";
+  }
+}
+
+const RETRYABLE_NETWORK_CODES = new Set([
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ETIMEDOUT",
+  "EAI_AGAIN",
+  "EPIPE",
+  "ECONNABORTED",
+]);
+
+interface HttpLikeError {
+  code?: string;
+  response?: { status?: number; headers?: Record<string, unknown> };
+}
+
+function httpStatusOf(err: unknown): number | undefined {
+  return (err as HttpLikeError | null)?.response?.status;
+}
+
+export function isRetryableSorobanRpcError(err: unknown): boolean {
+  if (err instanceof SorobanRpcTimeoutError || err instanceof SorobanRpcRetryableError) {
+    return true;
+  }
+  const status = httpStatusOf(err);
+  if (status !== undefined) return status === 429 || status >= 500;
+  const code = (err as HttpLikeError | null)?.code;
+  return code !== undefined && RETRYABLE_NETWORK_CODES.has(code);
+}
+
+/** Delay before retry `attempt` (1-based): Retry-After on a 429, else exponential with jitter. */
+function sorobanRetryDelayMs(err: unknown, attempt: number, baseDelayMs: number): number {
+  if (httpStatusOf(err) === 429) {
+    const retryAfter = Number((err as HttpLikeError).response?.headers?.["retry-after"]);
+    if (Number.isFinite(retryAfter) && retryAfter > 0) {
+      return Math.min(retryAfter * 1_000, SOROBAN_RPC_MAX_RETRY_DELAY_MS);
+    }
+  }
+  const exp = Math.min(baseDelayMs * Math.pow(2, attempt - 1), SOROBAN_RPC_MAX_RETRY_DELAY_MS);
+  return Math.round(exp + exp * 0.2 * Math.random());
+}
+
+function withTimeout<T>(method: string, promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new SorobanRpcTimeoutError(method, timeoutMs)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+export interface SorobanRpcCallOptions {
+  timeoutMs?: number;
+  maxRetries?: number;
+  baseDelayMs?: number;
+}
+
+/**
+ * Runs one Soroban RPC call with a timeout and retry fallback. `fn` is invoked
+ * afresh on each attempt.
+ */
+export async function callSorobanRpc<T>(
+  method: string,
+  fn: () => Promise<T>,
+  opts: SorobanRpcCallOptions = {}
+): Promise<T> {
+  const timeoutMs = opts.timeoutMs ?? getSorobanRpcTimeoutMs();
+  const maxRetries = opts.maxRetries ?? getSorobanRpcMaxRetries();
+  const baseDelayMs = opts.baseDelayMs ?? SOROBAN_RPC_RETRY_BASE_DELAY_MS;
+
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await withTimeout(method, fn(), timeoutMs);
+    } catch (err) {
+      if (attempt >= maxRetries || !isRetryableSorobanRpcError(err)) throw err;
+      await sleep(sorobanRetryDelayMs(err, attempt + 1, baseDelayMs));
+    }
+  }
+}
+
+function prepareTransaction(tx: Transaction): Promise<Transaction> {
+  return callSorobanRpc("prepareTransaction", () => sorobanServer.prepareTransaction(tx));
+}
+
+function sendTransaction(tx: Transaction): Promise<SorobanRpc.Api.SendTransactionResponse> {
+  return callSorobanRpc("sendTransaction", async () => {
+    const response = await sorobanServer.sendTransaction(tx);
+    if (response.status === "TRY_AGAIN_LATER") {
+      throw new SorobanRpcRetryableError(
+        `Soroban RPC sendTransaction returned TRY_AGAIN_LATER for ${response.hash}`
+      );
+    }
+    return response;
+  });
+}
+
+function getTransaction(hash: string): Promise<SorobanRpc.Api.GetTransactionResponse> {
+  return callSorobanRpc("getTransaction", () => sorobanServer.getTransaction(hash));
+}
+
+// ---------------------------------------------------------------------------
 // Server signing key (issue #313) — parsed and validated exactly once, on
 // first use, so a missing/invalid STELLAR_SERVER_SECRET surfaces as a clear
 // error instead of failing queued release jobs at runtime mid-flight.
@@ -320,10 +461,10 @@ export async function createListing(params: {
         .setTimeout(30)
         .build();
 
-      const preparedTx = await sorobanServer.prepareTransaction(tx);
+      const preparedTx = await prepareTransaction(tx);
       preparedTx.sign(keypair);
 
-      const response = await sorobanServer.sendTransaction(preparedTx);
+      const response = await sendTransaction(preparedTx);
 
       if (response.status === "ERROR") {
         const parsed = parseContractError(response);
@@ -408,7 +549,7 @@ export async function buildEscrowDepositXdr(params: {
         .setTimeout(180)
         .build();
 
-      const preparedTx = await sorobanServer.prepareTransaction(tx);
+      const preparedTx = await prepareTransaction(tx);
 
       return {
         xdr: preparedTx.toXDR(),
@@ -464,7 +605,7 @@ export async function submitSignedTransaction(params: {
         throw new Error("Transaction is not signed");
       }
 
-      const response = await sorobanServer.sendTransaction(tx);
+      const response = await sendTransaction(tx);
 
       if (response.status === "ERROR") {
         const parsed = parseContractError(response);
@@ -541,10 +682,10 @@ export async function releasePayment(contractTradeId: string): Promise<string> {
         .setTimeout(30)
         .build();
 
-      const preparedTx = await sorobanServer.prepareTransaction(tx);
+      const preparedTx = await prepareTransaction(tx);
       preparedTx.sign(keypair);
 
-      const response = await sorobanServer.sendTransaction(preparedTx);
+      const response = await sendTransaction(preparedTx);
 
       if (response.status === "ERROR") {
         const parsed = parseContractError(response);
@@ -616,10 +757,10 @@ export async function resolveDispute(params: {
     .setTimeout(30)
     .build();
 
-  const preparedTx = await sorobanServer.prepareTransaction(tx);
+  const preparedTx = await prepareTransaction(tx);
   preparedTx.sign(keypair);
 
-  const response = await sorobanServer.sendTransaction(preparedTx);
+  const response = await sendTransaction(preparedTx);
 
   if (response.status === "ERROR") {
     const parsed = parseContractError(response);
@@ -648,7 +789,7 @@ async function pollForResult(hash: string): Promise<string> {
     try {
       for (let i = 0; i < MAX_ATTEMPTS; i++) {
         await sleep(INTERVAL_MS);
-        const result = await sorobanServer.getTransaction(hash);
+        const result = await getTransaction(hash);
 
         if (result.status === SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
           span.setAttribute("soroban.poll_attempts", i + 1);
