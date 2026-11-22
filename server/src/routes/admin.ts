@@ -22,7 +22,7 @@
 import { Router } from "express";
 import { createHash } from "crypto";
 import { authenticate } from "../middleware/authenticate";
-import { authorize } from "../middleware/authorize";
+import { authorize, requirePermission } from "../middleware/authorize";
 import { validate } from "../middleware/validate";
 import { normalizePhone, maskPhone } from "../utils/phone";
 import { QueueService } from "../jobs";
@@ -51,6 +51,7 @@ import {
   recordAuditLog,
   recordAuditLogAfterCommit,
 } from "../services/auditLog";
+import { AdminPermission } from "../types/permissions";
 
 const router = Router();
 
@@ -89,7 +90,7 @@ const ALLOWED_SORT_ORDERS = ["asc", "desc"] as const;
 router.get(
   "/queues",
   authenticate,
-  authorize("admin"),
+  requirePermission(AdminPermission.QUEUES_VIEW),
   async (_req, res) => {
     const queues = QueueService.getStats();
     res.status(200).json({ queues });
@@ -111,7 +112,7 @@ router.get(
 router.get(
   "/trades",
   authenticate,
-  authorize("admin"),
+  requirePermission(AdminPermission.TRADES_VIEW),
   async (req, res) => {
     const parsed = paginationSchema.safeParse(req.query);
     if (!parsed.success) {
@@ -216,7 +217,7 @@ router.get(
 router.post(
   "/trades/:id/resolve",
   authenticate,
-  authorize("admin"),
+  requirePermission(AdminPermission.TRADES_RESOLVE),
   validate(resolveDisputeSchema),
   async (req, res) => {
     const { id } = req.params;
@@ -358,7 +359,7 @@ router.post(
 router.get(
   "/users",
   authenticate,
-  authorize("admin"),
+  requirePermission(AdminPermission.USERS_VIEW),
   async (req, res) => {
     const parsed = adminUsersQuerySchema.safeParse(req.query);
     if (!parsed.success) {
@@ -450,7 +451,7 @@ router.get(
 router.get(
   "/users/:phone",
   authenticate,
-  authorize("admin"),
+  requirePermission(AdminPermission.USERS_VIEW),
   async (req, res) => {
     const { phone } = req.params;
     const normalizedPhone = normalizePhone(phone);
@@ -525,7 +526,7 @@ router.get(
 router.get(
   "/flagged-accounts",
   authenticate,
-  authorize("admin"),
+  requirePermission(AdminPermission.FRAUD_FLAGS_VIEW),
   async (_req, res) => {
     const flagged = await FraudDetectionService.getFlaggedAccounts();
     res.status(200).json({ flaggedAccounts: flagged });
@@ -549,7 +550,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 router.get(
   "/fraud-flags",
   authenticate,
-  authorize("admin"),
+  requirePermission(AdminPermission.FRAUD_FLAGS_VIEW),
   async (req, res) => {
     const parsed = paginationSchema.safeParse(req.query);
     if (!parsed.success) {
@@ -591,7 +592,7 @@ router.get(
 router.patch(
   "/fraud-flags/:id",
   authenticate,
-  authorize("admin"),
+  requirePermission(AdminPermission.FRAUD_FLAGS_REVIEW),
   validate(reviewFraudFlagSchema),
   async (req, res) => {
     const { id } = req.params;
@@ -654,7 +655,7 @@ router.patch(
 router.patch(
   "/users/:id/kyc",
   authenticate,
-  authorize("admin"),
+  requirePermission(AdminPermission.USERS_KYC_APPROVE),
   validate(updateKycStatusSchema),
   async (req, res) => {
     const { id } = req.params;
@@ -718,7 +719,7 @@ router.patch(
 router.get(
   "/webhooks",
   authenticate,
-  authorize("admin"),
+  requirePermission(AdminPermission.WEBHOOKS_VIEW),
   async (_req, res) => {
     const { rows } = await pool.query(
       `SELECT id, provider, event_type, payload, status, processed_at, created_at
@@ -734,7 +735,7 @@ router.get(
 router.post(
   "/webhooks/:id/replay",
   authenticate,
-  authorize("admin"),
+  requirePermission(AdminPermission.WEBHOOKS_REPLAY),
   async (req, res) => {
     const id = req.params["id"];
 
@@ -790,6 +791,7 @@ router.get(
   "/audit-logs",
   authenticate,
   authorize("super_admin"),
+  requirePermission(AdminPermission.AUDIT_LOGS_VIEW),
   async (req, res) => {
     const parsed = auditLogQuerySchema.safeParse(req.query);
     if (!parsed.success) {
