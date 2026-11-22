@@ -28,7 +28,7 @@ export const RECOVERY_CODE_LENGTH = 16;
  */
 const ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 
-const BCRYPT_ROUNDS = 10;
+const BCRYPT_ROUNDS = 12;
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for unit tests)
