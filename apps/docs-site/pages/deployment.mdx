@@ -11,58 +11,239 @@ escrow contract, and this documentation site.
 
 ## API server
 
-### Required environment variables
+The API runs on [Railway](https://railway.app), configured by
+[`railway.json`](https://github.com/arflexx/Airflex/blob/main/railway.json).
+The canonical variable list, with defaults and comments, is
+[`server/.env.example`](https://github.com/arflexx/Airflex/blob/main/server/.env.example);
+the startup validator is
+[`server/src/config/validateEnv.ts`](https://github.com/arflexx/Airflex/blob/main/server/src/config/validateEnv.ts).
 
-The server **will not start** if any of these are missing:
+### Environment variables
 
-| Variable | Description |
-|----------|-------------|
-| `JWT_SECRET` | Signs and verifies JWTs. Random string, at least 32 characters. |
-| `DATABASE_URL` | PostgreSQL connection string. |
-| `ESCROW_CONTRACT_ADDRESS` | Deployed Soroban escrow contract ID (starts with `C`). |
+The server **refuses to start** when a required variable is missing or
+malformed: `JWT_SECRET` shorter than 32 characters, `ENCRYPTION_KEY` not 64 hex
+characters, `PORT` outside 1024–65535, `CORS_ALLOWED_ORIGINS=*` in production,
+`REDIS_URL` unset in production, or `STORAGE_PROVIDER=s3` without
+`S3_BUCKET` / `S3_REGION`.
 
-### Full reference
-
-<Tabs items={["Server", "Stellar", "Payments & messaging", "Auth"]}>
+<Tabs items={["Core / Server", "Database", "Redis / Cache", "Stellar", "Auth / Secrets", "Third-party", "Observability"]}>
+  <Tabs.Tab>
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `NODE_ENV` | prod | `development` | Must be `production` on Railway (JSON logs, strict CORS, Redis required). |
+| `PORT` | – | `3001` | Railway injects this automatically. |
+| `CORS_ALLOWED_ORIGINS` | prod | `http://localhost:3000` (dev) | Comma-separated exact origins. `*` is rejected in production. `CORS_ORIGIN` is a deprecated alias. |
+| `PUBLIC_API_URL` | – | request host | Public base URL used in data-export links. |
+| `PLATFORM_TREASURY_USER_ID` | **yes** | – | UUID of the treasury user receiving fee splits. |
+| `PLATFORM_FEE_PERCENT` | – | `1.5` | Fee on completed trades. |
+| `MAX_TRADES_PER_HOUR` / `MAX_DEPOSITS_PER_DAY` / `MAX_WITHDRAWALS_PER_DAY` | – | `10` / `5` / `3` | Velocity limits. |
+| `KYC_MAX_SUBMISSIONS` / `KYC_WINDOW_MINUTES` | – | `3` / `60` | KYC submission rate limit. |
+| `STORAGE_PROVIDER` | – | `local` | Use `s3` in production; `S3_BUCKET` and `S3_REGION` (optional `S3_ENDPOINT`) are then required. |
+  </Tabs.Tab>
+  <Tabs.Tab>
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DATABASE_URL` | **yes** | – | PostgreSQL connection string (Railway Postgres plugin → `DATABASE_URL`). |
+| `DB_POOL_MAX` | – | `10` | Connections per instance; keep `instances × DB_POOL_MAX` below Postgres `max_connections`. |
+| `DB_IDLE_TIMEOUT_MS` | – | `30000` | Idle connection lifetime. |
+| `DB_CONNECT_TIMEOUT_MS` | – | `5000` | Wait for a free connection before failing with `503`. |
+  </Tabs.Tab>
+  <Tabs.Tab>
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `REDIS_URL` | prod | – | Redis for the job queue and caches (Railway Redis plugin). Checked by `/health`. |
+| `RATES_PROVIDER_URL` | – | – | Upstream FX provider; falls back to `NGN_PER_USDC_RATE` (`1600`). |
+| `RATES_CACHE_TTL_SECONDS` / `RATES_PREWARM_INTERVAL_MS` / `RATES_STALE_TTL_SECONDS` | – | `60` / `55000` / `86400` | Rate cache tuning. |
+  </Tabs.Tab>
+  <Tabs.Tab>
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `STELLAR_NETWORK` | – | `testnet` | `mainnet` for the public network. |
+| `HORIZON_URL` | – | testnet Horizon | Horizon REST endpoint. |
+| `SOROBAN_RPC_URL` | – | testnet RPC | Soroban RPC endpoint (mainnet: a provider URL such as `https://mainnet.stellar.validationcloud.io/v1/<API_KEY>`). |
+| `ESCROW_CONTRACT_ID` | prod | `contracts/deployments.json` | Escrow contract ID. `ESCROW_CONTRACT_ADDRESS` is the legacy alias. |
+| `MARKETPLACE_CONTRACT_ID` | – | – | Marketplace contract ID. |
+| `RELEASE_RETRY_MAX` / `RELEASE_RETRY_BASE_DELAY_MS` | – | `3` / `2000` | Oracle release retries before escalating to dispute. |
+  </Tabs.Tab>
+  <Tabs.Tab>
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `JWT_SECRET` | **yes** | At least 32 random characters. Signs all sessions. |
+| `ENCRYPTION_KEY` | **yes** | 64 hex characters (`openssl rand -hex 32`). AES-256-GCM key for wallet secrets and data exports. |
+| `STELLAR_SERVER_SECRET` | **yes** | Oracle/admin Stellar secret (`S…`); must match the escrow contract admin. Never log it. |
+  </Tabs.Tab>
+  <Tabs.Tab>
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `PAYSTACK_SECRET_KEY` | **yes** | `sk_live_…` in production. Deposits, virtual accounts, withdrawals and webhook signature checks. |
+| `PAYSTACK_PREFERRED_BANK` | – | Virtual-account bank (default `wema-bank`). |
+| `TERMII_API_KEY` | **yes** | SMS/OTP delivery. |
+| `TERMII_TIMEOUT_MS`, `OTP_RATE_LIMIT_MAX_REQUESTS`, `OTP_RATE_LIMIT_WINDOW_MINUTES` | – | SMS timeout (`10000`) and OTP limits (`5` per `60` minutes). |
+  </Tabs.Tab>
   <Tabs.Tab>
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PORT` | `3001` | Port the Express server listens on. |
-| `NODE_ENV` | `development` | Set to `production` in deployed environments. |
-| `CORS_ORIGIN` | `*` | Allowed CORS origin. Set to your exact frontend domain in production — never leave it as `*` in a live environment. |
-  </Tabs.Tab>
-  <Tabs.Tab>
-| Variable | Example | Description |
-|----------|---------|-------------|
-| `STELLAR_NETWORK` | `testnet` | Set to `mainnet` for the public network. Any other value uses testnet. |
-| `HORIZON_URL` | `https://horizon-testnet.stellar.org` | Horizon REST endpoint for account loading and tx submission. |
-| `SOROBAN_RPC_URL` | `https://soroban-testnet.stellar.org` | Soroban RPC endpoint for contract simulation/invocation. |
-| `ESCROW_CONTRACT_ADDRESS` | `CCBJ235OC...` | Contract ID of the deployed escrow contract. |
-
-**Mainnet endpoints:**
-```
-HORIZON_URL=https://horizon.stellar.org
-SOROBAN_RPC_URL=https://mainnet.stellar.validationcloud.io/v1/<API_KEY>
-```
-  </Tabs.Tab>
-  <Tabs.Tab>
-| Variable | Example | Description |
-|----------|---------|-------------|
-| `PAYSTACK_SECRET_KEY` | `sk_test_xxx` | Paystack secret key for deposits/withdrawals. `sk_test_` for test mode, `sk_live_` for production. |
-| `TERMII_API_KEY` | `TLxxx` | Termii API key for OTP delivery via SMS. |
-  </Tabs.Tab>
-  <Tabs.Tab>
-| Variable | Example | Description |
-|----------|---------|-------------|
-| `JWT_SECRET` | `a_long_random_string` | At least 32 characters. Never commit this value. Rotating it invalidates all active sessions. |
+| `OTEL_ENABLED` | `true` | `false` disables tracing. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4318` | OTLP/HTTP collector (Tempo, Datadog, Honeycomb…). |
+| `OTEL_SERVICE_NAME` | `airflex-server` | Service name on traces. |
   </Tabs.Tab>
 </Tabs>
 
 <Callout type="warning">
-  `stellar_secret_key` values stored in the `wallets` table should be
-  encrypted at rest (e.g. envelope encryption via AWS KMS) before a
-  production launch. Never leave `CORS_ORIGIN` as `*` in a live environment.
+  `stellar_secret_key` values in the `wallets` table are encrypted with
+  `ENCRYPTION_KEY`. Losing that key makes them unrecoverable — keep an
+  offline, access-controlled backup of every key version.
 </Callout>
+
+### Deployment strategy on Railway
+
+`railway.json` defines how every release is built and promoted:
+
+| Setting | Value | Effect |
+|---------|-------|--------|
+| `build.builder` | `NIXPACKS` | Railway builds the image itself. |
+| `build.buildCommand` | `pnpm install --frozen-lockfile && pnpm build` | Lockfile drift fails the build before anything is deployed. |
+| `build.watchPatterns` | `server/src/**` | Only server source changes trigger an automatic deploy. |
+| `deploy.startCommand` | `pnpm start` | Runs `node --require ./dist/telemetry.js dist/index.js`. |
+| `deploy.healthcheckPath` | `/health` | A new deployment receives traffic only after `/health` returns `200`. |
+| `deploy.healthcheckTimeout` | `300` | The new instance has 5 minutes to become healthy; otherwise the deploy fails and the previous one keeps serving. |
+| `deploy.restartPolicyType` / `restartPolicyMaxRetries` | `ON_FAILURE` / `3` | A crashed process is restarted up to 3 times, then marked failed. |
+| `environments.blue` / `environments.green` | identical deploy blocks | Two production-shaped environments for blue-green releases. |
+
+`/health` returns `200` only when PostgreSQL answers and, when configured,
+Redis replies `PONG`. Otherwise it returns `503` with `"status": "error"` and
+the failing component (`"db"` / `"redis"`) set to `"error"`.
+
+**Default: rolling, zero-downtime deploy.** Each push to the production
+service builds a new deployment. Railway starts it, waits for `/health`, then
+switches traffic and drains the previous deployment. A failed health check
+leaves the old deployment live.
+
+**Blue-green for risky releases** (schema changes, contract upgrades, major
+dependency bumps):
+
+1. Deploy the release to the idle colour (e.g. `green`) while `blue` serves traffic.
+2. Run migrations from `green` (`pnpm --filter airflex-server db:migrate`). Migrations must stay backwards-compatible with the code still running on `blue`.
+3. Smoke-test `green` directly: `curl https://<green-domain>/health`, sign in, list trades.
+4. Move the public domain to `green` (Railway → Service → Settings → Networking).
+5. Leave `blue` running untouched until the release has been stable for at least one hour — it is the instant rollback target.
+
+### Secret rotation
+
+The server reads each secret once at startup and accepts a single value;
+there is no dual-key overlap for `JWT_SECRET` or `ENCRYPTION_KEY`. Rotation
+is therefore "set the new value, redeploy", and Railway's health-checked
+rollout keeps the API available while instances swap.
+
+Rotate in this order (lowest blast radius first), one secret per deploy:
+
+| # | Secret | When | Impact |
+|---|--------|------|--------|
+| 1 | `TERMII_API_KEY` | Every 90 days or on leak | None — keep both keys active at Termii during the swap. |
+| 2 | `PAYSTACK_SECRET_KEY` | Every 90 days or on leak | None if rolled in the Paystack dashboard; webhooks verify with the new key as soon as it is deployed. |
+| 3 | `DATABASE_URL` password | Every 90 days | None with the two-role method below. |
+| 4 | `REDIS_URL` password | Every 90 days | None with a second ACL user; brief cache misses at most. |
+| 5 | `JWT_SECRET` | Every 180 days or on leak | **All users are signed out** — tokens signed with the old key fail. Schedule off-peak. |
+| 6 | `STELLAR_SERVER_SECRET` | On leak or staff change | Requires an on-chain admin change first. |
+| 7 | `ENCRYPTION_KEY` | On leak only | **Planned maintenance** — stored ciphertext must be re-encrypted. |
+
+**Third-party API keys (Termii, Paystack):**
+
+1. Create the new key in the provider dashboard; keep the old key active.
+2. Railway → service → **Variables** → update the value. Railway redeploys.
+3. Wait for the deployment to pass `/health`, then exercise the integration (send a test OTP, run a test Paystack transaction).
+4. Revoke the old key at the provider.
+
+**Database / Redis credentials without downtime:**
+
+1. Create a second database role with the same grants (for example `CREATE ROLE airflex_app_v2 LOGIN PASSWORD '…' IN ROLE airflex_app;`) or a second Redis ACL user.
+2. Point `DATABASE_URL` / `REDIS_URL` at the new credentials and let Railway redeploy.
+3. Confirm `/health` reports `"db": "ok"` and `"redis": "ok"` and no pool errors appear in the logs.
+4. Disable the old role once nothing uses it (`SELECT usename, count(*) FROM pg_stat_activity GROUP BY 1;`).
+
+**`JWT_SECRET`:** generate a value (`openssl rand -base64 48`), update the
+variable, redeploy, and tell users they must sign in again. On a leak, rotate
+immediately regardless of time of day.
+
+**`STELLAR_SERVER_SECRET`:** generate and fund a new keypair, transfer the
+escrow contract's admin role to the new public key on-chain, then update the
+variable and redeploy. Until the variable matches the contract admin, oracle
+releases fail and trades escalate to dispute after `RELEASE_RETRY_MAX` retries.
+
+**`ENCRYPTION_KEY`:** take a database backup, put the API into maintenance
+(scale the service to 0 or route traffic to a maintenance page), decrypt every
+encrypted column with the old key and re-encrypt it with the new key in one
+transaction, set the new variable, redeploy and verify a wallet operation.
+Keep the old key in offline escrow until a post-rotation backup exists.
+
+### Rollback
+
+Roll back when a release passes its health check but misbehaves (error rate
+up, broken flow, bad config).
+
+1. **Freeze deploys** — pause auto-deploys and stop merging to `main`.
+2. **Roll back the code:**
+   - *Rolling deploy:* Railway → service → **Deployments** → previous successful deployment → **⋯ → Rollback**. Railway redeploys that exact image.
+   - *Blue-green:* move the public domain back to the previous colour, which was left running.
+3. **Roll back config** — if the release changed variables, make sure the **Variables** tab matches the previous release.
+4. **Database** — only if the release ran a migration the old code cannot
+   handle, run `pnpm --filter airflex-server db:migrate:rollback` (one step per
+   run). Take a backup first; never roll back a migration that dropped data —
+   restore from backup instead.
+5. **Verify:**
+   - `curl -fsS https://<api-domain>/health` returns `200` with `"db":"ok"` and `"redis":"ok"`.
+   - Railway → Deployments shows the rolled-back deployment as **Active**.
+   - Error rate and latency return to baseline in logs and traces (filter by `requestId` for reported failures).
+   - Smoke test: sign in with OTP, `GET /api/v1/trades`, open a trade detail.
+6. **Follow up** — `git revert` the bad commit on `main` so the next deploy does not reintroduce it, and record the incident.
+
+### Incident runbook
+
+Every structured log line and span carries `requestId`, which is also
+returned to clients as the `X-Request-ID` header. Ask reporters for it and
+search logs and traces by it.
+
+#### Database connection failure
+
+**Symptoms:** `/health` returns `503` with `"db":"error"`; requests fail with
+`503` after `DB_CONNECT_TIMEOUT_MS`; logs show pool saturation,
+`ECONNREFUSED` or `too many connections`.
+
+1. Check the Railway Postgres plugin status and metrics (CPU, connections, disk).
+2. Pool exhaustion: `SELECT state, count(*) FROM pg_stat_activity GROUP BY 1;` — terminate stuck `idle in transaction` sessions; reduce `DB_POOL_MAX` or replicas if `instances × DB_POOL_MAX` exceeds `max_connections`.
+3. Credentials: if a password was just rotated, confirm `DATABASE_URL` matches; revert the variable if not.
+4. Disk full: expand the volume, then vacuum large tables.
+5. Recovery: `/health` back to `200`; check no trades are stuck mid-transition.
+
+#### Redis eviction / memory pressure
+
+**Symptoms:** `/health` reports `"redis":"error"`; notification jobs are
+delayed or lost; rate cache misses; Redis `used_memory` close to `maxmemory`
+and `evicted_keys` rising.
+
+1. `redis-cli -u "$REDIS_URL" INFO memory` and `INFO stats` — check `used_memory`, `maxmemory`, `maxmemory-policy`, `evicted_keys`.
+2. Queue data must not be evicted: set `maxmemory-policy noeviction` (or `volatile-lru`, so only keys with a TTL such as caches are evicted).
+3. Free memory: clean completed/failed jobs from the queue and stale cache keys (`rates:*` keys are safe to delete — they repopulate).
+4. Scale up the Redis plugin memory if usage is legitimately high.
+5. Rates keep serving the last-known value for `RATES_STALE_TTL_SECONDS`; after recovery, confirm queued SMS notifications drain.
+
+#### Stellar RPC outage
+
+**Symptoms:** escrow funding or release fails; Soroban simulation or Horizon
+submission timeouts in logs and spans; trades pile up in a funded state;
+oracle releases retry and escalate to dispute.
+
+1. Check [status.stellar.org](https://status.stellar.org) and your RPC provider's status page.
+2. Confirm from the server with a `getHealth` JSON-RPC call to `SOROBAN_RPC_URL` (see the snippet below).
+3. Fail over by switching `SOROBAN_RPC_URL` / `HORIZON_URL` to a secondary provider and redeploying.
+4. If no provider is available, pause new trade creation and announce it in-app; funds stay safe in escrow on-chain.
+5. After recovery, re-trigger releases for trades that escalated to dispute during the outage, and check on-chain state matches the database.
+
+```bash
+curl -s -X POST "$SOROBAN_RPC_URL" \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}'
+```
 
 ## Escrow contract
 

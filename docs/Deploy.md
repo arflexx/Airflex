@@ -1,7 +1,7 @@
 Deploy
 Deploy on Railway
 
-Full deployment guide → docs/deployment.md
+Full deployment guide and production runbook (environment variables, secret rotation, rollback, incident response) → [apps/docs-site/pages/deployment.mdx](../apps/docs-site/pages/deployment.mdx). Variable reference → [server/.env.example](../server/.env.example).
 
 Quick Start
 1. Clone
