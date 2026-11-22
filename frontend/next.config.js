@@ -45,6 +45,29 @@ const withPWA = require("next-pwa")({
   ],
 });
 
+/**
+ * remotePatterns for next/image derived from NEXT_PUBLIC_API_URL (issue #679).
+ * Returns [] when the variable is unset or not an absolute http(s) URL.
+ */
+function apiImageRemotePatterns() {
+  const raw = process.env.NEXT_PUBLIC_API_URL;
+  if (!raw) return [];
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return [];
+    return [
+      {
+        protocol: url.protocol.slice(0, -1),
+        hostname: url.hostname,
+        port: url.port,
+        pathname: "/**",
+      },
+    ];
+  } catch {
+    return [];
+  }
+}
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
@@ -72,8 +95,16 @@ const nextConfig = {
       },
     ];
   },
+  // next/image (issue #679). `domains` is deprecated in Next 14, so hosts are
+  // allow-listed with remotePatterns. The only remote host the app serves
+  // images from is the API (user-uploaded assets); its origin comes from
+  // NEXT_PUBLIC_API_URL. Local KYC previews are blob: URLs and render with
+  // `unoptimized`, so they need no entry here.
   images: {
-    domains: [],
+    formats: ["image/avif", "image/webp"],
+    remotePatterns: apiImageRemotePatterns(),
+    // Optimised variants are immutable per URL; cache them for a day.
+    minimumCacheTTL: 86400,
   },
 };
 

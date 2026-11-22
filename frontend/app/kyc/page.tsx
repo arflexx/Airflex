@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, type FormEvent, type ChangeEvent } from "react";
+import Image from "next/image";
 import { getToken, isAuthenticated } from "../lib/auth";
 import { Button } from "../../components/ui/Button";
 import { Input } from "../../components/ui/Input";
@@ -553,12 +554,23 @@ export default function KycPage() {
           {previewUrl && (
             <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-gray-600 dark:bg-gray-700/50">
               <p className="mb-2 text-xs font-medium text-gray-500 dark:text-gray-400">Preview</p>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={previewUrl}
-                alt="Selected document preview"
-                className="mx-auto max-h-48 rounded-lg object-contain"
-              />
+              {/*
+                next/image (issue #679). The source is a local blob: object URL,
+                which the optimiser cannot fetch, so it is `unoptimized`; the
+                fixed-height container reserves space (no layout shift) and
+                `sizes` matches the form's max width. Below the fold → lazy.
+              */}
+              <div className="relative mx-auto h-48 w-full max-w-md">
+                <Image
+                  src={previewUrl}
+                  alt="Preview of the selected identity document"
+                  fill
+                  unoptimized
+                  loading="lazy"
+                  sizes="(max-width: 640px) 100vw, 448px"
+                  className="rounded-lg object-contain"
+                />
+              </div>
             </div>
           )}
 
