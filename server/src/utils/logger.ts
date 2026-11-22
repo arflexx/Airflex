@@ -40,9 +40,12 @@ function traceContext(): { traceId?: string; spanId?: string } {
 
 function write(level: string, context: LogContext, message: string): void {
   const timestamp = new Date().toISOString();
-  // Correlation ID of the current request (issue #481); an explicit
-  // `requestId` in the context wins.
-  const requestId = (context["requestId"] as string | undefined) ?? getRequestId();
+  // Correlation ID of the current request, read from AsyncLocalStorage
+  // (issues #481, #675). An explicit string `requestId` in the context wins;
+  // the caller's object is never mutated (formatContext copies it).
+  const explicit = context["requestId"];
+  const requestId =
+    typeof explicit === "string" && explicit ? explicit : getRequestId();
 
   if (process.env["NODE_ENV"] === "production") {
     process.stdout.write(

@@ -98,18 +98,33 @@ app.use(helmet());
 // routes/index.ts.
 app.use(corsMiddleware());
 
-// Request logging with X-Request-Id token
-// Define custom token to include request ID in logs
-morgan.token("request-id", (_req: Request, res: Response) => {
-  return (res.locals as { requestId?: string }).requestId ?? "-";
-});
-
+// Access logging (issue #675). Each request is written through the
+// structured logger with its requestId, instead of morgan's own text line.
+// (The previous 'combined :request-id' string was not a predefined morgan
+// format, so it logged the literal word "combined" followed by the id.)
+// Returning undefined from the format function tells morgan to write nothing.
 app.use(
-  morgan(
-    process.env["NODE_ENV"] === "production"
-      ? 'combined :request-id'
-      : 'dev :request-id'
-  )
+  morgan((tokens, req: Request, res: Response) => {
+    const requestId = (res.locals as { requestId?: string }).requestId;
+    const status = Number(tokens["status"]?.(req, res)) || undefined;
+    const responseTimeMs = Number(tokens["response-time"]?.(req, res)) || undefined;
+    const method = tokens["method"]?.(req, res);
+    const url = tokens["url"]?.(req, res);
+    logger.info(
+      {
+        requestId,
+        method,
+        url,
+        status,
+        responseTimeMs,
+        contentLength: tokens["res"]?.(req, res, "content-length"),
+        remoteAddr: tokens["remote-addr"]?.(req, res),
+        userAgent: tokens["user-agent"]?.(req, res),
+      },
+      `${method} ${url} ${status ?? "-"} ${responseTimeMs ?? "-"}ms`
+    );
+    return undefined;
+  })
 );
 
 // JSON body parsing.
