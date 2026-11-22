@@ -11,7 +11,7 @@
 -- sorts them. With (status, created_at DESC) it walks the index in order and
 -- stops after LIMIT rows. Query results are unchanged; only the plan differs.
 --
--- Plain CREATE INDEX (not CONCURRENTLY) because the migration runner wraps
+-- Plain CREATE INDEX (no concurrent build) because the migration runner wraps
 -- each file in a transaction. Idempotent via IF NOT EXISTS.
 --
 -- Verify the plan with server/sql/explain_trade_offers_status_created_at.sql.

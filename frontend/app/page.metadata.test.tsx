@@ -11,6 +11,8 @@ import type { Metadata } from "next";
 import { getTranslations } from "next-intl/server";
 import { generateMetadata } from "./page";
 
+type OgImage = { url: string; width?: number; height?: number; alt?: string };
+
 jest.mock("next-intl/server", () => ({
   getTranslations: jest.fn(),
 }));
@@ -63,9 +65,16 @@ describe("HomePage generateMetadata (issue #464)", () => {
       }),
     );
 
-    const og = (await generateMetadata()).openGraph as NonNullable<
-      Metadata["openGraph"]
-    >;
+    // Metadata["openGraph"] is a union whose members don't all declare
+    // `type` or object images, so narrow to the shape this page emits.
+    const og = (await generateMetadata()).openGraph as unknown as {
+      type?: string;
+      url?: unknown;
+      title?: unknown;
+      description?: unknown;
+      siteName?: unknown;
+      images?: OgImage | OgImage[];
+    };
 
     expect(og.type).toBe("website");
     expect(og.url).toBe("https://airflex.example/");
@@ -89,9 +98,12 @@ describe("HomePage generateMetadata (issue #464)", () => {
       }),
     );
 
-    const twitter = (await generateMetadata()).twitter as NonNullable<
-      Metadata["twitter"]
-    >;
+    const twitter = (await generateMetadata()).twitter as unknown as {
+      card?: string;
+      title?: unknown;
+      description?: unknown;
+      images?: unknown;
+    };
 
     expect(twitter.card).toBe("summary_large_image");
     expect(twitter.title).toBe("Buy & Sell Airtime Peer-to-Peer | AirFlex");

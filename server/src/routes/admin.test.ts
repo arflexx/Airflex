@@ -445,6 +445,9 @@ describe("GET /api/v1/admin/users cursor pagination input validation (issue #625
 
   it.each(["0", "101", "not-a-number"])("rejects invalid limit %s before querying", async (limit) => {
     mockQuery.mockReset();
+    // authenticate (token version) and requireAdmin (role) lookups.
+    mockQuery.mockResolvedValueOnce({ rows: [{ token_version: 1 }] });
+    mockQuery.mockResolvedValueOnce({ rows: [{ role: "admin" }] });
     const res = await request(app)
       .get(`/api/v1/admin/users?limit=${limit}`)
       .set("Authorization", `Bearer ${adminToken}`);
@@ -456,6 +459,9 @@ describe("GET /api/v1/admin/users cursor pagination input validation (issue #625
 
   it("rejects a blank cursor before querying", async () => {
     mockQuery.mockReset();
+    // authenticate (token version) and requireAdmin (role) lookups.
+    mockQuery.mockResolvedValueOnce({ rows: [{ token_version: 1 }] });
+    mockQuery.mockResolvedValueOnce({ rows: [{ role: "admin" }] });
     const res = await request(app)
       .get("/api/v1/admin/users?cursor=%20")
       .set("Authorization", `Bearer ${adminToken}`);

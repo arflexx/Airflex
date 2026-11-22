@@ -24,6 +24,8 @@ const FULL_PAYLOADS: Record<NotificationTemplateKey, TemplatePayload> = {
   WITHDRAWAL_FAILED: { amount: 5000, reason: "Bank declined the transfer" },
   WEBHOOK_FAILED: { eventId: "evt_42", eventType: "charge.success" },
   DATA_EXPORT_READY: { days: 7 },
+  KYC_DOCUMENT_EXPIRING: { expiryDate: "2026-12-31" },
+  KYC_ADMIN_SUMMARY: { count: 4 },
 };
 
 const TEMPLATE_KEYS = Object.keys(NOTIFICATION_TEMPLATES) as NotificationTemplateKey[];
@@ -51,6 +53,10 @@ const EXPECTED_SMS: Record<NotificationTemplateKey, string> = {
   DATA_EXPORT_READY:
     "AirFlex: Your personal data export is ready. Download it from your " +
     "profile in the app within 7 days.",
+  KYC_DOCUMENT_EXPIRING:
+    "AirFlex: Your KYC document expires on 2026-12-31. Please renew it in the app to keep your account active.",
+  KYC_ADMIN_SUMMARY:
+    "AirFlex admin: 4 KYC document(s) are expired or expiring soon. Review the affected accounts.",
 };
 
 // ---------------------------------------------------------------------------
