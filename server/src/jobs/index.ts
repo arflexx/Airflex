@@ -16,6 +16,12 @@ import { processWithdrawalProcessor }     from "./processors/process-withdrawal"
 import { generateDataExportProcessor, purgeExpiredDataExports } from "./processors/generate-data-export";
 import { purgeExpiredAuditLogs }          from "./auditLogRetention";
 import { schedule, ONE_DAY_MS }           from "./cron";
+import {
+  getRatesCacheTtlSeconds,
+  getRatesPrewarmIntervalMs,
+  prewarmExchangeRates,
+} from "../services/exchangeRates";
+import logger from "../utils/logger";
 import { checkKycDocumentExpiry } from "./kycExpiry";
 import {
   getVirtualAccountReconciliationIntervalMs,
@@ -41,6 +47,22 @@ export function initJobQueue(): void {
   schedule({ name: "audit-log-retention",   intervalMs: ONE_DAY_MS, run: () => purgeExpiredAuditLogs() });
   schedule({ name: "data-export-cleanup",   intervalMs: ONE_DAY_MS, run: () => purgeExpiredDataExports() });
   schedule({ name: "kyc-document-expiry", intervalMs: ONE_DAY_MS, run: checkKycDocumentExpiry });
+
+  // Exchange-rate cache pre-warm (issue #676): refresh every 55s — just under
+  // the 60s cache TTL — so /api/v1/rates never serves from a cold cache.
+  const prewarmIntervalMs = getRatesPrewarmIntervalMs();
+  if (prewarmIntervalMs >= getRatesCacheTtlSeconds() * 1000) {
+    logger.warn(
+      { prewarmIntervalMs, ttlSeconds: getRatesCacheTtlSeconds() },
+      "[rates] RATES_PREWARM_INTERVAL_MS is not shorter than RATES_CACHE_TTL_SECONDS — cache may go cold between refreshes"
+    );
+  }
+  schedule({
+    name: "exchange-rate-prewarm",
+    intervalMs: prewarmIntervalMs,
+    initialDelayMs: 0,
+    run: () => prewarmExchangeRates(),
+  });
 
   // The Paystack customer transaction API is only available when credentials
   // are configured; reconciliation itself is read-only and safe to rerun.

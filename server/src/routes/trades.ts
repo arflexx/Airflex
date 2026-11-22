@@ -566,7 +566,10 @@ router.post(
     // marketplace listing cache (issue #76) so it isn't served stale.
     await invalidateTradesListCache();
 
-    // Notify the seller that their trade has been locked (best-effort)
+    // Notify the seller that their trade has been locked. Deliberately not
+    // awaited: NotificationService only enqueues a `send-notification` job
+    // (issue #678) and the queue worker talks to Termii, so the trade state
+    // change never waits on SMS delivery.
     void NotificationService.send(trade.seller_id, "TRADE_LOCKED", {
       tradeId: id,
     });

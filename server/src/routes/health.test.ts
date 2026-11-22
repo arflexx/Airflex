@@ -38,6 +38,21 @@ describe("GET /health (issue #626)", () => {
     expect(cachePingSpy).toHaveBeenCalled();
   });
 
+  it("exposes connection pool metrics (issue #680)", async () => {
+    const statsSpy = jest.spyOn(poolModule, "getPoolStats").mockReturnValue({
+      max: 20,
+      total: 7,
+      active: 5,
+      idle: 2,
+      waiting: 0,
+    });
+
+    const res = await request(app).get("/health");
+
+    expect(res.body.pool).toEqual({ max: 20, total: 7, active: 5, idle: 2, waiting: 0 });
+    statsSpy.mockRestore();
+  });
+
   it("returns 503 with db error when DB is unreachable", async () => {
     querySpy.mockRejectedValueOnce(new Error("Database connection refused"));
 
