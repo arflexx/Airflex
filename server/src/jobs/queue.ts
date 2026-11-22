@@ -21,6 +21,19 @@
  * exponential back-off. After all attempts are exhausted the job is moved to
  * a dead-letter list (<name>:dead) and logged as a structured error.
  *
+ * Worker concurrency
+ * ------------------
+ * Queues listed in BOUNDED_QUEUES run at most N jobs at once and refill a
+ * freed slot immediately instead of waiting for the next poll tick:
+ *   verify-trade-delivery — VERIFY_TRADE_CONCURRENCY (default 5). Each job
+ *                           makes several Soroban RPC calls, so this caps the
+ *                           in-flight RPC load and keeps us under the
+ *                           provider's rate limit.
+ * Other queues keep the original behaviour (one dequeue per queue per tick).
+ *
+ * Every job runs inside an OpenTelemetry span carrying queue depth and worker
+ * concurrency attributes (see withQueueJobSpan in ../telemetry).
+ *
  * Queue names (exported as JOB_QUEUES)
  * -------------------------------------
  *   fund-stellar-account    — fund a new user wallet via Friendbot
@@ -35,6 +48,7 @@
 
 import { randomBytes } from "crypto";
 import logger from "../utils/logger";
+import { withQueueJobSpan } from "../telemetry";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -57,6 +71,23 @@ const MAX_ATTEMPTS    = 3;
 const BASE_DELAY_MS   = 2_000;   // first retry delay
 const POLL_INTERVAL   = 1_000;   // ms between dequeue polls
 const MAX_DEAD_STORED = 100;      // recent failures kept in memory for /api/admin/queues
+
+export const DEFAULT_VERIFY_TRADE_CONCURRENCY = 5;
+
+/**
+ * Concurrency limit per bounded queue, read from the environment on each call
+ * so it can be changed without a code change (and overridden in tests).
+ */
+const BOUNDED_QUEUES: Partial<Record<QueueName, () => number>> = {
+  "verify-trade-delivery": () =>
+    positiveIntEnv("VERIFY_TRADE_CONCURRENCY", DEFAULT_VERIFY_TRADE_CONCURRENCY),
+};
+
+/** Max concurrent jobs for a queue, or null when the queue is unbounded. */
+export function getQueueConcurrency(name: QueueName): number | null {
+  const limit = BOUNDED_QUEUES[name];
+  return limit ? limit() : null;
+}
 
 // ---------------------------------------------------------------------------
 // Job shape
@@ -88,6 +119,7 @@ interface QueueStats {
   completed:  number;
   failed:     number;
   delayed:    number;
+  concurrency: number | null; // null = unbounded
   recentFailures: Array<{
     jobId:        string;
     data:         unknown;
@@ -277,6 +309,7 @@ class QueueServiceClass {
         completed:      0,
         failed:         0,
         delayed:        0,
+        concurrency:    null,
         recentFailures: [],
       });
       this.activeJobs.set(name, 0);
@@ -329,7 +362,15 @@ class QueueServiceClass {
 
   /** Returns a snapshot of all queue stats for the admin endpoint. */
   getStats(): QueueStats[] {
-    return JOB_QUEUES.map((name) => ({ ...this.getStat(name) }));
+    return JOB_QUEUES.map((name) => ({
+      ...this.getStat(name),
+      concurrency: getQueueConcurrency(name),
+    }));
+  }
+
+  /** Stop the polling loop. In-flight jobs run to completion. */
+  stop(): void {
+    this.polling = false;
   }
 
   // -------------------------------------------------------------------------
@@ -348,21 +389,15 @@ class QueueServiceClass {
         const processor = this.processors.get(name);
         if (!processor) continue;
 
-        const raw = await this.dequeue(name);
-        if (!raw) continue;
-
-        let job: Job;
-        try {
-          job = JSON.parse(raw) as Job;
-        } catch {
-          logger.error({ raw }, "[queue] Failed to parse job — discarding");
+        if (getQueueConcurrency(name) !== null) {
+          await this.fillSlots(name, processor);
           continue;
         }
 
-        // Skip delayed jobs not yet due
-        if (job.nextRunAt > 0 && job.nextRunAt > Date.now()) {
-          // Re-enqueue for later
-          await this.requeue(name, job);
+        this.reserveSlot(name);
+        const job = await this.takeDueJob(name);
+        if (!job) {
+          this.releaseSlot(name);
           continue;
         }
 
@@ -371,6 +406,82 @@ class QueueServiceClass {
       }
       await sleep(POLL_INTERVAL);
     }
+  }
+
+  /**
+   * Start jobs on a bounded queue until it is empty or every worker slot is
+   * busy. A slot is reserved before the (async) dequeue so overlapping calls —
+   * the poll loop plus a finishing job refilling its own slot — can never
+   * overshoot the limit. Bounded to `limit` dequeues per call so a queue full
+   * of not-yet-due delayed jobs cannot spin.
+   */
+  private async fillSlots(name: QueueName, processor: Processor): Promise<void> {
+    const limit = getQueueConcurrency(name) ?? 1;
+    for (let i = 0; i < limit; i++) {
+      if (this.activeCount(name) >= limit) return;
+
+      this.reserveSlot(name);
+      const job = await this.takeDueJob(name);
+      if (!job) {
+        this.releaseSlot(name);
+        // takeDueJob returns null both for an empty queue and a delayed job;
+        // only an empty queue ends the fill early.
+        if ((await this.depth(name)) === 0) return;
+        continue;
+      }
+
+      void this.runJob(name, job, processor);
+    }
+  }
+
+  /** Dequeue one job; returns null when empty, unparseable, or not yet due. */
+  private async takeDueJob(name: QueueName): Promise<Job | null> {
+    const raw = await this.dequeue(name);
+    if (!raw) return null;
+
+    let job: Job;
+    try {
+      job = JSON.parse(raw) as Job;
+    } catch {
+      logger.error({ raw }, "[queue] Failed to parse job — discarding");
+      return null;
+    }
+
+    // Skip delayed jobs not yet due
+    if (job.nextRunAt > 0 && job.nextRunAt > Date.now()) {
+      // Re-enqueue for later
+      await this.requeue(name, job);
+      return null;
+    }
+
+    return job;
+  }
+
+  /**
+   * Jobs waiting in the queue (Redis list length or in-process array). Never
+   * throws: it feeds telemetry and the fill loop, and must not fail a job.
+   */
+  private async depth(name: QueueName): Promise<number> {
+    if (this.redis.isConnected) {
+      try {
+        return (await this.redis.llen(`queue:${name}`)) ?? 0;
+      } catch {
+        return 0;
+      }
+    }
+    return this.memQueues.get(name)!.length;
+  }
+
+  private activeCount(name: QueueName): number {
+    return this.activeJobs.get(name) ?? 0;
+  }
+
+  private reserveSlot(name: QueueName): void {
+    this.activeJobs.set(name, this.activeCount(name) + 1);
+  }
+
+  private releaseSlot(name: QueueName): void {
+    this.activeJobs.set(name, Math.max(0, this.activeCount(name) - 1));
   }
 
   private async dequeue(name: QueueName): Promise<string | null> {
@@ -391,7 +502,22 @@ class QueueServiceClass {
     }
   }
 
+  /** Caller must have reserved a worker slot; it is released when the job ends. */
   private async runJob(name: QueueName, job: Job, processor: Processor): Promise<void> {
+    try {
+      await this.executeJob(name, job, processor);
+    } finally {
+      this.releaseSlot(name);
+      // Bounded queues refill the freed slot now rather than on the next tick.
+      if (this.polling && getQueueConcurrency(name) !== null) {
+        void this.fillSlots(name, processor).catch((err: unknown) =>
+          logger.error({ queue: name, err: (err as Error).message }, "[queue] Slot refill failed")
+        );
+      }
+    }
+  }
+
+  private async executeJob(name: QueueName, job: Job, processor: Processor): Promise<void> {
     const stat = this.getStat(name);
     stat.waiting  = Math.max(0, stat.waiting - 1);
     stat.active++;
@@ -399,8 +525,17 @@ class QueueServiceClass {
 
     logger.debug({ queue: name, jobId: job.id, attempt: job.attempts }, "[queue] Job started");
 
+    const snapshot = {
+      queue:       name,
+      depth:       await this.depth(name),
+      active:      this.activeCount(name),
+      concurrency: getQueueConcurrency(name),
+      jobId:       job.id,
+      attempt:     job.attempts,
+    };
+
     try {
-      await processor(job);
+      await withQueueJobSpan(snapshot, () => processor(job));
       stat.active--;
       stat.completed++;
       logger.debug({ queue: name, jobId: job.id }, "[queue] Job completed");
@@ -480,4 +615,9 @@ function backoffDelay(attempt: number): number {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function positiveIntEnv(key: string, fallback: number): number {
+  const parsed = parseInt(process.env[key] ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
