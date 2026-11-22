@@ -73,16 +73,14 @@ export async function applyChargeSuccess(
 
     const amountNaira = event.data.amount / KOBO_PER_NAIRA;
 
-    await client.query(
-      `INSERT INTO transactions (user_id, amount, direction, type, external_reference)
-       VALUES ($1, $2, 'credit', 'deposit', $3)`,
-      [rows[0]!.id, amountNaira, event.data.reference]
-    );
-
-    await client.query(
-      `UPDATE wallets SET fiat_balance = fiat_balance + $1 WHERE user_id = $2`,
-      [amountNaira, rows[0]!.id]
-    );
+    // Ledger row, denormalised users.balance and wallets.fiat_balance all
+    // move inside this transaction.
+    await new WalletService(client).credit({
+      userId: rows[0]!.id,
+      amount: amountNaira,
+      type: "deposit",
+      externalReference: event.data.reference,
+    });
 
     await client.query(
       `UPDATE payment_events
