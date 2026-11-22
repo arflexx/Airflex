@@ -7,6 +7,7 @@ import { cache } from "../services/cache";
 import logger from "../utils/logger";
 import {
   setTradeAttributes,
+  TRADE_ATTRIBUTES,
   withSpan,
   withTradeSpan,
   type TradeStage,
@@ -70,6 +71,13 @@ function tracedStage(
         userId: (req as unknown as AuthenticatedRequest).user?.sub,
       },
       async (span) => {
+        // Correlate the span with the request's X-Request-Id (issue #481).
+        // Read from res.locals as well as the async context, because body
+        // parsing can run the handler outside the context the requestId
+        // middleware opened.
+        const requestId = res.locals["requestId"] as string | undefined;
+        if (requestId) span.setAttribute(TRADE_ATTRIBUTES.requestId, requestId);
+
         await handler(req, res);
 
         span.setAttribute("http.response.status_code", res.statusCode);

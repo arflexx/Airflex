@@ -688,6 +688,7 @@ export const openApiDocument = {
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/ValidationErrorResponse" },
+            example: { errors: [{ field: "phone", message: "phone is required" }] },
           },
         },
       },
@@ -2204,4 +2205,448 @@ for (const [route, methods] of Object.entries(routeCoverageOperations)) {
     };
   }
   mutablePaths[route] = pathItem;
+}
+
+// ---------------------------------------------------------------------------
+// Request / response examples (issue #688)
+// ---------------------------------------------------------------------------
+//
+// Every documented operation gets a request body example (where it takes a
+// body), a success response example, and examples on its inline 4xx
+// responses. Shared 401/404/422/429 responses carry their examples on the
+// component in `components.responses`. They are kept in one table so the
+// values stay consistent across endpoints.
+//
+// All values are fictitious placeholders: phone numbers use the reserved
+// +234 800 000 000x range, ids are made-up UUIDs, keys/XDR/JWTs are
+// truncated with "...", and no real account numbers or secrets appear.
+
+const EXAMPLE_TRADE_ID = "3f2a9c4e-7b1d-4e8a-9c2f-1a2b3c4d5e6f";
+const EXAMPLE_SELLER_ID = "8b7c6d5e-4f3a-4b2c-9d1e-0f1e2d3c4b5a";
+const EXAMPLE_BUYER_ID = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
+const EXAMPLE_EXPORT_ID = "6e5d4c3b-2a19-4f08-8e7d-6c5b4a392817";
+
+function exampleTrade(status: string, overrides: Record<string, unknown> = {}) {
+  return {
+    id: EXAMPLE_TRADE_ID,
+    seller_id: EXAMPLE_SELLER_ID,
+    buyer_id: status === "Active" ? null : EXAMPLE_BUYER_ID,
+    asset_type: "MTN_AIRTIME",
+    amount: 500,
+    status,
+    contract_listing_id: "42",
+    escrow_tx_hash: status === "Active" ? null : "9f1c2e3d4b5a...",
+    expires_at: "2026-11-22T10:00:00.000Z",
+    created_at: "2026-11-21T10:00:00.000Z",
+    updated_at: "2026-11-21T10:05:00.000Z",
+    ...overrides,
+  };
+}
+
+const EXAMPLE_LISTING = {
+  id: EXAMPLE_TRADE_ID,
+  seller_handle: "@airflex_2f9a",
+  buyer_id: null,
+  asset_type: "MTN_AIRTIME",
+  amount: 500,
+  status: "Active",
+  contract_listing_id: "42",
+  escrow_tx_hash: null,
+  expires_at: "2026-11-22T10:00:00.000Z",
+  created_at: "2026-11-21T10:00:00.000Z",
+  updated_at: "2026-11-21T10:00:00.000Z",
+};
+
+const EXAMPLE_PAGINATION = { page: 1, limit: 20, total: 1, totalPages: 1 };
+
+const EXAMPLE_EXPORT = {
+  id: EXAMPLE_EXPORT_ID,
+  status: "pending",
+  format: "json",
+  requestedAt: "2026-11-21T10:00:00.000Z",
+  completedAt: null,
+  expiresAt: null,
+  statusUrl: `/api/v1/users/me/export/${EXAMPLE_EXPORT_ID}`,
+  download: null,
+};
+
+export interface OperationExamples {
+  /** Example JSON request body. */
+  request?: unknown;
+  /** Example body of the operation's success response. */
+  success: { status: string; example: unknown };
+  /** Examples for inline (non-$ref) error responses, keyed by status code. */
+  errors?: Record<string, unknown>;
+}
+
+/** Examples keyed by "<METHOD> <path>", e.g. "POST /api/v1/trades". */
+export const OPERATION_EXAMPLES: Record<string, OperationExamples> = {
+  // ------------------------------------------------------------------ Health
+  "GET /health": {
+    success: {
+      status: "200",
+      example: {
+        status: "ok",
+        db: "ok",
+        redis: "ok",
+        uptime: 3600,
+        version: "1.0.0",
+        timestamp: "2026-11-21T10:00:00.000Z",
+      },
+    },
+  },
+  "GET /ready": {
+    success: { status: "200", example: { status: "ready", db: "ok" } },
+  },
+
+  // ------------------------------------------------------------------ Auth
+  "POST /api/v1/auth/request-otp": {
+    request: { phone: "+2348000000001" },
+    success: { status: "200", example: { message: "OTP sent successfully" } },
+    errors: { "502": { error: "Failed to send OTP. Please try again." } },
+  },
+  "POST /api/v1/auth/verify-otp": {
+    request: { phone: "+2348000000001", otp: "123456" },
+    success: {
+      status: "200",
+      example: {
+        token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+        user: {
+          id: EXAMPLE_SELLER_ID,
+          phone: "+2348000000001",
+          stellarPublicKey: "GDEMOSELLERPUBLICKEY...",
+        },
+      },
+    },
+    errors: {
+      "400": { error: "Invalid or expired OTP" },
+      "502": { error: "OTP verification is temporarily unavailable" },
+    },
+  },
+  "POST /api/v1/auth/recover": {
+    request: { recoveryCode: "ABCD2345EFGH6789" },
+    success: {
+      status: "200",
+      example: {
+        token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+        message: "Recovery code accepted. Register a new phone number within 15 minutes.",
+        expiresIn: "15m",
+      },
+    },
+    errors: { "401": { error: "Invalid or already-used recovery code" } },
+  },
+  "POST /api/v1/auth/recover/change-phone": {
+    request: { token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...", newPhone: "+2348000000002" },
+    success: {
+      status: "200",
+      example: {
+        message: "Phone number updated. Verify it with the OTP we just sent.",
+        phone: "+2348000000002",
+        requiresVerification: true,
+      },
+    },
+    errors: {
+      "401": { error: "Recovery token is invalid or expired" },
+      "409": { error: "That phone number is already registered to another account" },
+    },
+  },
+  "GET /api/v1/auth/recovery-codes/status": {
+    success: { status: "200", example: { data: { remaining: 7 } } },
+  },
+
+  // ------------------------------------------------------------------ Trades
+  "GET /api/v1/trades": {
+    success: { status: "200", example: { data: [EXAMPLE_LISTING], pagination: EXAMPLE_PAGINATION } },
+  },
+  "POST /api/v1/trades": {
+    request: { assetType: "MTN_AIRTIME", amount: 500000000, expiresInHours: 24 },
+    success: { status: "201", example: { data: exampleTrade("Active") } },
+  },
+  "GET /api/v1/trades/{id}": {
+    success: { status: "200", example: { data: exampleTrade("Active") } },
+  },
+  "POST /api/v1/trades/{id}/buy/prepare": {
+    success: {
+      status: "200",
+      example: {
+        data: {
+          xdr: "AAAAAgAAAABDEMOUNSIGNEDENVELOPE...",
+          networkPassphrase: "Test SDF Network ; September 2015",
+          publicKey: "GDEMOBUYERPUBLICKEY...",
+        },
+      },
+    },
+  },
+  "POST /api/v1/trades/{id}/buy": {
+    request: { signedXdr: "AAAAAgAAAABDEMOSIGNEDENVELOPE..." },
+    success: { status: "200", example: { data: exampleTrade("Locked") } },
+  },
+  "POST /api/v1/trades/{id}/confirm-delivery": {
+    success: {
+      status: "202",
+      example: {
+        message:
+          "Delivery confirmation received. Payment release is being processed — " +
+          "you will be notified via the event stream when complete.",
+        tradeId: EXAMPLE_TRADE_ID,
+      },
+    },
+  },
+  "POST /api/v1/trades/{id}/dispute": {
+    request: { reason: "Seller did not deliver the airtime after payment was locked." },
+    success: {
+      status: "200",
+      example: {
+        message: "Trade successfully disputed. An admin will review within 24 hours.",
+        data: exampleTrade("Disputed"),
+      },
+    },
+  },
+
+  // ------------------------------------------------------------------ Wallet
+  "GET /api/v1/wallet": {
+    success: {
+      status: "200",
+      example: {
+        publicKey: "GDEMOSELLERPUBLICKEY...",
+        balance: "125.5000000",
+        asset: "XLM",
+        network: "testnet",
+      },
+    },
+    errors: { "502": { error: "Unable to fetch wallet balance from Horizon" } },
+  },
+  "GET /api/v1/wallet/banks": {
+    success: {
+      status: "200",
+      example: {
+        banks: [
+          { code: "044", name: "Access Bank" },
+          { code: "058", name: "Guaranty Trust Bank" },
+        ],
+      },
+    },
+    errors: { "502": { error: "Unable to fetch banks from Paystack" } },
+  },
+  "GET /api/v1/wallet/resolve-account": {
+    success: { status: "200", example: { account_name: "JANE DOE" } },
+    errors: {
+      "400": { error: "account_number and bank_code are required" },
+      "502": { error: "Unable to resolve account with Paystack" },
+    },
+  },
+  "POST /api/v1/wallet/withdraw": {
+    request: { amount: 5000, bank_code: "058", account_number: "0000000000", account_name: "JANE DOE" },
+    success: { status: "200", example: { success: true } },
+    errors: {
+      "400": { error: "amount must be a positive number" },
+      "422": { error: "Idempotency-Key was already used with a different request body" },
+    },
+  },
+
+  // ------------------------------------------------------------------ Profile
+  "GET /api/v1/profile": {
+    success: {
+      status: "200",
+      example: {
+        data: {
+          id: EXAMPLE_SELLER_ID,
+          maskedPhone: "+234 *** *** 0001",
+          createdAt: "2026-09-01T08:30:00.000Z",
+          totalTradesCompleted: 5,
+          stellarPublicKey: "GDEMOSELLERPUBLICKEY...",
+          kycStatus: "verified",
+          referralCode: "DEMOREFERRAL0001",
+        },
+      },
+    },
+  },
+  "DELETE /api/v1/profile": {
+    success: {
+      status: "200",
+      example: {
+        message: "Account deletion requested. Your account will be anonymised in 30 days.",
+        scheduledDeletionAt: "2026-12-21T10:00:00.000Z",
+      },
+    },
+    errors: { "400": { error: "Account deletion is already pending" } },
+  },
+  "GET /api/v1/profile/trades": {
+    success: {
+      status: "200",
+      example: {
+        data: [exampleTrade("Completed")],
+        pagination: { page: 1, limit: 10, total: 1, totalPages: 1 },
+      },
+    },
+  },
+  "GET /api/v1/profile/deletion-status": {
+    success: {
+      status: "200",
+      example: { pendingDeletion: true, scheduledDeletionAt: "2026-12-21T10:00:00.000Z" },
+    },
+  },
+  "POST /api/v1/profile/cancel-deletion": {
+    success: {
+      status: "200",
+      example: { message: "Account deletion cancelled. Your account is restored." },
+    },
+    errors: { "400": { error: "No pending deletion request to cancel" } },
+  },
+
+  // ------------------------------------------------------------------ Events
+  "GET /api/v1/events": {
+    success: {
+      status: "200",
+      example: 'event: connected\ndata: {"userId":"8b7c6d5e-4f3a-4b2c-9d1e-0f1e2d3c4b5a"}\n\n',
+    },
+  },
+  "GET /api/events": {
+    success: {
+      status: "200",
+      example: 'event: connected\ndata: {"userId":"8b7c6d5e-4f3a-4b2c-9d1e-0f1e2d3c4b5a"}\n\n',
+    },
+  },
+
+  // ------------------------------------------------------------------ Admin
+  "GET /api/v1/admin/queues": {
+    success: {
+      status: "200",
+      example: {
+        queues: [
+          { name: "send-notification", waiting: 0, active: 1, completed: 42, failed: 2, delayed: 0, recentFailures: [] },
+        ],
+      },
+    },
+  },
+  "GET /api/v1/admin/analytics/overview": {
+    success: {
+      status: "200",
+      example: {
+        data: { totalUsers: 1240, totalTrades: 860, tradeVolume: 482500, feeRevenue: 9650, successRate: 87.5 },
+      },
+    },
+  },
+  "GET /api/v1/admin/analytics/trades/timeseries": {
+    success: {
+      status: "200",
+      example: {
+        data: [
+          { date: "2026-11-20", tradeCount: 42, volume: 21000 },
+          { date: "2026-11-21", tradeCount: 38, volume: 19000 },
+        ],
+      },
+    },
+    errors: { "400": { error: "Invalid query parameters" } },
+  },
+  "GET /api/v1/admin/analytics/assets": {
+    success: {
+      status: "200",
+      example: {
+        data: [
+          { assetType: "MTN_AIRTIME", tradeCount: 310, volume: 155000 },
+          { assetType: "AIRTEL_DATA", tradeCount: 120, volume: 60000 },
+        ],
+      },
+    },
+  },
+  "GET /api/v1/admin/audit-logs": {
+    success: {
+      status: "200",
+      example: {
+        data: [
+          {
+            id: "0d1e2f3a-4b5c-4d6e-8f70-81a2b3c4d5e6",
+            occurred_at: "2026-11-21T09:00:00.000Z",
+            actor_id: "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+            actor_role: "admin",
+            action: "trade.dispute_resolved",
+            target_type: "trade",
+            target_id: EXAMPLE_TRADE_ID,
+            before_value: { status: "Disputed" },
+            after_value: { status: "Completed" },
+            metadata: { requestId: "4f3c2b1a-0000-4000-8000-00000000abcd" },
+          },
+        ],
+        pagination: EXAMPLE_PAGINATION,
+      },
+    },
+    errors: { "400": { error: "Invalid query parameters" } },
+  },
+  "GET /api/v1/users/me/export": {
+    success: {
+      status: "202",
+      example: { message: "Your data export is being prepared.", export: EXAMPLE_EXPORT },
+    },
+    errors: {
+      "429": {
+        error: "A data export was already requested in the last 24 hours",
+        retryAfterSeconds: 43200,
+        export: EXAMPLE_EXPORT,
+      },
+    },
+  },
+  "GET /api/v1/users/me/export/{exportId}": {
+    success: {
+      status: "200",
+      example: {
+        export: {
+          ...EXAMPLE_EXPORT,
+          status: "ready",
+          completedAt: "2026-11-21T10:02:00.000Z",
+          expiresAt: "2026-11-28T10:02:00.000Z",
+          download: {
+            url: `/api/v1/users/me/export/${EXAMPLE_EXPORT_ID}/download?expires=1795255200&signature=...`,
+            expiresAt: "2026-11-21T10:17:00.000Z",
+          },
+        },
+      },
+    },
+    errors: { "400": { error: "Invalid export id" } },
+  },
+  "GET /api/v1/users/me/export/{exportId}/download": {
+    success: {
+      status: "200",
+      example: {
+        exportedAt: "2026-11-21T10:02:00.000Z",
+        account: { id: EXAMPLE_SELLER_ID, maskedPhone: "+234 *** *** 0001" },
+        trades: [],
+        redactions: ["stellar_secret_key", "otp_hashes"],
+      },
+    },
+  },
+};
+
+interface MediaTypeObject {
+  schema?: unknown;
+  example?: unknown;
+}
+interface OperationObject {
+  requestBody?: { content?: Record<string, MediaTypeObject> };
+  responses?: Record<string, { $ref?: string; content?: Record<string, MediaTypeObject> }>;
+}
+
+/** The single media type a request/response is documented with. */
+function primaryMediaType(content: Record<string, MediaTypeObject> | undefined): MediaTypeObject | undefined {
+  if (!content) return undefined;
+  return content["application/json"] ?? content["text/event-stream"];
+}
+
+for (const [key, examples] of Object.entries(OPERATION_EXAMPLES)) {
+  const [method, ...rest] = key.split(" ");
+  const route = rest.join(" ");
+  const operation = mutablePaths[route]?.[method!.toLowerCase()] as OperationObject | undefined;
+  // A typo here only drops examples; openapi.examples.test.ts fails on it.
+  if (!operation) continue;
+
+  const requestMedia = primaryMediaType(operation.requestBody?.content);
+  if (requestMedia && examples.request !== undefined) requestMedia.example ??= examples.request;
+
+  const successMedia = primaryMediaType(operation.responses?.[examples.success.status]?.content);
+  if (successMedia) successMedia.example ??= examples.success.example;
+
+  for (const [status, example] of Object.entries(examples.errors ?? {})) {
+    const errorMedia = primaryMediaType(operation.responses?.[status]?.content);
+    if (errorMedia) errorMedia.example ??= example;
+  }
 }
