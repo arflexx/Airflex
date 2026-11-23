@@ -16,12 +16,20 @@
  * Dependencies (add to server/package.json):
  *   "@aws-sdk/client-s3": "^3.600.0"
  *   "@aws-sdk/lib-storage": "^3.600.0"
+ *
+ * File validation is performed via `validateFile()` before any bytes are sent
+ * to S3, so rejected files never reach the bucket.
  */
 
 import { S3Client, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
 import type { Readable } from "stream";
-import type { StorageProvider, UploadOptions, UploadResult } from "./StorageProvider";
+import {
+  validateFile,
+  type StorageProvider,
+  type UploadOptions,
+  type UploadResult,
+} from "./StorageProvider";
 import logger from "../utils/logger";
 
 export class S3StorageProvider implements StorageProvider {
@@ -46,6 +54,10 @@ export class S3StorageProvider implements StorageProvider {
   }
 
   async upload(key: string, stream: Readable, opts: UploadOptions): Promise<UploadResult> {
+    // Validate before touching S3 — throws FileValidationException on failure,
+    // so nothing is uploaded on rejection.
+    const validatedStream = await validateFile(stream, opts.contentType, opts.size);
+
     logger.debug({ bucket: this.bucket, key }, "[S3Storage] Uploading object");
 
     const upload = new Upload({
@@ -53,7 +65,7 @@ export class S3StorageProvider implements StorageProvider {
       params: {
         Bucket: this.bucket,
         Key: key,
-        Body: stream,
+        Body: validatedStream,
         ContentType: opts.contentType,
         Metadata: opts.metadata ?? {},
         // Objects are private by default — presigned URLs for admin access

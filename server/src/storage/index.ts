@@ -37,3 +37,10 @@ export function getStorageProvider(): StorageProvider {
 
 // Convenience re-exports
 export type { StorageProvider, UploadOptions, UploadResult } from "./StorageProvider";
+export {
+  validateFile,
+  FileValidationException,
+  MAX_FILE_BYTES,
+  ALLOWED_MIME,
+} from "./StorageProvider";
+export type { FileValidationError } from "./StorageProvider";

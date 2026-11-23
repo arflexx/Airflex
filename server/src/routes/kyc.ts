@@ -17,13 +17,11 @@ import { PassThrough } from "stream";
 import pool from "../db";
 import { authenticate, AuthenticatedRequest } from "../middleware/authenticate";
 import { rateLimitKyc } from "../middleware/rateLimitKyc";
-import { getStorageProvider } from "../storage";
+import { getStorageProvider, MAX_FILE_BYTES, ALLOWED_MIME } from "../storage";
 import logger from "../utils/logger";
 
 const router = Router();
 
-const MAX_FILE_BYTES = 5 * 1024 * 1024; // 5 MB
-const ACCEPTED_MIME = new Set(["image/jpeg", "image/png"]);
 
 interface KycFields {
   legalName?: string;
@@ -72,13 +70,13 @@ function parseAndUploadMultipart(req: AuthenticatedRequest): Promise<ParsedMulti
       }
 
       const { mimeType } = info;
-      if (!ACCEPTED_MIME.has(mimeType)) {
-        fileError = "Only JPEG or PNG images are accepted.";
+      if (!ALLOWED_MIME.has(mimeType)) {
+        fileError = "Only JPEG, PNG, or PDF files are accepted.";
         file.resume();
         return;
       }
 
-      const ext = mimeType === "image/png" ? "png" : "jpg";
+      const ext = mimeType === "image/png" ? "png" : mimeType === "application/pdf" ? "pdf" : "jpg";
       // Use a date-partitioned key for logical separation in the bucket.
       const date = new Date();
       const ymd = `${date.getUTCFullYear()}/${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
@@ -91,7 +89,7 @@ function parseAndUploadMultipart(req: AuthenticatedRequest): Promise<ParsedMulti
 
       file.on("limit", () => {
         limitHit = true;
-        fileError = "File size must not exceed 5 MB.";
+        fileError = `File size must not exceed ${MAX_FILE_BYTES / (1024 * 1024)} MB.`;
         pass.destroy(new Error("file_too_large"));
       });
 

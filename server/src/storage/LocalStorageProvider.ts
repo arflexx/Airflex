@@ -9,12 +9,20 @@
  *
  * NEVER use this in production or any replicated deployment.  Stored files
  * are not replicated across instances and are lost on container restart.
+ *
+ * File validation is performed via `validateFile()` before any bytes are
+ * written to disk, so rejected files never touch the filesystem.
  */
 
 import { createWriteStream, existsSync, mkdirSync, unlinkSync } from "fs";
 import { join, dirname } from "path";
 import type { Readable } from "stream";
-import type { StorageProvider, UploadOptions, UploadResult } from "./StorageProvider";
+import {
+  validateFile,
+  type StorageProvider,
+  type UploadOptions,
+  type UploadResult,
+} from "./StorageProvider";
 import logger from "../utils/logger";
 
 export class LocalStorageProvider implements StorageProvider {
@@ -24,7 +32,11 @@ export class LocalStorageProvider implements StorageProvider {
     this.baseDir = baseDir ?? join(process.cwd(), "uploads", "kyc");
   }
 
-  async upload(key: string, stream: Readable, _opts: UploadOptions): Promise<UploadResult> {
+  async upload(key: string, stream: Readable, opts: UploadOptions): Promise<UploadResult> {
+    // Validate before touching the filesystem — throws FileValidationException
+    // on failure, so nothing is written on rejection.
+    const validatedStream = await validateFile(stream, opts.contentType, opts.size);
+
     // The `key` may include sub-directories, e.g. "kyc/2024/07/uuid.jpg"
     const filePath = join(this.baseDir, key);
     const dir = dirname(filePath);
@@ -35,10 +47,10 @@ export class LocalStorageProvider implements StorageProvider {
 
     await new Promise<void>((resolve, reject) => {
       const writeStream = createWriteStream(filePath);
-      stream.pipe(writeStream);
+      validatedStream.pipe(writeStream);
       writeStream.on("finish", resolve);
       writeStream.on("error", reject);
-      stream.on("error", reject);
+      validatedStream.on("error", reject);
     });
 
     logger.debug({ filePath, key }, "[LocalStorage] File written");
