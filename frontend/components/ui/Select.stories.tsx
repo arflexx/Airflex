@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import { expect, userEvent, within } from "@storybook/test";
 import { Select } from "./Select";
 
 const meta: Meta<typeof Select> = {
@@ -46,6 +47,12 @@ export const Default: Story = {
     options: bankOptions,
     helperText: "Select your registered Nigerian bank account.",
   },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const select = canvas.getByLabelText("Destination Bank");
+    await userEvent.selectOptions(select, "057");
+    await expect(select).toHaveValue("057");
+  },
 };
 
 export const WithError: Story = {
@@ -61,5 +68,14 @@ export const Disabled: Story = {
     label: "Settlement Currency",
     options: [{ value: "NGN", label: "Nigerian Naira (NGN)" }],
     disabled: true,
+  },
+};
+
+export const Required: Story = {
+  args: {
+    label: "Destination Bank",
+    options: bankOptions,
+    required: true,
+    helperText: "This field is required.",
   },
 };

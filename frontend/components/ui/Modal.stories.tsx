@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import { expect, userEvent, within } from "@storybook/test";
 import React, { useState } from "react";
 import { Modal } from "./Modal";
 import { Button } from "./Button";
@@ -64,5 +65,21 @@ export const Interactive: Story = {
         </Modal>
       </div>
     );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const trigger = canvas.getByRole("button", { name: "Open Modal" });
+
+    await userEvent.click(trigger);
+
+    const dialog = await within(document.body).findByRole("dialog");
+    await expect(dialog).toBeVisible();
+
+    await userEvent.keyboard("{Escape}");
+
+    await expect(
+      within(document.body).queryByRole("dialog"),
+    ).not.toBeInTheDocument();
+    await expect(trigger).toHaveFocus();
   },
 };

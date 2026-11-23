@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import { expect, fn, userEvent, within } from "@storybook/test";
 import { Button } from "./Button";
 
 const meta: Meta<typeof Button> = {
@@ -38,6 +39,13 @@ export const Primary: Story = {
   args: {
     variant: "primary",
     children: "Primary Button",
+    onClick: fn(),
+  },
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    const button = canvas.getByRole("button", { name: /primary button/i });
+    await userEvent.click(button);
+    await expect(args.onClick).toHaveBeenCalledTimes(1);
   },
 };
 
@@ -68,6 +76,14 @@ export const Loading: Story = {
     isLoading: true,
     loadingText: "Processing…",
     children: "Submit",
+    onClick: fn(),
+  },
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    const button = canvas.getByRole("button");
+    await expect(button).toBeDisabled();
+    await userEvent.click(button);
+    await expect(args.onClick).not.toHaveBeenCalled();
   },
 };
 
@@ -76,5 +92,13 @@ export const Disabled: Story = {
     variant: "primary",
     disabled: true,
     children: "Disabled Button",
+    onClick: fn(),
+  },
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    const button = canvas.getByRole("button", { name: /disabled button/i });
+    await expect(button).toBeDisabled();
+    await userEvent.click(button);
+    await expect(args.onClick).not.toHaveBeenCalled();
   },
 };

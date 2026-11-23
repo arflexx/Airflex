@@ -273,6 +273,7 @@ export default function KycPage() {
   const [uploadPercent, setUploadPercent] = useState<number | null | undefined>(undefined);
   const [uploadDone, setUploadDone] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [rateLimited, setRateLimited] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const apiUrl = process.env["NEXT_PUBLIC_API_URL"] ?? "http://localhost:3001";
@@ -298,6 +299,7 @@ export default function KycPage() {
     setServerError(null);
     setUploadPercent(undefined);
     setUploadDone(false);
+    setRateLimited(false);
 
     if (previewUrl) URL.revokeObjectURL(previewUrl);
 
@@ -332,6 +334,7 @@ export default function KycPage() {
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
+    if (rateLimited) return;
     setServerError(null);
 
     const fieldErrors = validateDocument(document);
@@ -369,6 +372,16 @@ export default function KycPage() {
 
       if (status === 401) {
         window.location.href = "/auth/signup?returnTo=" + encodeURIComponent("/kyc");
+        return;
+      }
+
+      if (status === 429) {
+        setUploadPercent(undefined);
+        setRateLimited(true);
+        setServerError(
+          data.error ??
+            "Too many submission attempts. Please wait a few minutes before trying again."
+        );
         return;
       }
 
@@ -549,6 +562,11 @@ export default function KycPage() {
                 {errors.document}
               </p>
             )}
+            {rateLimited && (
+              <p role="alert" className="text-xs text-red-600 dark:text-red-400">
+                Too many submission attempts. Please wait a few minutes before trying again.
+              </p>
+            )}
           </div>
 
           {previewUrl && (
@@ -591,7 +609,12 @@ export default function KycPage() {
             <Button type="button" variant="secondary" className="flex-1" onClick={() => setStep(2)} disabled={loading}>
               Back
             </Button>
-            <Button type="submit" className="flex-1" isLoading={loading}>
+            <Button
+              type="submit"
+              className="flex-1"
+              isLoading={loading}
+              disabled={loading || rateLimited}
+            >
               Submit for review
             </Button>
           </div>
