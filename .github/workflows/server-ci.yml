@@ -5,6 +5,14 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    # Weekly image scan — every Monday at 04:30 UTC. Catches CVEs disclosed
+    # after an unchanged image was last scanned. Only the image-scan job runs.
+    - cron: "30 4 * * 1"
+
+# Least privilege by default; jobs widen this only where they need to.
+permissions:
+  contents: read
 
 concurrency:
   group: server-ci-${{ github.ref }}
@@ -13,6 +21,7 @@ concurrency:
 jobs:
   server:
     name: Server quality gates
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -116,3 +125,104 @@ jobs:
       - name: Fail when tests fail
         if: steps.tests.outcome == 'failure'
         run: exit 1
+
+  # -------------------------------------------------------------------------
+  # Container image scan (issue #515)
+  # -------------------------------------------------------------------------
+  # Builds server/Dockerfile — and no other image — then fails on any CRITICAL
+  # or HIGH vulnerability that has a fix. Repository filesystem scanning lives
+  # in trivy.yml. Runs in parallel with the quality gates so a failing test
+  # never hides a vulnerable image.
+  image-scan:
+    name: Server image scan (Trivy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read           # upload-sarif reads run metadata in private repos
+      security-events: write  # upload SARIF to the Security tab
+
+    env:
+      IMAGE: airflex-server:${{ github.sha }}
+      SARIF_FILE: trivy-server-results.sarif
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      # Loaded into the local Docker daemon for scanning; never pushed. The base
+      # image is re-resolved on every run, so cached layers are only reused
+      # while node:20-alpine is unchanged.
+      - name: Build server image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: server/Dockerfile
+          tags: ${{ env.IMAGE }}
+          pull: true
+          push: false
+          load: true
+          provenance: false
+          cache-from: type=gha,scope=server-image
+          cache-to: type=gha,scope=server-image,mode=max,ignore-error=true
+
+      # The Trivy DB is cached by the action (`cache` defaults to true).
+      # Without limit-severities-for-sarif the action drops `severity` for SARIF
+      # output, and the gate would also fail on LOW and MEDIUM findings.
+      - name: Scan server image with Trivy
+        id: trivy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.IMAGE }}
+          scanners: vuln
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+          limit-severities-for-sarif: true
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+          format: sarif
+          output: ${{ env.SARIF_FILE }}
+          exit-code: "1"
+          timeout: 5m
+
+      # SARIF is unreadable in a job log, so print the blocking findings too.
+      - name: Show blocking vulnerabilities
+        if: failure() && steps.trivy.outcome == 'failure'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.IMAGE }}
+          scanners: vuln
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+          format: table
+          exit-code: "0"
+          # Trivy and its DB are already present from the previous step.
+          skip-setup-trivy: true
+          cache: false
+
+      # Both uploads run when the scan fails — that is when findings matter —
+      # but not when the build failed before a report existed. Pull requests
+      # from forks may lack permission to write security events; the scan step
+      # above is the gate, so that must not fail the job.
+      - name: Upload Trivy SARIF to the Security tab
+        if: always() && hashFiles('trivy-server-results.sarif') != ''
+        continue-on-error: ${{ github.event.pull_request.head.repo.fork == true }}
+        uses: github/codeql-action/upload-sarif@d2aacf54c2fbc910db8d7ec338fdb54ea48c692d # v3.39.4
+        with:
+          sarif_file: ${{ env.SARIF_FILE }}
+          category: trivy-server
+
+      - name: Upload Trivy SARIF artifact
+        if: always() && hashFiles('trivy-server-results.sarif') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: trivy-server-results
+          path: ${{ env.SARIF_FILE }}
+          retention-days: 14
