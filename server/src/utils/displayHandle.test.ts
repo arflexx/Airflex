@@ -1,25 +1,39 @@
+import { randomUUID } from "crypto";
 import { generateDisplayHandle } from "./displayHandle";
 
 describe("generateDisplayHandle", () => {
-  const userId = "0b6f0b0e-1234-4a5b-8c9d-1234567890ab";
-
-  it("is deterministic for the same user id", () => {
-    expect(generateDisplayHandle(userId)).toBe(generateDisplayHandle(userId));
+  it("returns a string starting with @airflex_", () => {
+    const handle = generateDisplayHandle(randomUUID());
+    expect(handle.startsWith("@airflex_")).toBe(true);
   });
 
-  it("formats the handle as @airflex_ followed by four hex characters", () => {
-    expect(generateDisplayHandle(userId)).toMatch(/^@airflex_[0-9a-f]{4}$/);
+  it("has a total length of 13 characters (@airflex_ = 9, 4 hex chars)", () => {
+    const handle = generateDisplayHandle(randomUUID());
+    expect(handle).toHaveLength(13);
   });
 
-  it("does not embed the raw user id", () => {
-    const handle = generateDisplayHandle(userId);
-    expect(handle).not.toContain(userId);
-    expect(handle).not.toContain(userId.slice(-8));
+  it("suffix contains only lowercase hex characters [0-9a-f]", () => {
+    const handle = generateDisplayHandle(randomUUID());
+    const suffix = handle.slice("@airflex_".length);
+    expect(suffix).toMatch(/^[0-9a-f]{4}$/);
   });
 
-  it("differs across user ids", () => {
-    const a = generateDisplayHandle("11111111-1111-4111-8111-111111111111");
-    const b = generateDisplayHandle("22222222-2222-4222-8222-222222222222");
-    expect(a).not.toBe(b);
+  it("is deterministic — same userId always produces the same handle", () => {
+    const id = randomUUID();
+    expect(generateDisplayHandle(id)).toBe(generateDisplayHandle(id));
+  });
+
+  it("produces unique handles across 1000 random UUIDs (collision rate < 10%)", () => {
+    const handles = new Set<string>();
+    for (let i = 0; i < 1000; i++) {
+      handles.add(generateDisplayHandle(randomUUID()));
+    }
+    // With 4 hex chars (65 536 possibilities) collisions among 1000 inputs
+    // should be rare — expect at least 900 distinct values.
+    expect(handles.size).toBeGreaterThan(900);
+  });
+
+  it("handles an empty string input without throwing", () => {
+    expect(() => generateDisplayHandle("")).not.toThrow();
   });
 });
