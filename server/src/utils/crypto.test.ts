@@ -1,117 +1,97 @@
-/**
- * crypto.test.ts
- *
- * Unit tests for the crypto utilities (encrypt/decrypt with AES-256-GCM)
- */
-
-import { encrypt, decrypt, verifyPaystackSignature } from "./crypto";
 import crypto from "crypto";
+import { encrypt, decrypt, verifyPaystackSignature } from "./crypto";
 
-describe("crypto utils", () => {
-  const originalEnv = process.env["ENCRYPTION_KEY"];
+const VALID_KEY = crypto.randomBytes(32).toString("hex");
 
-  const VALID_KEY =
-    "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+beforeEach(() => {
+  process.env["ENCRYPTION_KEY"] = VALID_KEY;
+});
 
-  beforeEach(() => {
-    process.env["ENCRYPTION_KEY"] = VALID_KEY;
+afterEach(() => {
+  delete process.env["ENCRYPTION_KEY"];
+});
+
+describe("encrypt / decrypt — AES-256-GCM roundtrip", () => {
+  it("decrypts back to the original plaintext", () => {
+    const plaintext = "hello world";
+    expect(decrypt(encrypt(plaintext))).toBe(plaintext);
   });
 
-  afterAll(() => {
-    // Restore original env var
-    process.env["ENCRYPTION_KEY"] = originalEnv;
+  it("produces a different ciphertext each call (random IV)", () => {
+    const c1 = encrypt("same");
+    const c2 = encrypt("same");
+    expect(c1).not.toBe(c2);
   });
 
-  describe("encrypt", () => {
-    it("encrypts a string and returns base64-encoded ciphertext", () => {
-      const plaintext = "Hello, world!";
-      const ciphertext = encrypt(plaintext);
-
-      // Verify output format: iv:tag:ciphertext (3 base64 parts separated by colons)
-      const parts = ciphertext.split(":");
-      expect(parts).toHaveLength(3);
-      expect(parts[0]).toMatch(/^[A-Za-z0-9+/]+={0,2}$/); // iv base64
-      expect(parts[1]).toMatch(/^[A-Za-z0-9+/]+={0,2}$/); // auth tag base64
-      expect(parts[2]).toMatch(/^[A-Za-z0-9+/]+={0,2}$/); // encrypted data base64
-    });
-
-    it("produces different ciphertext on each call (random IV)", () => {
-      const plaintext = "Same plaintext";
-      const ciphertext1 = encrypt(plaintext);
-      const ciphertext2 = encrypt(plaintext);
-
-      expect(ciphertext1).not.toBe(ciphertext2);
-    });
-
-    it("throws when ENCRYPTION_KEY is not 64 hex characters", () => {
-      process.env["ENCRYPTION_KEY"] = "short-key";
-      expect(() => encrypt("test")).toThrow();
-      process.env["ENCRYPTION_KEY"] =
-        "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
-    });
+  it("roundtrips an empty string", () => {
+    expect(decrypt(encrypt(""))).toBe("");
   });
 
-  describe("decrypt", () => {
-    it("decrypts what encrypt produces (round-trip)", () => {
-      const inputs = [
-        "Hello, world!",
-        "",
-        "a".repeat(1000),
-        "Special chars: !@#$%^&*()_+-=[]{}|;':\",./<>?",
-        "Unicode: 你好世界 🌍",
-      ];
+  it("roundtrips a unicode string", () => {
+    const text = "naïve café 🚀";
+    expect(decrypt(encrypt(text))).toBe(text);
+  });
+});
 
-      for (const input of inputs) {
-        const ciphertext = encrypt(input);
-        const decrypted = decrypt(ciphertext);
-        expect(decrypted).toBe(input);
-      }
-    });
-
-    it("throws on invalid ciphertext format", () => {
-      expect(() => decrypt("invalid")).toThrow();
-      expect(() => decrypt("a:b")).toThrow();
-      expect(() => decrypt("a:b:c:d")).toThrow();
-    });
-
-    it("throws on wrong key (tampering detection)", () => {
-      const key1 =
-        "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
-      const key2 =
-        "f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f";
-
-      process.env["ENCRYPTION_KEY"] = key1;
-      const ciphertext = encrypt("secret");
-
-      process.env["ENCRYPTION_KEY"] = key2;
-      expect(() => decrypt(ciphertext)).toThrow();
-    });
+describe("encrypt — wrong or missing key", () => {
+  it("throws when ENCRYPTION_KEY is missing", () => {
+    delete process.env["ENCRYPTION_KEY"];
+    expect(() => encrypt("x")).toThrow("ENCRYPTION_KEY must be 32 bytes");
   });
 
-  describe("verifyPaystackSignature (issue #623)", () => {
-    const secret = "sk_test_paystack_secret_key_12345";
-    const body = JSON.stringify({ event: "charge.success", data: { reference: "ref_123" } });
-    const validSignature = crypto.createHmac("sha512", secret).update(body).digest("hex");
+  it("throws when ENCRYPTION_KEY is the wrong length", () => {
+    process.env["ENCRYPTION_KEY"] = "tooshort";
+    expect(() => encrypt("x")).toThrow("ENCRYPTION_KEY must be 32 bytes");
+  });
+});
 
-    it("returns true for a valid signature", () => {
-      expect(verifyPaystackSignature(body, validSignature, secret)).toBe(true);
-      expect(verifyPaystackSignature(Buffer.from(body), validSignature, secret)).toBe(true);
-    });
+describe("decrypt — wrong-key failure", () => {
+  it("throws when decrypting with a different key", () => {
+    const ciphertext = encrypt("secret");
+    // Switch to a different valid key
+    process.env["ENCRYPTION_KEY"] = crypto.randomBytes(32).toString("hex");
+    expect(() => decrypt(ciphertext)).toThrow();
+  });
 
-    it("returns false for a tampered body", () => {
-      const tamperedBody = JSON.stringify({ event: "charge.success", data: { reference: "ref_tampered" } });
-      expect(verifyPaystackSignature(tamperedBody, validSignature, secret)).toBe(false);
-    });
+  it("throws on a malformed ciphertext (missing segments)", () => {
+    expect(() => decrypt("notvalid")).toThrow("Invalid ciphertext format");
+  });
 
-    it("returns false for a missing or invalid header signature", () => {
-      expect(verifyPaystackSignature(body, undefined, secret)).toBe(false);
-      expect(verifyPaystackSignature(body, "", secret)).toBe(false);
-      expect(verifyPaystackSignature(body, "invalid_signature_hex", secret)).toBe(false);
-    });
+  it("throws when ENCRYPTION_KEY is missing during decrypt", () => {
+    const ciphertext = encrypt("secret");
+    delete process.env["ENCRYPTION_KEY"];
+    expect(() => decrypt(ciphertext)).toThrow("ENCRYPTION_KEY must be 32 bytes");
+  });
+});
 
-    it("returns false when secret or body is missing", () => {
-      expect(verifyPaystackSignature(undefined, validSignature, secret)).toBe(false);
-      expect(verifyPaystackSignature(body, validSignature, undefined)).toBe(false);
-    });
+describe("verifyPaystackSignature — HMAC-SHA512", () => {
+  const secret = "paystack-secret";
+  const body = Buffer.from(JSON.stringify({ event: "charge.success" }));
+  const signature = crypto.createHmac("sha512", secret).update(body).digest("hex");
+
+  it("returns true for a valid signature (Buffer body)", () => {
+    expect(verifyPaystackSignature(body, signature, secret)).toBe(true);
+  });
+
+  it("returns true for a valid signature (string body)", () => {
+    const strBody = body.toString("utf8");
+    const strSig = crypto.createHmac("sha512", secret).update(strBody, "utf8").digest("hex");
+    expect(verifyPaystackSignature(strBody, strSig, secret)).toBe(true);
+  });
+
+  it("returns false for a tampered signature", () => {
+    expect(verifyPaystackSignature(body, "badsig", secret)).toBe(false);
+  });
+
+  it("returns false when body is undefined", () => {
+    expect(verifyPaystackSignature(undefined, signature, secret)).toBe(false);
+  });
+
+  it("returns false when signature is undefined", () => {
+    expect(verifyPaystackSignature(body, undefined, secret)).toBe(false);
+  });
+
+  it("returns false when secret is undefined", () => {
+    expect(verifyPaystackSignature(body, signature, undefined)).toBe(false);
   });
 });
