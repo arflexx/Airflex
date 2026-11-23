@@ -88,6 +88,8 @@ describe("validateEnv", () => {
       ...validFullEnv,
       NODE_ENV: "production",
       REDIS_URL: "",
+      JWT_ISSUER: "airflex-server",
+      JWT_AUDIENCE: "airflex-client",
     };
 
     const result = validateEnv(prodEnvWithoutRedis);
@@ -98,6 +100,8 @@ describe("validateEnv", () => {
       ...validFullEnv,
       NODE_ENV: "production",
       REDIS_URL: "redis://localhost:6379",
+      JWT_ISSUER: "airflex-server",
+      JWT_AUDIENCE: "airflex-client",
     };
     expect(validateEnv(prodEnvWithRedis).valid).toBe(true);
   });
