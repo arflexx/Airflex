@@ -1,9 +1,14 @@
 import pool from "../db";
 import logger from "../utils/logger";
-import { listDedicatedAccountTransactions } from "../services/virtualAccount";
+import {
+  getVirtualAccountBalance,
+  listDedicatedAccountTransactions,
+} from "../services/virtualAccount";
 import {
   compareDepositReferences,
   getVirtualAccountReconciliationIntervalMs,
+  getVirtualAccountReconciliationToleranceKobo,
+  reconcileVirtualAccountBalances,
   reconcileVirtualAccountDeposits,
 } from "./virtualAccountReconciliation";
 
@@ -13,12 +18,15 @@ jest.mock("../utils/logger", () => ({
   default: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), fatal: jest.fn(), debug: jest.fn() },
 }));
 jest.mock("../services/virtualAccount", () => ({
+  getVirtualAccountBalance: jest.fn(),
   listDedicatedAccountTransactions: jest.fn(),
   maskAccountNumber: jest.fn(() => "******1234"),
 }));
 
 const mockPool = pool as unknown as { query: jest.Mock };
 const mockListTransactions = listDedicatedAccountTransactions as jest.Mock;
+const mockGetBalance = getVirtualAccountBalance as jest.Mock;
+=======
 
 describe("virtual account reconciliation", () => {
   const originalInterval = process.env["VIRTUAL_ACCOUNT_RECONCILIATION_INTERVAL_MS"];
@@ -92,5 +100,141 @@ describe("virtual account reconciliation", () => {
     expect(getVirtualAccountReconciliationIntervalMs()).toBe(1_800_000);
     process.env["VIRTUAL_ACCOUNT_RECONCILIATION_INTERVAL_MS"] = "1";
     expect(getVirtualAccountReconciliationIntervalMs()).toBe(60_000);
+  });
+
+  it("uses a configurable balance tolerance in minor units", () => {
+    expect(getVirtualAccountReconciliationToleranceKobo()).toBe(0n);
+    process.env["VIRTUAL_ACCOUNT_RECONCILIATION_TOLERANCE_NAIRA"] = "5";
+    expect(getVirtualAccountReconciliationToleranceKobo()).toBe(500n);
+    process.env["VIRTUAL_ACCOUNT_RECONCILIATION_TOLERANCE_NAIRA"] = "not-a-number";
+    expect(getVirtualAccountReconciliationToleranceKobo()).toBe(0n);
+  });
+
+  describe("reconcileVirtualAccountBalances", () => {
+    const activeAccounts = [
+      {
+        user_id: "user-1",
+        paystack_customer_code: "CUS_1",
+        virtual_account_number: "0123451234",
+        expected_balance_kobo: "10000",
+      },
+      {
+        user_id: "user-2",
+        paystack_customer_code: "CUS_2",
+        virtual_account_number: "0123455678",
+        expected_balance_kobo: "5000",
+      },
+    ];
+
+    beforeEach(() => {
+      process.env["VIRTUAL_ACCOUNT_RECONCILIATION_TOLERANCE_NAIRA"] = "1";
+    });
+
+    it("compares provider balances against expected balances within tolerance", async () => {
+      mockPool.query.mockResolvedValueOnce({ rows: activeAccounts });
+      mockGetBalance
+        .mockResolvedValueOnce({ balanceKobo: 10050n, currency: "NGN" })
+        .mockResolvedValueOnce({ balanceKobo: 5000n, currency: "NGN" });
+
+      const result = await reconcileVirtualAccountBalances();
+
+      expect(result).toEqual({
+        accountsScanned: 2,
+        accountsReconciled: 2,
+        mismatches: 0,
+        errors: 0,
+      });
+      expect(mockGetBalance).toHaveBeenCalledTimes(2);
+      expect(mockGetBalance).toHaveBeenCalledWith("0123451234");
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+
+    it("flags and logs mismatches beyond the configured tolerance", async () => {
+      mockPool.query.mockResolvedValueOnce({ rows: activeAccounts });
+      mockGetBalance
+        .mockResolvedValueOnce({ balanceKobo: 20000n, currency: "NGN" })
+        .mockResolvedValueOnce({ balanceKobo: 5000n, currency: "NGN" });
+
+      const result = await reconcileVirtualAccountBalances();
+
+      expect(result).toEqual({
+        accountsScanned: 2,
+        accountsReconciled: 2,
+        mismatches: 1,
+        errors: 0,
+      });
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: "user-1",
+          expectedBalanceKobo: "10000",
+          providerBalanceKobo: "20000",
+          differenceKobo: "10000",
+        }),
+        "[virtual-account-reconciliation] Balance mismatch"
+      );
+    });
+
+    it("logs structured start and finish messages with run totals", async () => {
+      mockPool.query.mockResolvedValueOnce({ rows: activeAccounts });
+      mockGetBalance
+        .mockResolvedValueOnce({ balanceKobo: 10000n, currency: "NGN" })
+        .mockResolvedValueOnce({ balanceKobo: 5000n, currency: "NGN" });
+
+      await reconcileVirtualAccountBalances();
+
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.objectContaining({ intervalMs: expect.any(Number) }),
+        "[virtual-account-reconciliation] Started"
+      );
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.objectContaining({
+          accountsScanned: 2,
+          accountsReconciled: 2,
+          mismatches: 0,
+          errors: 0,
+        }),
+        "[virtual-account-reconciliation] Finished"
+      );
+    });
+
+    it("counts provider errors without aborting the run", async () => {
+      mockPool.query.mockResolvedValueOnce({ rows: activeAccounts });
+      mockGetBalance
+        .mockRejectedValueOnce(new Error("provider down"))
+        .mockResolvedValueOnce({ balanceKobo: 5000n, currency: "NGN" });
+
+      const result = await reconcileVirtualAccountBalances();
+
+      expect(result).toEqual({
+        accountsScanned: 2,
+        accountsReconciled: 1,
+        mismatches: 0,
+        errors: 1,
+      });
+      expect(logger.error).toHaveBeenCalledTimes(1);
+    });
+
+    it("is idempotent for an already-reconciled interval", async () => {
+      mockPool.query.mockResolvedValue({ rows: activeAccounts });
+      mockGetBalance.mockResolvedValue({ balanceKobo: 10000n, currency: "NGN" });
+
+      const first = await reconcileVirtualAccountBalances({ intervalKey: "2024-01-01T00:00" });
+      const second = await reconcileVirtualAccountBalances({ intervalKey: "2024-01-01T00:00" });
+
+      expect(first.accountsReconciled).toBe(2);
+      expect(second).toEqual({
+        accountsScanned: 0,
+        accountsReconciled: 0,
+        mismatches: 0,
+        errors: 0,
+        skipped: true,
+      });
+      expect(mockGetBalance).toHaveBeenCalledTimes(2);
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.objectContaining({ intervalKey: "2024-01-01T00:00" }),
+        "[virtual-account-reconciliation] Skipped already-reconciled interval"
+      );
+    });
   });
 });

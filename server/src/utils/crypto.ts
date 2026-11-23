@@ -63,7 +63,11 @@ export function decrypt(ciphertext: string): string {
 }
 
 /**
- * Verifies a Paystack webhook HMAC-SHA512 signature (issue #623).
+ * Verifies a Paystack webhook HMAC-SHA512 signature (issue #631).
+ *
+ * Pure function: computes HMAC-SHA512 of the raw request body using the
+ * Paystack secret key and compares it to the X-Paystack-Signature header
+ * in constant time.
  *
  * @param rawBody - Raw Buffer or string of the request body
  * @param signature - Value of the X-Paystack-Signature header

@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 
 import { pool } from "../db/pool";
+import { getOtpLockout } from "../services/cache";
 
 /**
  * Per-identifier and per-IP rate limit for OTP requests.
@@ -168,6 +169,43 @@ export async function enforceOtpRateLimit(
   }
 }
 
+/**
+ * Express middleware enforcing the OTP verification lockout.
+ *
+ * After repeated failed OTP verifications the identifier is locked for a
+ * fixed period. A locked identifier is rejected with HTTP 423 (Locked) and a
+ * message stating when the lock expires, before any verification work runs.
+ *
+ * **Fails open on a cache error**, for the same reason the request limiter
+ * does: a Redis outage should not lock every user out of signing in. The error
+ * is logged so the gap is visible rather than silent.
+ */
+export async function enforceOtpLockout(
+  identifier: string,
+  res: Response
+): Promise<boolean> {
+  try {
+    const lock = await getOtpLockout(identifier);
+    if (!lock.locked) {
+      return true;
+    }
+
+    const retryAfterSeconds = Math.max(1, Math.ceil((lock.expiresAt - Date.now()) / 1000));
+    res.setHeader("Retry-After", String(retryAfterSeconds));
+    res.status(423).json({
+      error: `Account locked due to too many failed OTP attempts. Try again after ${new Date(
+        lock.expiresAt
+      ).toISOString()}.`,
+      lockedUntil: new Date(lock.expiresAt).toISOString(),
+      retryAfterSeconds,
+    });
+    return false;
+  } catch (err) {
+    console.error("[rateLimitOtp] Lockout check failed:", (err as Error).message);
+    return true;
+  }
+}
+
 export async function rateLimitOtp(
   req: Request,
   res: Response,
@@ -180,6 +218,12 @@ export async function rateLimitOtp(
   // Validation should produce the useful error when no identifier is present.
   if (!identifier) {
     next();
+    return;
+  }
+
+  // Lockout is checked first: a locked identifier must not consume the request
+  // budget or reach the verification handler.
+  if (!(await enforceOtpLockout(identifier, res))) {
     return;
   }
 

@@ -1,5 +1,4 @@
 import { Router, Request, Response } from "express";
-import crypto from "crypto";
 
 import { pool } from "../db/pool";
 import { QueueService } from "../jobs";
@@ -10,13 +9,6 @@ import { verifyPaystackSignature } from "../utils/crypto";
  * Webhook endpoints — Paystack deposit processing (issues #9, #118).
  */
 const router = Router();
-
-function signatureMatches(expected: string, received: string): boolean {
-  const a = Buffer.from(expected, "utf8");
-  const b = Buffer.from(received, "utf8");
-  if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(a, b);
-}
 
 async function persistAndEnqueue(event: PaystackWebhookEvent): Promise<void> {
   const { rows } = await pool.query<{ id: string }>(
@@ -51,12 +43,7 @@ router.post("/paystack", (req: Request, res: Response) => {
   const signature = req.header("x-paystack-signature");
   const raw = (req as Request & { rawBody?: Buffer }).rawBody;
 
-  if (!signature) {
-    res.status(400).json({ error: "Missing x-paystack-signature header" });
-    return;
-  }
-
-  if (!raw || !verifyPaystackSignature(raw, signature, secret)) {
+  if (!signature || !raw || !verifyPaystackSignature(raw, signature, secret)) {
     res.status(401).json({ error: "Invalid signature" });
     return;
   }
@@ -74,5 +61,4 @@ router.post("/stellar", (_req: Request, res: Response) => {
   res.status(501).json({ error: "Not Implemented" });
 });
 
-export { signatureMatches };
 export default router;

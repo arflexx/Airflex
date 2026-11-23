@@ -13,7 +13,17 @@ jest.mock("../db/pool", () => ({
   },
 }));
 
-import { rateLimitOtp } from "./rateLimitOtp";
+const mockGetOtpLock = jest.fn();
+const mockRecordOtpFailure = jest.fn();
+const mockResetOtpFailures = jest.fn();
+
+jest.mock("../services/cache", () => ({
+  getOtpLock: (...args: unknown[]) => mockGetOtpLock(...args),
+  recordOtpFailure: (...args: unknown[]) => mockRecordOtpFailure(...args),
+  resetOtpFailures: (...args: unknown[]) => mockResetOtpFailures(...args),
+}));
+
+import { rateLimitOtp, otpLockout } from "./rateLimitOtp";
 
 describe("rateLimitOtp", () => {
   const originalMaxRequests = process.env["OTP_RATE_LIMIT_MAX_REQUESTS"];
@@ -29,6 +39,12 @@ describe("rateLimitOtp", () => {
     ipCounts = new Map();
     mockClientQuery.mockReset();
     mockRelease.mockReset();
+    mockGetOtpLock.mockReset();
+    mockRecordOtpFailure.mockReset();
+    mockResetOtpFailures.mockReset();
+    mockGetOtpLock.mockResolvedValue(null);
+    mockRecordOtpFailure.mockResolvedValue({ failures: 1, locked: false });
+    mockResetOtpFailures.mockResolvedValue(undefined);
     mockClientQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
       if (sql.includes("INSERT INTO otp_requests")) {
         const [identifier, ip] = params as [string, string];
@@ -99,5 +115,65 @@ describe("rateLimitOtp", () => {
     const blocked = await sendRequest("+2348123456783");
     expect(blocked.status).toBe(429);
     expect(Number(blocked.headers["retry-after"])).toBeGreaterThan(0);
+  });
+
+  describe("otpLockout", () => {
+    const identifier = "+2348123456789";
+    let lockoutApp: express.Express;
+
+    beforeEach(() => {
+      lockoutApp = express();
+      lockoutApp.use(express.json());
+      lockoutApp.post("/verify-otp", otpLockout, (_req, res) => res.sendStatus(200));
+    });
+
+    const sendVerify = (phone: string = identifier) =>
+      request(lockoutApp).post("/verify-otp").send({ phone });
+
+    it("does not lock after 4 consecutive failures", async () => {
+      for (let attempt = 1; attempt <= 4; attempt += 1) {
+        mockRecordOtpFailure.mockResolvedValueOnce({ failures: attempt, locked: false });
+        const response = await sendVerify();
+        expect(response.status).toBe(200);
+      }
+
+      expect(mockRecordOtpFailure).toHaveBeenCalledTimes(4);
+      expect(mockRecordOtpFailure).toHaveBeenLastCalledWith(identifier);
+    });
+
+    it("locks the account on the 5th consecutive failure with a 30-minute TTL", async () => {
+      const lockedUntil = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+      mockRecordOtpFailure.mockResolvedValueOnce({
+        failures: 5,
+        locked: true,
+        lockedUntil,
+      });
+
+      const response = await sendVerify();
+
+      expect(response.status).toBe(423);
+      expect(response.body.message).toMatch(/locked/i);
+      expect(response.body.lockedUntil).toBe(lockedUntil);
+      expect(mockRecordOtpFailure).toHaveBeenCalledWith(identifier);
+    });
+
+    it("returns 423 with expiry information when the account is already locked", async () => {
+      const lockedUntil = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+      mockGetOtpLock.mockResolvedValueOnce({ lockedUntil });
+
+      const response = await sendVerify();
+
+      expect(response.status).toBe(423);
+      expect(response.body.message).toMatch(/locked/i);
+      expect(response.body.lockedUntil).toBe(lockedUntil);
+      expect(mockRecordOtpFailure).not.toHaveBeenCalled();
+    });
+
+    it("resets the failure counter after a successful verification", async () => {
+      const response = await sendVerify();
+
+      expect(response.status).toBe(200);
+      expect(mockResetOtpFailures).toHaveBeenCalledWith(identifier);
+    });
   });
 });

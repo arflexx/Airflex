@@ -5,6 +5,7 @@ import {
   maskAccountNumber,
   type PaystackDvaTransaction,
 } from "../services/virtualAccount";
+import { getCache, setCache } from "../utils/cache";
 
 const DEFAULT_INTERVAL_MS = 60 * 60 * 1_000;
 const MIN_INTERVAL_MS = 60_000;
@@ -15,6 +16,7 @@ export interface VirtualAccountReconciliationResult {
   accountsReconciled: number;
   mismatches: number;
   errors: number;
+  skipped?: boolean;
 }
 
 export interface LocalDepositReference {
@@ -40,6 +42,11 @@ export function getVirtualAccountReconciliationIntervalMs(): number {
     MIN_INTERVAL_MS,
     positiveInteger(process.env["VIRTUAL_ACCOUNT_RECONCILIATION_INTERVAL_MS"], DEFAULT_INTERVAL_MS)
   );
+}
+
+function getIntervalCacheKey(intervalMs: number): string {
+  const bucket = Math.floor(Date.now() / intervalMs);
+  return `virtual-account-reconciliation:interval:${bucket}`;
 }
 
 function getToleranceKobo(): bigint {
@@ -97,6 +104,7 @@ export function compareDepositReferences(
 export async function reconcileVirtualAccountDeposits(): Promise<VirtualAccountReconciliationResult> {
   const startedAt = Date.now();
   const toleranceKobo = getToleranceKobo();
+  const intervalMs = getVirtualAccountReconciliationIntervalMs();
   const result: VirtualAccountReconciliationResult = {
     accountsScanned: 0,
     accountsReconciled: 0,
@@ -104,8 +112,18 @@ export async function reconcileVirtualAccountDeposits(): Promise<VirtualAccountR
     errors: 0,
   };
 
+  const cacheKey = getIntervalCacheKey(intervalMs);
+  const alreadyReconciled = await getCache<boolean>(cacheKey);
+  if (alreadyReconciled) {
+    logger.info(
+      { cacheKey, intervalMs },
+      "[virtual-account-reconciliation] Skipped: interval already reconciled"
+    );
+    return { ...result, skipped: true };
+  }
+
   logger.info(
-    { toleranceKobo: String(toleranceKobo), intervalMs: getVirtualAccountReconciliationIntervalMs() },
+    { toleranceKobo: String(toleranceKobo), intervalMs, cacheKey },
     "[virtual-account-reconciliation] Started"
   );
 
@@ -183,6 +201,12 @@ export async function reconcileVirtualAccountDeposits(): Promise<VirtualAccountR
         "[virtual-account-reconciliation] Account check failed"
       );
     }
+  }
+
+  // Mark this interval as reconciled only when every account was processed
+  // without errors, so transient failures are retried on the next run.
+  if (result.errors === 0) {
+    await setCache(cacheKey, true, intervalMs);
   }
 
   logger.info(
