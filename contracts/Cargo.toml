@@ -1,5 +1,7 @@
 [workspace]
 members = ["escrow", "marketplace"]
+# cargo-fuzz targets need nightly, so they live in their own workspace.
+exclude = ["fuzz"]
 resolver = "2"
 
 [workspace.dependencies]

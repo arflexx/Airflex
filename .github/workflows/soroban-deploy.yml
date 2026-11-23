@@ -11,8 +11,14 @@ name: Deploy Soroban Contracts
 #   SOROBAN_DEPLOYER_SECRET   Stellar secret key (S...) of the deployer account
 #   SOROBAN_ADMIN_ADDRESS     Stellar public key (G...) to set as contract admin
 #
-# Optional (falls back to defaults if not set):
-#   SOROBAN_RPC_URL           Override the RPC endpoint for the selected network
+# Optional variables (Settings → Variables → Actions; defaults apply if not set):
+#   SOROBAN_RPC_URL            Override the RPC endpoint for the selected network
+#   SOROBAN_ALLOWED_TOKENS     Comma-separated token contract IDs for the escrow
+#   ESCROW_MAX_AMOUNT_STROOPS  Per-listing escrow cap
+#
+# Building, deploying, initializing, verifying and recording all happen in
+# contracts/deploy.sh, so CI and local deploys follow the same path. Nothing is
+# committed to deployments.json unless the post-deploy smoke test passes.
 on:
   # Automatic testnet deploy after CI succeeds on main
   workflow_run:
@@ -50,6 +56,11 @@ on:
         options:
           - "true"
           - "false"
+      rollback:
+        description: "Re-deploy the previous WASM hash instead of building?"
+        required: true
+        default: false
+        type: boolean
 
 # One deploy at a time per network to prevent race conditions on deployments.json
 concurrency:
@@ -87,8 +98,8 @@ jobs:
       contents: write   # needed to commit deployments.json
 
     outputs:
-      escrow_id:      ${{ steps.deploy-escrow.outputs.contract_id }}
-      marketplace_id: ${{ steps.deploy-marketplace.outputs.contract_id }}
+      escrow_id:      ${{ steps.ids.outputs.escrow_id }}
+      marketplace_id: ${{ steps.ids.outputs.marketplace_id }}
 
     steps:
       - name: Checkout
@@ -114,104 +125,66 @@ jobs:
       - name: Install stellar-cli
         run: cargo install --locked stellar-cli
 
-      # ── Build ─────────────────────────────────────────────────────────────
-      - name: Build WASM (release)
-        working-directory: contracts
-        run: cargo build --release --target wasm32v1-none
-
-      # ── Configure network identity ────────────────────────────────────────
-      - name: Add deployer identity
+      # ── Deploy (or roll back) ─────────────────────────────────────────────
+      # deploy.sh verifies each contract on-chain before recording it, and
+      # exits non-zero without touching its entry when any step fails.
+      - name: Deploy contracts
         env:
           SOROBAN_DEPLOYER_SECRET: ${{ secrets.SOROBAN_DEPLOYER_SECRET }}
-        run: |
-          echo "$SOROBAN_DEPLOYER_SECRET" | \
-            stellar keys add deployer --secret-key --stdin
-
-      - name: Configure testnet
-        env:
+          SOROBAN_ADMIN_ADDRESS: ${{ secrets.SOROBAN_ADMIN_ADDRESS }}
           SOROBAN_RPC_URL: ${{ vars.SOROBAN_RPC_URL }}
+          SOROBAN_ALLOWED_TOKENS: ${{ vars.SOROBAN_ALLOWED_TOKENS }}
+          ESCROW_MAX_AMOUNT_STROOPS: ${{ vars.ESCROW_MAX_AMOUNT_STROOPS }}
+          CONTRACT: ${{ github.event.inputs.contract || 'all' }}
+          INITIALIZE: ${{ github.event.inputs.initialize || 'true' }}
+          ROLLBACK: ${{ github.event.inputs.rollback || 'false' }}
         run: |
-          stellar network add testnet \
-            --rpc-url "${SOROBAN_RPC_URL:-https://soroban-testnet.stellar.org}" \
-            --network-passphrase "Test SDF Network ; September 2015"
-
-      # ── Deploy escrow ─────────────────────────────────────────────────────
-      - name: Deploy escrow contract
-        id: deploy-escrow
-        # Deploy escrow when: all contracts requested, or escrow specifically
-        if: >-
-          github.event_name == 'workflow_run' ||
-          github.event.inputs.contract == 'all' ||
-          github.event.inputs.contract == 'escrow'
-        run: |
-          CONTRACT_ID=$(stellar contract deploy \
-            --wasm contracts/target/wasm32v1-none/release/airflex_escrow.wasm \
-            --source deployer \
-            --network testnet)
-          echo "contract_id=$CONTRACT_ID" >> "$GITHUB_OUTPUT"
-          echo "Deployed escrow: $CONTRACT_ID"
-
-      - name: Initialize escrow contract
-        if: >-
-          steps.deploy-escrow.conclusion == 'success' &&
-          (github.event_name == 'workflow_run' || github.event.inputs.initialize == 'true')
-        env:
-          SOROBAN_ADMIN_ADDRESS: ${{ secrets.SOROBAN_ADMIN_ADDRESS }}
-        run: |
-          stellar contract invoke \
-            --id ${{ steps.deploy-escrow.outputs.contract_id }} \
-            --source deployer \
+          if [ "$ROLLBACK" = "true" ]; then
+            MODE=--rollback
+          else
+            MODE=--force
+          fi
+          if [ "$INITIALIZE" = "true" ]; then INIT=yes; else INIT=no; fi
+          bash contracts/deploy.sh \
             --network testnet \
-            -- initialize \
-            --admin "$SOROBAN_ADMIN_ADDRESS"
+            --contract "$CONTRACT" \
+            --initialize "$INIT" \
+            --commit no \
+            "$MODE"
 
-      # ── Deploy marketplace ────────────────────────────────────────────────
-      - name: Deploy marketplace contract
-        id: deploy-marketplace
-        if: >-
-          github.event_name == 'workflow_run' ||
-          github.event.inputs.contract == 'all' ||
-          github.event.inputs.contract == 'marketplace'
-        run: |
-          CONTRACT_ID=$(stellar contract deploy \
-            --wasm contracts/target/wasm32v1-none/release/airflex_marketplace.wasm \
-            --source deployer \
-            --network testnet)
-          echo "contract_id=$CONTRACT_ID" >> "$GITHUB_OUTPUT"
-          echo "Deployed marketplace: $CONTRACT_ID"
-
-      - name: Initialize marketplace contract
-        if: >-
-          steps.deploy-marketplace.conclusion == 'success' &&
-          (github.event_name == 'workflow_run' || github.event.inputs.initialize == 'true')
+      # ── Post-deploy smoke test ────────────────────────────────────────────
+      # Re-reads deployments.json and checks every deployed contract against
+      # the network: WASM hash, admin, and paused state. Runs before the
+      # registry is committed, so a broken deployment is never published.
+      - name: Post-deploy smoke test
         env:
+          SOROBAN_DEPLOYER_SECRET: ${{ secrets.SOROBAN_DEPLOYER_SECRET }}
           SOROBAN_ADMIN_ADDRESS: ${{ secrets.SOROBAN_ADMIN_ADDRESS }}
+          SOROBAN_RPC_URL: ${{ vars.SOROBAN_RPC_URL }}
+          ESCROW_MAX_AMOUNT_STROOPS: ${{ vars.ESCROW_MAX_AMOUNT_STROOPS }}
+          CONTRACT: ${{ github.event.inputs.contract || 'all' }}
+          INITIALIZE: ${{ github.event.inputs.initialize || 'true' }}
         run: |
-          stellar contract invoke \
-            --id ${{ steps.deploy-marketplace.outputs.contract_id }} \
-            --source deployer \
+          if [ "$INITIALIZE" = "true" ]; then INIT=yes; else INIT=no; fi
+          bash contracts/deploy.sh \
             --network testnet \
-            -- initialize \
-            --admin "$SOROBAN_ADMIN_ADDRESS"
+            --contract "$CONTRACT" \
+            --initialize "$INIT" \
+            --verify
 
-      # ── Update deployments.json ───────────────────────────────────────────
-      - name: Update deployments.json
+      - name: Read deployed contract IDs
+        id: ids
+        env:
+          CONTRACT: ${{ github.event.inputs.contract || 'all' }}
         run: |
-          node -e "
-            const fs = require('fs');
-            const path = 'contracts/deployments.json';
-            const data = JSON.parse(fs.readFileSync(path, 'utf8'));
-
-            const escrowId    = '${{ steps.deploy-escrow.outputs.contract_id }}';
-            const marketId    = '${{ steps.deploy-marketplace.outputs.contract_id }}';
-
-            if (escrowId)  data.testnet.escrow      = escrowId;
-            if (marketId)  data.testnet.marketplace  = marketId;
-
-            fs.writeFileSync(path, JSON.stringify(data, null, 2) + '\n');
-            console.log('deployments.json updated');
-            console.log(JSON.stringify(data.testnet, null, 2));
-          "
+          for name in escrow marketplace; do
+            ID=""
+            if [ "$CONTRACT" = "all" ] || [ "$CONTRACT" = "$name" ]; then
+              ID=$(node contracts/scripts/deployments.cjs get \
+                contracts/deployments.json testnet "$name" contract_id)
+            fi
+            echo "${name}_id=$ID" >> "$GITHUB_OUTPUT"
+          done
 
       - name: Commit deployments.json
         run: |
@@ -228,8 +201,8 @@ jobs:
       # ── Summary ───────────────────────────────────────────────────────────
       - name: Print deployment summary
         run: |
-          ESCROW_ID="${{ steps.deploy-escrow.outputs.contract_id }}"
-          MARKET_ID="${{ steps.deploy-marketplace.outputs.contract_id }}"
+          ESCROW_ID="${{ steps.ids.outputs.escrow_id }}"
+          MARKET_ID="${{ steps.ids.outputs.marketplace_id }}"
 
           echo "### ✅ Testnet Contracts Deployed" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -289,95 +262,67 @@ jobs:
       - name: Install stellar-cli
         run: cargo install --locked stellar-cli
 
-      - name: Build WASM (release)
-        working-directory: contracts
-        run: cargo build --release --target wasm32v1-none
-
-      - name: Add deployer identity
+      # ── Deploy (or roll back) ─────────────────────────────────────────────
+      # deploy.sh verifies each contract on-chain before recording it, and
+      # exits non-zero without touching its entry when any step fails.
+      - name: Deploy contracts
         env:
           SOROBAN_DEPLOYER_SECRET: ${{ secrets.SOROBAN_DEPLOYER_SECRET }}
-        run: |
-          echo "$SOROBAN_DEPLOYER_SECRET" | \
-            stellar keys add deployer --secret-key --stdin
-
-      - name: Configure mainnet
-        env:
+          SOROBAN_ADMIN_ADDRESS: ${{ secrets.SOROBAN_ADMIN_ADDRESS }}
           SOROBAN_RPC_URL: ${{ vars.SOROBAN_RPC_URL }}
+          SOROBAN_ALLOWED_TOKENS: ${{ vars.SOROBAN_ALLOWED_TOKENS }}
+          ESCROW_MAX_AMOUNT_STROOPS: ${{ vars.ESCROW_MAX_AMOUNT_STROOPS }}
+          CONTRACT: ${{ github.event.inputs.contract }}
+          INITIALIZE: ${{ github.event.inputs.initialize }}
+          ROLLBACK: ${{ github.event.inputs.rollback }}
         run: |
-          stellar network add mainnet \
-            --rpc-url "${SOROBAN_RPC_URL:-https://mainnet.stellar.validationcloud.io/v1/}" \
-            --network-passphrase "Public Global Stellar Network ; September 2015"
-
-      - name: Deploy escrow contract (mainnet)
-        id: deploy-escrow-mainnet
-        if: >-
-          github.event.inputs.contract == 'all' ||
-          github.event.inputs.contract == 'escrow'
-        run: |
-          CONTRACT_ID=$(stellar contract deploy \
-            --wasm contracts/target/wasm32v1-none/release/airflex_escrow.wasm \
-            --source deployer \
-            --network mainnet)
-          echo "contract_id=$CONTRACT_ID" >> "$GITHUB_OUTPUT"
-          echo "Deployed escrow (mainnet): $CONTRACT_ID"
-
-      - name: Initialize escrow (mainnet)
-        if: >-
-          steps.deploy-escrow-mainnet.conclusion == 'success' &&
-          github.event.inputs.initialize == 'true'
-        env:
-          SOROBAN_ADMIN_ADDRESS: ${{ secrets.SOROBAN_ADMIN_ADDRESS }}
-        run: |
-          stellar contract invoke \
-            --id ${{ steps.deploy-escrow-mainnet.outputs.contract_id }} \
-            --source deployer \
+          if [ "$ROLLBACK" = "true" ]; then
+            MODE=--rollback
+          else
+            MODE=--force
+          fi
+          if [ "$INITIALIZE" = "true" ]; then INIT=yes; else INIT=no; fi
+          bash contracts/deploy.sh \
             --network mainnet \
-            -- initialize \
-            --admin "$SOROBAN_ADMIN_ADDRESS"
+            --contract "$CONTRACT" \
+            --initialize "$INIT" \
+            --commit no \
+            "$MODE" \
+            --yes
 
-      - name: Deploy marketplace contract (mainnet)
-        id: deploy-marketplace-mainnet
-        if: >-
-          github.event.inputs.contract == 'all' ||
-          github.event.inputs.contract == 'marketplace'
-        run: |
-          CONTRACT_ID=$(stellar contract deploy \
-            --wasm contracts/target/wasm32v1-none/release/airflex_marketplace.wasm \
-            --source deployer \
-            --network mainnet)
-          echo "contract_id=$CONTRACT_ID" >> "$GITHUB_OUTPUT"
-          echo "Deployed marketplace (mainnet): $CONTRACT_ID"
-
-      - name: Initialize marketplace (mainnet)
-        if: >-
-          steps.deploy-marketplace-mainnet.conclusion == 'success' &&
-          github.event.inputs.initialize == 'true'
+      # ── Post-deploy smoke test ────────────────────────────────────────────
+      # Re-reads deployments.json and checks every deployed contract against
+      # the network: WASM hash, admin, and paused state. Runs before the
+      # registry is committed, so a broken deployment is never published.
+      - name: Post-deploy smoke test
         env:
+          SOROBAN_DEPLOYER_SECRET: ${{ secrets.SOROBAN_DEPLOYER_SECRET }}
           SOROBAN_ADMIN_ADDRESS: ${{ secrets.SOROBAN_ADMIN_ADDRESS }}
+          SOROBAN_RPC_URL: ${{ vars.SOROBAN_RPC_URL }}
+          ESCROW_MAX_AMOUNT_STROOPS: ${{ vars.ESCROW_MAX_AMOUNT_STROOPS }}
+          CONTRACT: ${{ github.event.inputs.contract }}
+          INITIALIZE: ${{ github.event.inputs.initialize }}
         run: |
-          stellar contract invoke \
-            --id ${{ steps.deploy-marketplace-mainnet.outputs.contract_id }} \
-            --source deployer \
+          if [ "$INITIALIZE" = "true" ]; then INIT=yes; else INIT=no; fi
+          bash contracts/deploy.sh \
             --network mainnet \
-            -- initialize \
-            --admin "$SOROBAN_ADMIN_ADDRESS"
+            --contract "$CONTRACT" \
+            --initialize "$INIT" \
+            --verify
 
-      - name: Update deployments.json (mainnet)
+      - name: Read deployed contract IDs
+        id: ids
+        env:
+          CONTRACT: ${{ github.event.inputs.contract }}
         run: |
-          node -e "
-            const fs = require('fs');
-            const path = 'contracts/deployments.json';
-            const data = JSON.parse(fs.readFileSync(path, 'utf8'));
-
-            const escrowId = '${{ steps.deploy-escrow-mainnet.outputs.contract_id }}';
-            const marketId = '${{ steps.deploy-marketplace-mainnet.outputs.contract_id }}';
-
-            if (escrowId)  data.mainnet.escrow      = escrowId;
-            if (marketId)  data.mainnet.marketplace  = marketId;
-
-            fs.writeFileSync(path, JSON.stringify(data, null, 2) + '\n');
-            console.log('deployments.json updated (mainnet)');
-          "
+          for name in escrow marketplace; do
+            ID=""
+            if [ "$CONTRACT" = "all" ] || [ "$CONTRACT" = "$name" ]; then
+              ID=$(node contracts/scripts/deployments.cjs get \
+                contracts/deployments.json mainnet "$name" contract_id)
+            fi
+            echo "${name}_id=$ID" >> "$GITHUB_OUTPUT"
+          done
 
       - name: Commit deployments.json (mainnet)
         run: |
@@ -393,8 +338,8 @@ jobs:
 
       - name: Print mainnet deployment summary
         run: |
-          ESCROW_ID="${{ steps.deploy-escrow-mainnet.outputs.contract_id }}"
-          MARKET_ID="${{ steps.deploy-marketplace-mainnet.outputs.contract_id }}"
+          ESCROW_ID="${{ steps.ids.outputs.escrow_id }}"
+          MARKET_ID="${{ steps.ids.outputs.marketplace_id }}"
 
           echo "### ✅ Mainnet Contracts Deployed" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"

@@ -1,12 +1,48 @@
 {
   "testnet": {
-    "escrow": "CCBJ235OCBFZXBFSUUUT4PMG7RRCAXZXMUEB2L7CTTQ5NRSNO4P2SLNP",
-    "marketplace": "",
-    "token": ""
+    "escrow": {
+      "contract_id": "CCBJ235OCBFZXBFSUUUT4PMG7RRCAXZXMUEB2L7CTTQ5NRSNO4P2SLNP",
+      "wasm_hash": "ddb4b0aa7d93746c913228a8caac75a6e93dca1eab8fa4a2a49df1f2644c69e7",
+      "deployed_at": "2026-08-02T03:08:10Z",
+      "deployer": "GCLZRKGMKXHUR56XGPJ76J4F42WXKSTHQ4LOWQ3HB52PWBYMXH7TSBEQ",
+      "history": []
+    },
+    "marketplace": {
+      "contract_id": null,
+      "wasm_hash": null,
+      "deployed_at": null,
+      "deployer": null,
+      "history": []
+    },
+    "token": {
+      "contract_id": null,
+      "wasm_hash": null,
+      "deployed_at": null,
+      "deployer": null,
+      "history": []
+    }
   },
   "mainnet": {
-    "escrow": "",
-    "marketplace": "",
-    "token": ""
+    "escrow": {
+      "contract_id": null,
+      "wasm_hash": null,
+      "deployed_at": null,
+      "deployer": null,
+      "history": []
+    },
+    "marketplace": {
+      "contract_id": null,
+      "wasm_hash": null,
+      "deployed_at": null,
+      "deployer": null,
+      "history": []
+    },
+    "token": {
+      "contract_id": null,
+      "wasm_hash": null,
+      "deployed_at": null,
+      "deployer": null,
+      "history": []
+    }
   }
 }

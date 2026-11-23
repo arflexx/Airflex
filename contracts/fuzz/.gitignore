@@ -1,0 +1,8 @@
+/target/
+/artifacts/
+/coverage/
+
+# libFuzzer writes newly discovered inputs into the corpus directories. Only
+# the hand-picked seeds are versioned.
+/corpus/*/*
+!/corpus/*/seed_*

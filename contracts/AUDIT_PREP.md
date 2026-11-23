@@ -118,14 +118,58 @@ For a complete breakdown of contract error codes and custom panic signals, see [
 
 ---
 
-## 9. On-Chain Event Observability (Issue #639)
+## 9. On-Chain Event Observability (Issues #638, #639)
 
 In addition to the state recorded in `DataKey::Trade`, the escrow contract
 now emits a canonical `EscrowCreated` / `EscrowReleased` / `EscrowRefunded` /
 `EscrowDisputed` event for every state transition, each carrying
 `(escrow_id, actor, amount, timestamp)` — see the
-[escrow README's Events section](./escrow/README.md#events-issue-639) for the
+[escrow README's Events section](./escrow/README.md#events-issues-638-639) for the
 full topic table. Auditors can use these events, instead of polling
 `get_trade`, to reconstruct a trade's full history on-chain.
-`server/src/services/stellar.ts` (`fetchEscrowEvents`) fetches and parses
-them via Soroban RPC's `getEvents` for the backend oracle and indexers.
+`server/src/services/stellar.ts` (`subscribeToEscrowEvents`,
+`fetchEscrowEvents`) reads and parses them via Soroban RPC's `getEvents` for the
+backend oracle and indexers.
+
+Points for auditors:
+
+- **Dispute rulings emit settlement events.** `resolve_dispute` publishes one
+  `EscrowReleased` or `EscrowRefunded` per settled fill, the same as
+  `release_payment` and `cancel_and_refund`. Before issue #638 it emitted only
+  the short-form `resolved` topic, so settled funds were missing from the
+  canonical stream.
+- **Conservation check.** For any escrow, the amounts in `EscrowReleased` plus
+  `EscrowRefunded` equal the sub-escrow amounts settled so far. `actor` on both
+  is the recipient of the funds, not the caller.
+- **Not covered.** `deposit_to_escrow` (short-form `locked`),
+  `close_expired_listing` (`cancelled`) and `emergency_withdraw`
+  (`emergency_withdrawal`) have no canonical event. An emergency withdrawal
+  breaks the conservation check above by design.
+- **Events are not authenticated state.** Consumers must match the emitting
+  contract ID and treat `get_trade` as the source of truth.
+
+---
+
+## 10. Fuzzing (Issue #644)
+
+`contracts/fuzz` holds two cargo-fuzz targets, run for 60 seconds each in CI by
+`make fuzz`:
+
+| Target | Code under test |
+|---|---|
+| `escrow_arithmetic` | `contracts/escrow/src/arithmetic.rs` — fill bounds, partial-fill splits, refunds, deadlines |
+| `marketplace_validation` | `contracts/marketplace/src/arithmetic.rs` — price/quantity checks, offer expiry, reputation totals |
+
+The contracts call these modules for their arithmetic, and the targets compile
+the same source files. Neither contract charges a fee, so the split under test
+is the division of a listing across partial fills.
+
+Arithmetic hardened as part of this work:
+
+- Marketplace `total_volume += volume` could overflow `i128` and trap inside
+  `release_payment` or `resolve_dispute`, leaving the buyer's funds in escrow.
+  It now saturates, as do the reputation counters.
+- Escrow `refunded_amount += sub.amount` is now checked and returns
+  `InsufficientFunds`.
+- `now + window` and `paused_at + timelock` deadlines in both contracts now
+  saturate.

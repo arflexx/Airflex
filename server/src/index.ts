@@ -14,6 +14,7 @@ import { requestId } from "./middleware/requestId";
 import { pool, query } from "./db/pool";
 import { cache } from "./services/cache";
 import { checkHealth } from "./services/health";
+import { startEscrowEventSubscription } from "./services/stellar";
 
 import { assertEnvValid } from "./config/validateEnv";
 import { corsMiddleware } from "./config/cors";
@@ -190,6 +191,9 @@ if (!isTest) {
 
     // Initialise background job queue (Redis-backed or in-process fallback)
     initJobQueue();
+
+    // Follow on-chain escrow events (opt-in via ESCROW_EVENTS_ENABLED)
+    startEscrowEventSubscription();
   });
 }
 

@@ -21,9 +21,27 @@ import { join } from "path";
 // Load deployments.json — used only as a fallback for local development
 // ---------------------------------------------------------------------------
 
+/**
+ * One contract in deployments.json. Since issue #645 entries are objects that
+ * also carry deployment metadata; older checkouts store the bare contract ID.
+ */
+type DeploymentEntry = string | { contract_id: string | null };
+
+interface NetworkDeployments {
+  escrow?: DeploymentEntry;
+  marketplace?: DeploymentEntry;
+  token?: DeploymentEntry;
+}
+
 interface Deployments {
-  testnet: { escrow: string; marketplace: string; token: string };
-  mainnet: { escrow: string; marketplace: string; token: string };
+  testnet?: NetworkDeployments;
+  mainnet?: NetworkDeployments;
+}
+
+/** Returns the contract ID of an entry in either format, or "" if undeployed. */
+export function contractIdOf(entry: DeploymentEntry | undefined): string {
+  if (typeof entry === "string") return entry;
+  return entry?.contract_id ?? "";
 }
 
 function loadDeployments(): Deployments {
@@ -41,10 +59,7 @@ function loadDeployments(): Deployments {
     return JSON.parse(raw) as Deployments;
   } catch {
     // Not critical — deployments.json may not exist in some environments
-    return {
-      testnet: { escrow: "", marketplace: "", token: "" },
-      mainnet: { escrow: "", marketplace: "", token: "" },
-    };
+    return {};
   }
 }
 
@@ -56,7 +71,7 @@ const network =
   process.env["STELLAR_NETWORK"] === "mainnet" ? "mainnet" : "testnet";
 
 const deployments = loadDeployments();
-const defaults = deployments[network];
+const defaults = deployments[network] ?? {};
 
 /**
  * The escrow contract ID to use.
@@ -66,8 +81,7 @@ const defaults = deployments[network];
 export const ESCROW_CONTRACT_ID: string =
   process.env["ESCROW_CONTRACT_ID"] ||
   process.env["ESCROW_CONTRACT_ADDRESS"] ||
-  defaults.escrow ||
-  "";
+  contractIdOf(defaults.escrow);
 
 /**
  * The marketplace contract ID to use.
@@ -76,8 +90,7 @@ export const ESCROW_CONTRACT_ID: string =
  */
 export const MARKETPLACE_CONTRACT_ID: string =
   process.env["MARKETPLACE_CONTRACT_ID"] ||
-  defaults.marketplace ||
-  "";
+  contractIdOf(defaults.marketplace);
 
 // ---------------------------------------------------------------------------
 // Warn at startup if contract IDs are missing

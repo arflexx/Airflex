@@ -49,13 +49,20 @@ contracts/
 ├── Cargo.toml            # Workspace manifest
 ├── Cargo.lock
 ├── deployments.json      # Canonical contract address registry
-├── deploy.sh             # Build-and-deploy automation script
+├── deploy.sh             # Build, deploy, verify and rollback script
+├── scripts/
+│   └── deployments.cjs   # Reads/writes deployments.json for deploy.sh
 ├── escrow/
 │   ├── Cargo.toml
-│   └── src/lib.rs        # Escrow contract source
-└── marketplace/
-    ├── Cargo.toml
-    └── src/lib.rs        # Marketplace contract source
+│   └── src/
+│       ├── lib.rs        # Escrow contract source
+│       └── arithmetic.rs # Pure amount/deadline arithmetic (fuzzed)
+├── marketplace/
+│   ├── Cargo.toml
+│   └── src/
+│       ├── lib.rs        # Marketplace contract source
+│       └── arithmetic.rs # Pure price/expiry arithmetic (fuzzed)
+└── fuzz/                 # cargo-fuzz targets and seed corpus
 ```
 
 ---
@@ -93,6 +100,20 @@ cd contracts
 cargo test --all-features
 ```
 
+### Fuzz
+
+```bash
+rustup toolchain install nightly
+cargo install cargo-fuzz
+cd contracts
+make fuzz                    # 60 seconds per target, as in CI
+make fuzz FUZZ_SECONDS=600   # longer local run
+```
+
+Seed inputs live in `fuzz/corpus/<target>/seed_*`. Inputs libFuzzer discovers are
+written next to them and ignored by git. A crash is saved under `fuzz/artifacts/`;
+add the minimised input as a new `seed_*` file with the fix.
+
 ### Lint
 
 ```bash
@@ -128,9 +149,97 @@ export SOROBAN_ADMIN_ADDRESS="G..."     # admin public key
 ./contracts/deploy.sh --network mainnet --contract escrow
 ```
 
-After deployment the script:
-1. Updates `contracts/deployments.json` with the new contract ID.
-2. Commits the change (pass `--commit no` to skip).
+Environment variables:
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `SOROBAN_DEPLOYER_SECRET` | yes | Secret key that signs and pays for the deploy |
+| `SOROBAN_ADMIN_ADDRESS` | yes | Public key set as contract admin. Its signature is needed by `initialize`, so it must match the deployer unless you use `--initialize no` |
+| `SOROBAN_ALLOWED_TOKENS` | no | Comma-separated token contract IDs the escrow accepts. Unset, the escrow rejects every listing until `add_allowed_token` is called |
+| `ESCROW_MAX_AMOUNT_STROOPS` | no | Per-listing escrow cap |
+| `SOROBAN_RPC_URL` | no | RPC endpoint override |
+
+For each contract the script:
+
+1. Builds the WASM and computes its SHA-256, which is its on-chain WASM hash.
+2. Deploys it and checks that a valid contract ID came back.
+3. Calls `initialize` (and `update_max_amount` for the escrow, if a cap is set).
+4. Verifies the result on-chain: the instance's WASM hash matches the build,
+   `get_admin` returns the admin, `is_paused` is `false`, and `max_amount`
+   matches the cap.
+5. Writes the entry to `contracts/deployments.json` in a single rename.
+6. Commits the change (pass `--commit no` to skip).
+
+If any step fails the script exits non-zero and that contract's entry is left as
+it was. With `--contract all` the escrow is deployed and recorded before the
+marketplace starts, so a marketplace failure leaves a valid escrow entry. The ID
+of an instance that failed verification is printed so it can be investigated.
+
+### Smoke test
+
+`--verify` runs step 4 against the contracts already recorded in
+`deployments.json`, without deploying or writing anything:
+
+```bash
+./contracts/deploy.sh --network testnet --contract all --verify
+```
+
+`soroban-deploy.yml` runs it after every deploy and before committing
+`deployments.json`. A contract that has been paused on purpose fails the check.
+
+### Deployment registry
+
+Each entry in `deployments.json` has this shape. Undeployed contracts have
+`null` fields.
+
+```json
+{
+  "contract_id": "C...",
+  "wasm_hash": "64 hex characters",
+  "deployed_at": "2026-08-02T03:08:10Z",
+  "deployer": "G...",
+  "history": []
+}
+```
+
+`history` holds superseded deployments, oldest first. Entries replaced by a
+rollback also carry `rolled_back_at`.
+
+### Rollback
+
+`--rollback` re-deploys the most recent WASM hash in `history` that differs from
+the live one and was not itself rolled back. Running it again therefore moves
+further back instead of returning to the faulty build.
+
+```bash
+# Preview the WASM hash that would be deployed
+./contracts/deploy.sh --network testnet --contract escrow --rollback --dry-run
+
+# Roll back
+./contracts/deploy.sh --network testnet --contract escrow --rollback
+```
+
+In CI, run **Deploy Soroban Contracts** manually with `rollback` ticked.
+
+Read this before rolling back:
+
+- **The contract ID changes and state is not carried over.** The contracts have
+  no upgrade entry point, so a rollback creates a new instance with empty
+  storage. Trades and escrowed funds stay in the old instance and must be settled
+  there. Pause the faulty contract first, and do not discard its ID: it is kept
+  in `history`.
+- **Repoint the server.** Update `ESCROW_CONTRACT_ID` / `MARKETPLACE_CONTRACT_ID`
+  afterwards.
+- **`initialize` may differ between versions.** If the older build takes other
+  arguments, use `--initialize no` and initialize it by hand immediately. Until
+  then anyone can initialize the new instance.
+- **The WASM must still be on the ledger.** If its entry has been archived,
+  restore it with `stellar contract restore --wasm-hash <hash>` first.
+- **There must be history.** A contract deployed only once has nothing to roll
+  back to, and `--contract all` stops before deploying anything if either
+  contract lacks a target.
+
+### After deploying
 
 Copy the new contract ID into your `server/.env`:
 

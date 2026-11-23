@@ -185,6 +185,24 @@ export class DuplicateFillError extends ContractError {
   }
 }
 
+/** Code 20 — `accept_offer` called after the offer's `expires_at` (marketplace). */
+export class OfferExpiredError extends ContractError {
+  constructor() {
+    super("This offer has expired", 20);
+    this.name = "OfferExpiredError";
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/** Code 21 — Offer expiry is more than 30 days after creation (marketplace). */
+export class ExpiryTooFarError extends ContractError {
+  constructor() {
+    super("Offer expiry cannot be more than 30 days after creation", 21);
+    this.name = "ExpiryTooFarError";
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
@@ -207,6 +225,8 @@ const ERROR_REGISTRY = new Map<number, new () => ContractError>([
   [14, NotAPartyError],
   [15, PauseCooldownNotExpiredError],
   [16, DuplicateFillError],
+  [20, OfferExpiredError],
+  [21, ExpiryTooFarError],
 ]);
 
 // ---------------------------------------------------------------------------

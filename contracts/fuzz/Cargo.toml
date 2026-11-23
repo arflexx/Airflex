@@ -1,0 +1,38 @@
+[package]
+name = "airflex-contracts-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# The targets compile the contracts' pure `arithmetic.rs` modules directly, so
+# they need neither soroban-sdk nor an `rlib` build of the contracts. Adding
+# `rlib` to a contract's crate-type would disable LTO for its release WASM.
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[[bin]]
+name = "escrow_arithmetic"
+path = "fuzz_targets/escrow_arithmetic.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "marketplace_validation"
+path = "fuzz_targets/marketplace_validation.rs"
+test = false
+doc = false
+bench = false
+
+# Keep overflow detection on in the optimised fuzzing build, so any arithmetic
+# that could wrap aborts the run instead of passing silently.
+[profile.release]
+debug = 1
+overflow-checks = true
+
+# Standalone workspace: `cargo test` / `cargo clippy` in contracts/ never need
+# the nightly toolchain or libFuzzer.
+[workspace]
