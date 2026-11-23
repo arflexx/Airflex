@@ -305,6 +305,39 @@ buyer and returns it unsigned. Takes no request body.
 
 ---
 
+## Admin Permissions
+
+Admin endpoints use granular permission-based access control (issue #674). Each admin user has a set of permissions stored in the `admin_permissions` JSONB array column in the `users` table.
+
+### Permission List
+
+| Permission | Description | Endpoints |
+|-----------|-------------|-----------|
+| `queues.view` | View background job queue health | `GET /api/v1/admin/queues` |
+| `trades.view` | View all trades with filtering and pagination | `GET /api/v1/admin/trades` |
+| `trades.resolve` | Resolve disputed trades (RELEASE or REFUND) | `POST /api/v1/admin/trades/:id/resolve` |
+| `users.view` | View user profiles, balances, and trade history | `GET /api/v1/admin/users`, `GET /api/v1/admin/users/:phone` |
+| `users.kyc_approve` | Approve or reject KYC documents | `PATCH /api/v1/admin/users/:id/kyc` |
+| `fraud_flags.view` | View fraud flags with filtering | `GET /api/v1/admin/fraud-flags`, `GET /api/v1/admin/flagged-accounts` |
+| `fraud_flags.review` | Review and close fraud flags | `PATCH /api/v1/admin/fraud-flags/:id` |
+| `webhooks.view` | View failed webhook events | `GET /api/v1/admin/webhooks` |
+| `webhooks.replay` | Replay failed webhook events | `POST /api/v1/admin/webhooks/:id/replay` |
+| `audit_logs.view` | View immutable audit trail (super-admin only) | `GET /api/v1/admin/audit-logs` |
+
+### Permission Check
+
+When an admin makes a request to a protected endpoint, the `requirePermission` middleware checks if the user's `admin_permissions` array contains the required permission. If not, the endpoint returns HTTP 403:
+
+```json
+{ "error": "Permission denied" }
+```
+
+### Migration Note
+
+Existing admins with `role='admin'` or `role='super_admin'` are automatically granted all permissions during the migration to maintain backward compatibility.
+
+---
+
 ## Error Format
 
 All errors follow this shape:

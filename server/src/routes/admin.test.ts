@@ -471,3 +471,156 @@ describe("GET /api/v1/admin/users cursor pagination input validation (issue #625
     expect(mockQuery).not.toHaveBeenCalledWith(expect.stringMatching(/FROM page_users pu/i), expect.anything());
   });
 });
+
+describe("Granular permission-based access control (issue #674)", () => {
+  const adminId = "99999999-9999-9999-9999-999999999999";
+  const adminWithPermission = jwt.sign(
+    { sub: adminId, role: "admin", tokenVersion: 1 },
+    JWT_SECRET,
+    { expiresIn: "1h" }
+  );
+  const adminWithoutPermission = jwt.sign(
+    { sub: "88888888-8888-8888-8888-888888888888", role: "admin", tokenVersion: 1 },
+    JWT_SECRET,
+    { expiresIn: "1h" }
+  );
+
+  beforeEach(() => {
+    mockQuery.mockReset();
+  });
+
+  describe("requirePermission middleware", () => {
+    it("allows access when admin has the required permission", async () => {
+      // authenticate (token_version)
+      mockQuery.mockResolvedValueOnce({ rows: [{ token_version: 1 }] });
+      // requirePermission (admin_permissions check)
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ admin_permissions: ["trades.view"] }],
+      });
+
+      const res = await request(app)
+        .get("/api/v1/admin/trades")
+        .set("Authorization", `Bearer ${adminWithPermission}`);
+
+      expect(res.status).toBe(200);
+    });
+
+    it("denies access with 403 when admin lacks the required permission", async () => {
+      // authenticate (token_version)
+      mockQuery.mockResolvedValueOnce({ rows: [{ token_version: 1 }] });
+      // requirePermission (admin_permissions check)
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ admin_permissions: ["users.view"] }], // Missing trades.view
+      });
+
+      const res = await request(app)
+        .get("/api/v1/admin/trades")
+        .set("Authorization", `Bearer ${adminWithoutPermission}`);
+
+      expect(res.status).toBe(403);
+      expect(res.body).toEqual({ error: "Permission denied" });
+    });
+
+    it("denies access with 403 when admin_permissions is empty", async () => {
+      // authenticate (token_version)
+      mockQuery.mockResolvedValueOnce({ rows: [{ token_version: 1 }] });
+      // requirePermission (admin_permissions check)
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ admin_permissions: [] }],
+      });
+
+      const res = await request(app)
+        .get("/api/v1/admin/trades")
+        .set("Authorization", `Bearer ${adminWithoutPermission}`);
+
+      expect(res.status).toBe(403);
+      expect(res.body).toEqual({ error: "Permission denied" });
+    });
+
+    it("denies access with 403 when admin_permissions is null", async () => {
+      // authenticate (token_version)
+      mockQuery.mockResolvedValueOnce({ rows: [{ token_version: 1 }] });
+      // requirePermission (admin_permissions check)
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ admin_permissions: null }],
+      });
+
+      const res = await request(app)
+        .get("/api/v1/admin/trades")
+        .set("Authorization", `Bearer ${adminWithoutPermission}`);
+
+      expect(res.status).toBe(403);
+      expect(res.body).toEqual({ error: "Permission denied" });
+    });
+  });
+
+  describe("permission checks per endpoint", () => {
+    it("trades.resolve permission required for dispute resolution", async () => {
+      // authenticate
+      mockQuery.mockResolvedValueOnce({ rows: [{ token_version: 1 }] });
+      // requirePermission - admin has trades.resolve
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ admin_permissions: ["trades.resolve"] }],
+      });
+
+      const res = await request(app)
+        .post("/api/v1/admin/trades/123e4567-e89b-12d3-a456-426614174000/resolve")
+        .set("Authorization", `Bearer ${adminWithPermission}`)
+        .send({ resolution: "RELEASE" });
+
+      // Should pass permission check (will fail later on validation/DB, but that's OK)
+      expect(res.status).not.toBe(403);
+    });
+
+    it("denies dispute resolution without trades.resolve permission", async () => {
+      // authenticate
+      mockQuery.mockResolvedValueOnce({ rows: [{ token_version: 1 }] });
+      // requirePermission - admin lacks trades.resolve
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ admin_permissions: ["trades.view"] }],
+      });
+
+      const res = await request(app)
+        .post("/api/v1/admin/trades/123e4567-e89b-12d3-a456-426614174000/resolve")
+        .set("Authorization", `Bearer ${adminWithoutPermission}`)
+        .send({ resolution: "RELEASE" });
+
+      expect(res.status).toBe(403);
+      expect(res.body).toEqual({ error: "Permission denied" });
+    });
+
+    it("users.kyc_approve permission required for KYC status changes", async () => {
+      // authenticate
+      mockQuery.mockResolvedValueOnce({ rows: [{ token_version: 1 }] });
+      // requirePermission - admin has users.kyc_approve
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ admin_permissions: ["users.kyc_approve"] }],
+      });
+
+      const res = await request(app)
+        .patch("/api/v1/admin/users/123e4567-e89b-12d3-a456-426614174000/kyc")
+        .set("Authorization", `Bearer ${adminWithPermission}`)
+        .send({ status: "verified" });
+
+      expect(res.status).not.toBe(403);
+    });
+
+    it("denies KYC approval without users.kyc_approve permission", async () => {
+      // authenticate
+      mockQuery.mockResolvedValueOnce({ rows: [{ token_version: 1 }] });
+      // requirePermission - admin lacks users.kyc_approve
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ admin_permissions: ["users.view"] }],
+      });
+
+      const res = await request(app)
+        .patch("/api/v1/admin/users/123e4567-e89b-12d3-a456-426614174000/kyc")
+        .set("Authorization", `Bearer ${adminWithoutPermission}`)
+        .send({ status: "verified" });
+
+      expect(res.status).toBe(403);
+      expect(res.body).toEqual({ error: "Permission denied" });
+    });
+  });
+});
+
