@@ -63,7 +63,7 @@ interface QueryResult<T = Record<string, unknown>> {
 }
 
 interface Tables {
-  users: Array<{ id: string; phone: string | null; virtual_account_number: string | null }>;
+  users: Array<{ id: string; phone: string | null; virtual_account_number: string | null; balance?: number }>;
   wallets: Array<{ user_id: string; fiat_balance: number }>;
   transactions: Array<{
     user_id: string;
@@ -230,28 +230,22 @@ class InMemoryDb {
       return result(user ? [{ id: user.id }] : []);
     }
 
-    if (stmt.startsWith("INSERT INTO transactions (user_id, amount, direction, type, external_reference)")) {
-      t.transactions.push({
-        user_id: p[0] as string,
-        trade_id: null,
-        amount: p[1] as number,
-        direction: "credit",
-        type: "deposit",
-        external_reference: p[2] as string,
-      });
-      return result([], 1);
-    }
-
     if (stmt.startsWith("INSERT INTO transactions (user_id, trade_id, amount, direction, type, external_reference)")) {
       t.transactions.push({
         user_id: p[0] as string,
         trade_id: p[1] as string | null,
         amount: p[2] as number,
-        direction: "credit",
-        type: p[3] as string,
-        external_reference: p[4] as string | null,
+        direction: p[3] as string,
+        type: p[4] as string,
+        external_reference: p[5] as string | null,
       });
       return result([], 1);
+    }
+
+    if (stmt.startsWith("UPDATE users SET balance = balance + $1 WHERE id = $2")) {
+      const rows = t.users.filter((u) => u.id === p[1]);
+      rows.forEach((u) => (u.balance = (u.balance ?? 0) + Number(p[0])));
+      return result([], rows.length);
     }
 
     if (stmt.startsWith("UPDATE wallets SET fiat_balance = fiat_balance + $1")) {

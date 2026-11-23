@@ -20,6 +20,7 @@
 import { pool } from "../../db/pool";
 import logger from "../../utils/logger";
 import { NotificationService } from "../../services/notifications";
+import { WalletService } from "../../services/wallet";
 import type { Job } from "../queue";
 
 export interface ProcessWithdrawalData {
@@ -187,22 +188,31 @@ export async function processWithdrawalProcessor(
     withdrawal.user_id
   );
 
-  // Move to `processing` — final state set by webhook
-  await pool.query(
-    `UPDATE withdrawals
-     SET status = 'processing',
-         paystack_transfer_code = $1
-     WHERE id = $2`,
-    [transferCode, withdrawalId]
-  );
-
-  // Record the debit in the transactions ledger
-  await pool.query(
-    `INSERT INTO transactions (user_id, amount, direction, type, external_reference)
-     VALUES ($1, $2, 'debit', 'withdrawal', $3)
-     ON CONFLICT DO NOTHING`,
-    [withdrawal.user_id, amountNum, withdrawal.reference]
-  );
+  // Move to `processing` (final state set by webhook) and record the debit
+  // in the ledger + denormalised users.balance in one transaction.
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `UPDATE withdrawals
+       SET status = 'processing',
+           paystack_transfer_code = $1
+       WHERE id = $2`,
+      [transferCode, withdrawalId]
+    );
+    await new WalletService(client).debitEntry({
+      userId: withdrawal.user_id,
+      amount: amountNum,
+      type: "withdrawal",
+      externalReference: withdrawal.reference,
+    });
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
 
   logger.info(
     { jobId: job.id, withdrawalId, transferCode },
