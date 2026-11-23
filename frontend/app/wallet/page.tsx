@@ -12,6 +12,9 @@ import { Card } from "../../components/ui/Card";
 import { Spinner } from "../../components/ui/Spinner";
 import { StellarExplorerLink } from "../../components/StellarExplorerLink";
 import { useOptimisticBalance } from "../hooks/useOptimisticBalance";
+import { reconcileList } from "../../lib/stableList";
+
+const transactionKey = (tx: WalletTransaction): string => tx.id;
 
 // ---------------------------------------------------------------------------
 // Code-split chunks (Issue #544)
@@ -174,7 +177,10 @@ export default function WalletPage() {
       .then((r) => (r.ok ? (r.json() as Promise<TradesResponse>) : { data: [] }))
       .catch(() => ({ data: [] }) as TradesResponse)
       .then((tradesData) => {
-        setTransactions(Array.isArray(tradesData.data) ? tradesData.data : []);
+        // Keep the previous array when the page's rows are unchanged so the
+        // memoized TransactionHistory skips re-rendering.
+        const next = Array.isArray(tradesData.data) ? tradesData.data : [];
+        setTransactions((prev) => reconcileList(prev, next, transactionKey));
         if (tradesData.pagination) {
           setTotalTrades(tradesData.pagination.total);
           setTotalPages(Math.max(tradesData.pagination.totalPages, 1));
