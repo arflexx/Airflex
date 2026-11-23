@@ -27,6 +27,28 @@ export interface AuthenticatedRequest extends Request {
 }
 
 /**
+ * Returns the expected JWT `iss` (issuer) claim.
+ * Mirrors the value in routes/auth.ts — both read from the same env var so
+ * they can never drift. Defaults to "airflex-server".
+ */
+function getJwtIssuer(): string {
+  return process.env["JWT_ISSUER"] ?? "airflex-server";
+}
+
+/**
+ * Returns the expected JWT `aud` (audience) claim.
+ * Mirrors the value in routes/auth.ts. Defaults to "airflex-client".
+ */
+function getJwtAudience(): string {
+  return process.env["JWT_AUDIENCE"] ?? "airflex-client";
+}
+
+/** Extends Express's Request so downstream handlers get req.user typed */
+export interface AuthenticatedRequest extends Request {
+  user: AuthPayload;
+}
+
+/**
  * Returns true if `payload`'s token_version still matches the user's current
  * one in the database — i.e. the token has not been revoked since issuance.
  * A DB error fails closed (returns false): an auth check that silently
@@ -73,7 +95,10 @@ export async function authenticate(
 
   let payload: AuthPayload;
   try {
-    payload = jwt.verify(token, secret) as AuthPayload;
+    payload = jwt.verify(token, secret, {
+      issuer: getJwtIssuer(),
+      audience: getJwtAudience(),
+    }) as AuthPayload;
   } catch {
     res.status(401).json({ error: "Token is invalid or expired" });
     return;
@@ -121,7 +146,10 @@ export function optionalAuthenticate(
   const secret = process.env["JWT_SECRET"]!;
 
   try {
-    const payload = jwt.verify(token, secret) as AuthPayload;
+    const payload = jwt.verify(token, secret, {
+      issuer: getJwtIssuer(),
+      audience: getJwtAudience(),
+    }) as AuthPayload;
     (req as unknown as AuthenticatedRequest).user = payload;
   } catch {
     // Invalid/expired token on a public endpoint — proceed anonymously

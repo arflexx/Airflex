@@ -2,10 +2,22 @@
  * auditLogRetention.ts — 365-day retention for audit_logs (issue #539).
  *
  * Deletes audit entries older than AUDIT_LOG_RETENTION_DAYS in bounded
- * batches. The audit_logs trigger (migration 013) rejects every DELETE unless
- * the transaction has set `airflex.audit_retention = on` AND the row is older
- * than 365 days, so this job is the only code path that can remove entries
- * and it cannot remove anything younger than the retention window.
+ * batches. Two independent database-level guards must both be satisfied for a
+ * DELETE to succeed:
+ *
+ *   1. Trigger (migration 013): rejects every DELETE unless the session has
+ *      set `airflex.audit_retention = on` AND the row is older than 365 days.
+ *
+ *   2. Row-Level Security (migration 021): the RLS DELETE policy only permits
+ *      the `airflex_audit_retention` role to delete rows older than 365 days.
+ *      The application pool role has no DELETE privilege.
+ *
+ * Both are enforced per batch transaction via:
+ *   SELECT set_config('airflex.audit_retention', 'on', true)  -- for trigger
+ *   SET LOCAL ROLE airflex_audit_retention                     -- for RLS
+ *
+ * SET LOCAL is transaction-scoped and reverts on COMMIT/ROLLBACK, so the
+ * privileged role never leaks to other connections in the pool.
  *
  * A transaction-scoped advisory lock ensures only one server instance purges
  * at a time when several replicas run the same schedule.
@@ -51,6 +63,11 @@ export async function purgeExpiredAuditLogs(
       }
 
       await client.query(`SELECT set_config('airflex.audit_retention', 'on', true)`);
+
+      // Switch to the privileged retention role so the RLS DELETE policy
+      // (migration 021) passes. SET LOCAL is transaction-scoped and reverts
+      // automatically on COMMIT/ROLLBACK, so it never leaks to other callers.
+      await client.query(`SET LOCAL ROLE airflex_audit_retention`);
 
       const result = await client.query(
         `DELETE FROM audit_logs

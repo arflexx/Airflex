@@ -55,6 +55,24 @@ function getJwtSecret(): string {
   return secret;
 }
 
+/**
+ * Returns the JWT `iss` (issuer) claim value.
+ * Defaults to "airflex-server" so existing deployments that have not yet set
+ * JWT_ISSUER keep working after upgrade.
+ */
+function getJwtIssuer(): string {
+  return process.env["JWT_ISSUER"] ?? "airflex-server";
+}
+
+/**
+ * Returns the JWT `aud` (audience) claim value.
+ * Defaults to "airflex-client" so existing deployments that have not yet set
+ * JWT_AUDIENCE keep working after upgrade.
+ */
+function getJwtAudience(): string {
+  return process.env["JWT_AUDIENCE"] ?? "airflex-client";
+}
+
 function newReferralCode(): string {
   return createReferralCode();
 }
@@ -319,7 +337,7 @@ router.post(
     const token = jwt.sign(
       { sub: user.id, stellarPublicKey, tokenVersion: user.token_version },
       secret,
-      { expiresIn: "7d" }
+      { expiresIn: "7d", issuer: getJwtIssuer(), audience: getJwtAudience() }
     );
 
     res.status(200).json({
@@ -395,7 +413,7 @@ router.post(
     const recoveryToken = jwt.sign(
       { sub: result.userId, scope: "recovery", purpose: "change-phone" },
       secret,
-      { expiresIn: "15m" }
+      { expiresIn: "15m", issuer: getJwtIssuer(), audience: getJwtAudience() }
     );
 
     res.status(200).json({
@@ -419,7 +437,10 @@ router.post(
 
     let payload: { sub?: string; scope?: string };
     try {
-      payload = jwt.verify(token, secret) as { sub?: string; scope?: string };
+      payload = jwt.verify(token, secret, {
+        issuer: getJwtIssuer(),
+        audience: getJwtAudience(),
+      }) as { sub?: string; scope?: string };
     } catch {
       res.status(401).json({ error: "Recovery token is invalid or expired" });
       return;

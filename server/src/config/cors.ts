@@ -64,8 +64,69 @@ export function normalizeOrigin(value: string): string | null {
 }
 
 /**
+ * Validates that a configured origin string is a strict bare origin —
+ * `scheme://host[:port]` with no trailing slash, path, query string, or
+ * fragment. Returns a descriptive error string on failure, or null on success.
+ *
+ * A bare origin is defined as a URL whose pathname is exactly `/`, whose
+ * search and hash are empty, and whose string representation — after
+ * normalisation — matches the input (modulo leading/trailing whitespace that
+ * callers must strip before calling this function).
+ *
+ * Examples:
+ *   "https://airflex.app"        → null       (valid)
+ *   "https://airflex.app/"       → error      (trailing slash)
+ *   "https://airflex.app/foo"    → error      (path)
+ *   "https://airflex.app?x=1"    → error      (query string)
+ *   "https://airflex.app#top"    → error      (fragment)
+ *   "airflex.app"                → error      (no scheme)
+ *   "ftp://airflex.app"          → error      (non-http scheme)
+ */
+export function strictOriginError(value: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return `"${value}" is not a valid URL`;
+  }
+
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return `"${value}" must use http or https (got "${url.protocol.replace(":", "")}")`;
+  }
+
+  // pathname is always at least "/" for valid URLs; a bare origin has exactly "/".
+  if (url.pathname !== "/") {
+    return `"${value}" must not include a path (got pathname "${url.pathname}"). Use "${url.origin}" instead`;
+  }
+
+  if (url.search !== "") {
+    return `"${value}" must not include a query string (got "${url.search}")`;
+  }
+
+  if (url.hash !== "") {
+    return `"${value}" must not include a fragment (got "${url.hash}")`;
+  }
+
+  // Guard against inputs like "https://airflex.app/" where `url.origin` is
+  // "https://airflex.app" but the input had a trailing slash. The pathname
+  // check above already catches this, but be explicit for clarity.
+  if (value !== url.origin) {
+    return `"${value}" must be a bare origin with no trailing slash. Use "${url.origin}" instead`;
+  }
+
+  return null;
+}
+
+/**
  * Returns configuration errors for the CORS variables. Used by validateEnv so
  * a misconfigured production deploy refuses to start.
+ *
+ * Checks performed for each non-wildcard entry:
+ *   1. Must be a valid URL with an http(s) scheme.
+ *   2. Must be a bare origin — no trailing slash, path, query string, or fragment.
+ *
+ * The wildcard `*` is only checked in production (where it is forbidden); in
+ * development it is allowed so ad-hoc tooling keeps working.
  */
 export function validateCorsEnv(env: Env): string[] {
   const raw = rawOriginList(env);
@@ -81,12 +142,16 @@ export function validateCorsEnv(env: Env): string[] {
     );
   }
 
-  const invalid = entries.filter((o) => o !== "*" && normalizeOrigin(o) === null);
-  if (invalid.length > 0) {
-    errors.push(
-      `[startup] Invalid CORS origin(s): ${invalid.join(", ")}. ` +
-        "Each entry must be an http(s) origin such as https://airflex.app"
-    );
+  for (const entry of entries) {
+    if (entry === "*") continue; // wildcard is handled above; skip format check
+
+    const err = strictOriginError(entry);
+    if (err) {
+      errors.push(
+        `[startup] Invalid CORS origin ${err}. ` +
+          "Each entry must be a bare http(s) origin, e.g. https://airflex.app"
+      );
+    }
   }
 
   return errors;
