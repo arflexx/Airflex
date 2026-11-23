@@ -51,8 +51,13 @@ router.post("/paystack", (req: Request, res: Response) => {
   const signature = req.header("x-paystack-signature");
   const raw = (req as Request & { rawBody?: Buffer }).rawBody;
 
-  if (!signature || !raw || !verifyPaystackSignature(raw, signature, secret)) {
-    res.status(401).json({ error: "Invalid or missing x-paystack-signature header" });
+  if (!signature) {
+    res.status(400).json({ error: "Missing x-paystack-signature header" });
+    return;
+  }
+
+  if (!raw || !verifyPaystackSignature(raw, signature, secret)) {
+    res.status(401).json({ error: "Invalid signature" });
     return;
   }
 

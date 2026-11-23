@@ -13,26 +13,7 @@ import {
 } from "./cspPolicy";
 
 export function buildContentSecurityPolicy(nonce: string): string {
-  const apiOrigin = apiConnectOrigins();
-  const connectSrc = ["'self'", apiOrigin, "https://api.paystack.co"].filter(Boolean);
-  const isDev = process.env.NODE_ENV === "development";
-
-  return [
-    "default-src 'self'",
-    isDev
-      ? "script-src 'self' 'unsafe-eval' 'unsafe-inline' https://js.paystack.co"
-      : `script-src 'self' 'nonce-${nonce}' https://js.paystack.co`,
-    "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: blob:",
-    `connect-src ${connectSrc.join(" ")}`,
-    "font-src 'self'",
-    "object-src 'none'",
-    "base-uri 'self'",
-    "frame-ancestors 'none'",
-    "frame-src https://checkout.paystack.com https://js.paystack.co",
-    "form-action 'self'",
-    "report-uri /api/csp-report",
-  ].join("; ");
+  return buildPolicy({ nonce });
 }
 
 export { reportingEndpoints };

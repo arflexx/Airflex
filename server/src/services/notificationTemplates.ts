@@ -71,6 +71,123 @@ export const NOTIFICATION_TEMPLATES = {
 
 export type NotificationTemplateKey = keyof typeof NOTIFICATION_TEMPLATES;
 
+
+// ---------------------------------------------------------------------------
+// Email templates (HTML + plain-text fallback)
+// ---------------------------------------------------------------------------
+
+export interface EmailTemplate {
+  subject: string;
+  /** HTML body. Payload values are HTML-escaped before substitution. */
+  html: string;
+  /** Plain-text fallback for clients that do not render HTML. */
+  text: string;
+}
+
+/**
+ * Every SMS template has an email counterpart. Each HTML body must use exactly
+ * the same placeholders as its plain-text fallback so a payload that renders
+ * one always renders the other.
+ */
+export const NOTIFICATION_EMAIL_TEMPLATES: Record<
+  NotificationTemplateKey,
+  EmailTemplate
+> = {
+  TRADE_LOCKED: {
+    subject: "AirFlex: Trade {tradeId} locked",
+    html:
+      "<p>Your trade <strong>{tradeId}</strong> has been locked.</p>" +
+      "<p>The buyer's funds are secured in escrow. Deliver the airtime/data now.</p>",
+    text:
+      "Your trade {tradeId} has been locked.\n\n" +
+      "The buyer's funds are secured in escrow. Deliver the airtime/data now.",
+  },
+
+  TRADE_COMPLETED: {
+    subject: "AirFlex: Trade {tradeId} complete",
+    html:
+      "<p>Payment released! Trade <strong>{tradeId}</strong> is now complete.</p>" +
+      "<p>Funds have been transferred to the seller's wallet.</p>",
+    text:
+      "Payment released! Trade {tradeId} is now complete.\n\n" +
+      "Funds have been transferred to the seller's wallet.",
+  },
+
+  DISPUTE_FILED: {
+    subject: "AirFlex: Trade {tradeId} disputed",
+    html:
+      "<p>Trade <strong>{tradeId}</strong> has been escalated to a dispute.</p>" +
+      "<p>Our team will review it and reach out within 24 hours.</p>",
+    text:
+      "Trade {tradeId} has been escalated to a dispute.\n\n" +
+      "Our team will review it and reach out within 24 hours.",
+  },
+
+  WITHDRAWAL_PROCESSED: {
+    subject: "AirFlex: Withdrawal processed",
+    html:
+      "<p>Your withdrawal of <strong>{amount}</strong> has been processed.</p>" +
+      "<p>It will arrive in your bank account shortly.</p>",
+    text:
+      "Your withdrawal of {amount} has been processed.\n\n" +
+      "It will arrive in your bank account shortly.",
+  },
+
+  WITHDRAWAL_FAILED: {
+    subject: "AirFlex: Withdrawal failed",
+    html:
+      "<p>Your withdrawal of <strong>{amount}</strong> has failed.</p>" +
+      "<p>Reason: <em>{reason}</em></p>" +
+      "<p>Your wallet balance has been restored.</p>",
+    text:
+      "Your withdrawal of {amount} has failed.\n\n" +
+      "Reason: {reason}\n\n" +
+      "Your wallet balance has been restored.",
+  },
+
+  WEBHOOK_FAILED: {
+    subject: "AirFlex admin: Paystack webhook {eventId} failed",
+    html:
+      "<p>Paystack webhook <code>{eventId}</code> (<code>{eventType}</code>) " +
+      "failed after retries.</p>" +
+      "<p>Inspect <a href=\"/api/admin/webhooks\">/api/admin/webhooks</a> " +
+      "and replay if needed.</p>",
+    text:
+      "Paystack webhook {eventId} ({eventType}) failed after retries.\n\n" +
+      "Inspect /api/admin/webhooks and replay if needed.",
+  },
+
+  DATA_EXPORT_READY: {
+    subject: "AirFlex: Your data export is ready",
+    html:
+      "<p>Your personal data export is ready.</p>" +
+      "<p>Download it from your profile in the app within <strong>{days}</strong> days.</p>",
+    text:
+      "Your personal data export is ready.\n\n" +
+      "Download it from your profile in the app within {days} days.",
+  },
+
+  KYC_DOCUMENT_EXPIRING: {
+    subject: "AirFlex: Your KYC document is expiring",
+    html:
+      "<p>Your KYC document expires on <strong>{expiryDate}</strong>.</p>" +
+      "<p>Please renew it in the app to keep your account active.</p>",
+    text:
+      "Your KYC document expires on {expiryDate}.\n\n" +
+      "Please renew it in the app to keep your account active.",
+  },
+
+  KYC_ADMIN_SUMMARY: {
+    subject: "AirFlex admin: KYC documents expiring",
+    html:
+      "<p><strong>{count}</strong> KYC document(s) are expired or expiring soon.</p>" +
+      "<p>Review the affected accounts.</p>",
+    text:
+      "{count} KYC document(s) are expired or expiring soon.\n\n" +
+      "Review the affected accounts.",
+  },
+};
+
 // ---------------------------------------------------------------------------
 // Localized templates (issue #490)
 // ---------------------------------------------------------------------------
@@ -183,6 +300,13 @@ export function renderTradeDisputeOpened(
 
 export type TemplatePayload = Record<string, string | number>;
 
+export interface RenderedNotification {
+  sms: string;
+  subject: string;
+  html: string;
+  text: string;
+}
+
 /** Thrown when a template references a placeholder the payload doesn't supply. */
 export class MissingTemplateVariableError extends Error {
   constructor(public readonly missing: string[]) {
@@ -215,6 +339,14 @@ export function extractPlaceholders(template: string): string[] {
   return [...names];
 }
 
+/** Returns every placeholder a notification needs across all of its variants. */
+export function requiredVariables(key: NotificationTemplateKey): string[] {
+  const email = NOTIFICATION_EMAIL_TEMPLATES[key];
+  return extractPlaceholders(
+    [NOTIFICATION_TEMPLATES[key], email.subject, email.html, email.text].join("\n")
+  );
+}
+
 /** Names with no usable value: undefined, null, or an empty/whitespace-only string. */
 function findMissing(names: string[], payload: TemplatePayload): string[] {
   return names.filter((name) => {
@@ -244,4 +376,27 @@ export function renderTemplate(
   return template.replace(PLACEHOLDER, (_token, name: string) =>
     escape(String(payload[name]))
   );
+}
+
+/** Renders every variant (SMS, email subject, HTML body, plain text) of a notification. */
+export function renderNotification(
+  key: NotificationTemplateKey,
+  payload: TemplatePayload
+): RenderedNotification {
+  const email = NOTIFICATION_EMAIL_TEMPLATES[key];
+  if (!email) {
+    throw new Error(`Unknown notification template: ${String(key)}`);
+  }
+
+  const missing = findMissing(requiredVariables(key), payload);
+  if (missing.length > 0) {
+    throw new MissingTemplateVariableError(missing);
+  }
+
+  return {
+    sms: renderTemplate(NOTIFICATION_TEMPLATES[key], payload),
+    subject: renderTemplate(email.subject, payload),
+    html: renderTemplate(email.html, payload, escapeHtml),
+    text: renderTemplate(email.text, payload),
+  };
 }

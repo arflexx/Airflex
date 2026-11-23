@@ -106,6 +106,10 @@ export default function OfflinePage() {
   /** Attempts to reload the route the user was on before landing here. */
   function handleRetry() {
     if (typeof window === "undefined") return;
+    // Behind the service-worker fallback the address bar still shows the
+    // lost route (retryHref); on a direct /offline hit fall back to the
+    // same-origin referrer, then "/".
+    const retryTarget = retryHref !== "/" ? retryHref : resolveRetryTarget();
     window.location.href = retryTarget;
   }
 

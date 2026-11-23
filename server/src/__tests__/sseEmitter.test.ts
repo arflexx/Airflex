@@ -263,7 +263,8 @@ describe("SSE event delivery (integration)", () => {
       await bob.waitFor((e) => e.event === "admin_alert");
 
       expect(alice.identified()).toEqual([["1", "trade_locked"], ["2", "admin_alert"]]);
-      expect(bob.identified()).toEqual([["2", "admin_alert"]]);
+      // Event IDs are per user (issue #619), so bob's first event is 1.
+      expect(bob.identified()).toEqual([["1", "admin_alert"]]);
     });
 
     it("fans out to every open connection of the same user", async () => {

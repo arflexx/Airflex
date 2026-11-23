@@ -90,14 +90,25 @@ function addClient(userId: string, res: Response, lastSeenEventId?: string): voi
     res.flushHeaders();
   }
 
-  // Guide client reconnect timing if not already written
-  res.write("retry: 3000\n\n");
+  try {
+    // Guide client reconnect timing if not already written
+    res.write("retry: 3000\n\n");
 
-  // Send an immediate confirmation so the client knows it is connected
-  writeEvent(res, { type: "connected", userId });
+    // Send an immediate confirmation so the client knows it is connected
+    writeEvent(res, { type: "connected", userId });
 
-  // Replay missed events
-  replayMissed(userId, res, lastSeenEventId);
+    // Replay missed events
+    replayMissed(userId, res, lastSeenEventId);
+  } catch {
+    // The socket died before the stream was set up (e.g. EPIPE). Don't
+    // register it: a dead connection must never affect other consumers.
+    try {
+      res.end();
+    } catch {
+      // already closed
+    }
+    return;
+  }
 
   // Heartbeat: a comment line every 30s prevents proxies from closing idle connections
   const heartbeat = setInterval(() => {

@@ -24,6 +24,15 @@ export interface UseTradeListReturn {
   refetch: () => Promise<void>;
 }
 
+interface ApiResponse {
+  data?: TradeOffer[];
+  trades?: TradeOffer[];
+  total?: number;
+  pagination?: {
+    total: number;
+  };
+}
+
 // In-memory cache for SWR deduplication
 const cacheMap = new Map<string, { data: { trades: TradeOffer[]; total: number }; timestamp: number }>();
 const inFlightPromises = new Map<string, Promise<{ trades: TradeOffer[]; total: number }>>();

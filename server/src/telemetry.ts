@@ -34,6 +34,51 @@ import {
 import logger from "./utils/logger";
 import { getRequestId } from "./utils/requestContext";
 
+// ---------------------------------------------------------------------------
+// Request ID correlation on spans (issue #675)
+// ---------------------------------------------------------------------------
+
+/** Span attribute holding the request correlation id (X-Request-ID). */
+export const REQUEST_ID_ATTRIBUTE = "request.id";
+
+/**
+ * Span processor that adds `request.id` to every span started while a
+ * request context is active (Express middleware spans, pg queries, outbound
+ * HTTP, trade spans). `onStart` runs synchronously in the caller's async
+ * context, so AsyncLocalStorage resolves the right request. Spans started
+ * outside a request (startup, background jobs) are left untouched.
+ */
+export class RequestIdSpanProcessor {
+  onStart(span: Span): void {
+    const requestId = getRequestId();
+    if (requestId) span.setAttribute(REQUEST_ID_ATTRIBUTE, requestId);
+  }
+  onEnd(): void {}
+  forceFlush(): Promise<void> {
+    return Promise.resolve();
+  }
+  shutdown(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+/** Sets `request.id` on the currently active span, if any. */
+export function setActiveSpanRequestId(requestId: string): void {
+  trace.getActiveSpan()?.setAttribute(REQUEST_ID_ATTRIBUTE, requestId);
+}
+
+/**
+ * HTTP instrumentation responseHook: copies the X-Request-ID response header
+ * onto the HTTP server span, which is created before the id is assigned.
+ */
+export function annotateSpanWithResponseRequestId(
+  span: Span,
+  response: { getHeader?: (name: string) => unknown }
+): void {
+  const id = typeof response.getHeader === "function" ? response.getHeader("x-request-id") : undefined;
+  if (typeof id === "string" && id) span.setAttribute(REQUEST_ID_ATTRIBUTE, id);
+}
+
 // Guard: skip telemetry in test environments or when explicitly disabled
 if (
   process.env["NODE_ENV"] === "test" ||
@@ -70,6 +115,8 @@ if (
     url: `${OTLP_ENDPOINT}/v1/traces`,
   });
 
+  const { tracing } = require("@opentelemetry/sdk-node");
+
   const sdk = new NodeSDK({
     resource: new Resource({
       [SEMRESATTRS_SERVICE_NAME]: SERVICE_NAME,
@@ -77,13 +124,23 @@ if (
       [SEMRESATTRS_DEPLOYMENT_ENVIRONMENT]:
         process.env["NODE_ENV"] ?? "development",
     }),
-    traceExporter,
+    // RequestIdSpanProcessor stamps `request.id` on every span started inside
+    // a request (issue #675); the batch processor then exports them.
+    spanProcessors: [
+      new RequestIdSpanProcessor(),
+      new tracing.BatchSpanProcessor(traceExporter),
+    ],
     instrumentations: [
       getNodeAutoInstrumentations({
         // Express HTTP spans — captures route, method, status code
         "@opentelemetry/instrumentation-express": { enabled: true },
         // HTTP/fetch spans — captures outbound calls to Paystack, Stellar, Termii
-        "@opentelemetry/instrumentation-http": { enabled: true },
+        "@opentelemetry/instrumentation-http": {
+          enabled: true,
+          // The HTTP server span starts before the requestId middleware runs,
+          // so the processor can't see the id yet; stamp it at response time.
+          responseHook: annotateSpanWithResponseRequestId,
+        },
         // pg database query spans — captures SQL query text and latency
         "@opentelemetry/instrumentation-pg": { enabled: true },
         // node-fetch is covered by the http instrumentation above
@@ -136,7 +193,7 @@ export const TRADE_ATTRIBUTES = {
   userId: "user_id",
   status: "status",
   /** Request correlation id (X-Request-Id), shared with the structured logs. */
-  requestId: "request.id",
+  requestId: REQUEST_ID_ATTRIBUTE,
 } as const;
 
 /**

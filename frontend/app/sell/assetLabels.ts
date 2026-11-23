@@ -46,10 +46,12 @@ export function durationLabel(t: SellTranslator, hours: number): string {
 }
 
 /** Number format for naira amounts: "₦5,000", "₦1,250.50" in English. */
-export const NAIRA_FORMAT: Intl.NumberFormatOptions = {
+// Typed as a literal (not Intl.NumberFormatOptions) so it is assignable to
+// next-intl's narrower NumberFormatOptions accepted by format.number().
+export const NAIRA_FORMAT = {
   style: "currency",
   currency: "NGN",
   currencyDisplay: "narrowSymbol",
   minimumFractionDigits: 0,
   maximumFractionDigits: 2,
-};
+} as const satisfies Intl.NumberFormatOptions;
