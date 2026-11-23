@@ -48,6 +48,9 @@ export const OPTIONAL_ENV_VARS = [
   "S3_BUCKET",
   "S3_REGION",
   "S3_ENDPOINT",
+  // JWT claim validation (issue #<this issue>)
+  "JWT_ISSUER",
+  "JWT_AUDIENCE",
 ] as const;
 
 export interface EnvValidationResult {
@@ -120,6 +123,22 @@ export function validateEnv(
         `[startup] S3 storage is enabled (STORAGE_PROVIDER=${storageProvider}) but the following ` +
           `required variables are missing: ${missingS3.join(", ")}. ` +
           `Set STORAGE_PROVIDER=local to use the local filesystem for development.`
+      );
+    }
+  }
+
+  // JWT claim validation — JWT_ISSUER and JWT_AUDIENCE default to safe values
+  // ("airflex-server" / "airflex-client") but should be set explicitly in
+  // production so tokens from other environments (staging, preview) are
+  // rejected even if they share the same JWT_SECRET.
+  if (env["NODE_ENV"] === "production") {
+    const missingJwtClaims = ["JWT_ISSUER", "JWT_AUDIENCE"].filter((k) => !env[k]);
+    if (missingJwtClaims.length > 0) {
+      errors.push(
+        `[startup] JWT_ISSUER and JWT_AUDIENCE should be set explicitly in production to prevent ` +
+          `cross-environment token acceptance. Missing: ${missingJwtClaims.join(", ")}. ` +
+          `The server will use defaults ("airflex-server" / "airflex-client") but this is not ` +
+          `recommended for production deployments.`
       );
     }
   }

@@ -10,6 +10,8 @@ import jwt from "jsonwebtoken";
 
 const JWT_SECRET = "test-secret-key-at-least-32-chars-long!";
 process.env["JWT_SECRET"] = JWT_SECRET;
+process.env["JWT_ISSUER"] = "airflex-server";
+process.env["JWT_AUDIENCE"] = "airflex-client";
 process.env["TERMII_API_KEY"] = "test-termii-api-key";
 
 const mockQuery = jest.fn();
@@ -52,7 +54,7 @@ describe("POST /api/v1/auth/recover/change-phone", () => {
   const validRecoveryToken = jwt.sign(
     { sub: userId, scope: "recovery", purpose: "change-phone" },
     JWT_SECRET,
-    { expiresIn: "15m" }
+    { expiresIn: "15m", issuer: "airflex-server", audience: "airflex-client" }
   );
 
   beforeEach(() => {
