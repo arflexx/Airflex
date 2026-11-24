@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import { expect, fn, userEvent, within } from "@storybook/test";
 import React from "react";
 import { Table, THead, TBody, TR, TH, TD, TableEmptyState } from "./Table";
 import { Badge } from "./Badge";
@@ -51,6 +52,15 @@ const sampleTrades = [
 ];
 
 export const Default: Story = {
+  args: {
+    onRowAction: fn(),
+  },
+  argTypes: {
+    onRowAction: {
+      action: "row action clicked",
+      description: "Fired when a row action button is clicked",
+    },
+  },
   render: (args) => (
     <div className="overflow-x-auto rounded-xl border border-gray-200 dark:border-gray-700">
       <Table {...args} caption={args.caption || "Recent trades"}>
@@ -75,7 +85,12 @@ export const Default: Story = {
                 <Badge variant={t.status} />
               </TD>
               <TD className="text-right">
-                <Button variant="ghost" size="sm">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  aria-label={`View trade ${t.id}`}
+                  onClick={() => args.onRowAction?.(t.id)}
+                >
                   View
                 </Button>
               </TD>
@@ -85,6 +100,13 @@ export const Default: Story = {
       </Table>
     </div>
   ),
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    const viewButton = canvas.getByRole("button", { name: /view trade TRD-001/i });
+    await userEvent.click(viewButton);
+    await expect(args.onRowAction).toHaveBeenCalledTimes(1);
+    await expect(args.onRowAction).toHaveBeenCalledWith("TRD-001");
+  },
 };
 
 export const WithSelectedRow: Story = {

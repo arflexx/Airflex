@@ -183,11 +183,21 @@ export interface ListingsGridProps {
    * Number of listings fetched per page (issue #606). Defaults to 20.
    */
   pageSize?: number;
+  /**
+   * Pre-fetched first page of trades from the server component (issue #677).
+   * When supplied the grid renders them immediately on hydration, skipping the
+   * initial client fetch and the skeleton state for page 1.
+   */
+  initialTrades?: GridTrade[];
+  /**
+   * Total offer count matching the pre-fetched query (issue #677).
+   */
+  initialTotal?: number;
 }
 
 const PAGE_PARAM = "page";
 
-export default function ListingsGrid({ pageSize = 20 }: ListingsGridProps = {}) {
+export default function ListingsGrid({ pageSize = 20, initialTrades, initialTotal }: ListingsGridProps = {}) {
   const router = useRouter();
   const pathname = usePathname() || "/";
   const searchParams = useSearchParams();
@@ -200,7 +210,17 @@ export default function ListingsGrid({ pageSize = 20 }: ListingsGridProps = {}) 
   // Accumulated, de-duplicated listings across every page fetched so far —
   // pagination here is infinite-scroll style, so each successful fetch is
   // appended rather than replacing the grid.
-  const [accumulated, setAccumulated] = useState<GridTrade[]>([]);
+  // Seed with server-pre-fetched data when available (issue #677).
+  const [accumulated, setAccumulated] = useState<GridTrade[]>(
+    () => (initialPage === 1 && initialTrades && initialTrades.length > 0)
+      ? (initialTrades as GridTrade[])
+      : [],
+  );
+
+  // When initialTrades are present we already have page 1; don't re-fetch it.
+  const [ssrHydrated] = useState(
+    () => initialPage === 1 && !!initialTrades && initialTrades.length > 0,
+  );
 
   const assetTypeParam = activeFilter === "ALL" ? undefined : activeFilter;
 
@@ -212,8 +232,11 @@ export default function ListingsGrid({ pageSize = 20 }: ListingsGridProps = {}) 
 
   // Merge the current page's results into the accumulated list, de-duplicated
   // by id so an offer inserted between fetches never appears twice.
+  // Skip the merge for page 1 when it was already seeded from SSR data
+  // (issue #677) — the client fetch would just re-fetch the same records.
   useEffect(() => {
     if (isLoading || error) return;
+    if (ssrHydrated && page === 1 && activeFilter === "ALL") return;
     setAccumulated((prev) => {
       const seen = new Set(prev.map((t) => t.id));
       const newItems = (trades as unknown as GridTrade[]).filter((t) => !seen.has(t.id));
@@ -240,12 +263,16 @@ export default function ListingsGrid({ pageSize = 20 }: ListingsGridProps = {}) 
   const isInitialLoad = isLoading && page === 1 && accumulated.length === 0;
   const isLoadingMore = isLoading && !isInitialLoad;
 
+  // Use the server-pre-fetched total for the first render; switch to the live
+  // value once a client fetch has completed (issue #677).
+  const displayedTotal = total > 0 ? total : (initialTotal ?? 0);
+
   const reachedEnd =
     !isLoading &&
     !error &&
     accumulated.length > 0 &&
     ((trades as unknown as GridTrade[]).length < pageSize ||
-      (total > 0 && accumulated.length >= total));
+      (displayedTotal > 0 && accumulated.length >= displayedTotal));
 
   const updatePageInUrl = useCallback(
     (nextPage: number) => {
@@ -308,9 +335,9 @@ export default function ListingsGrid({ pageSize = 20 }: ListingsGridProps = {}) 
           >
             Active Listings
           </h2>
-          {!isInitialLoad && total > 0 && (
+          {!isInitialLoad && displayedTotal > 0 && (
             <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-              {total} {total === 1 ? "offer" : "offers"} available
+              {displayedTotal} {displayedTotal === 1 ? "offer" : "offers"} available
             </p>
           )}
         </div>
@@ -327,7 +354,9 @@ export default function ListingsGrid({ pageSize = 20 }: ListingsGridProps = {}) 
           role="alert"
           className="rounded-xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-400"
         >
-          Failed to load listings. Please refresh the page.
+          {accumulated.length > 0
+            ? "Could not load newer listings — showing cached results. Please refresh to try again."
+            : "Failed to load listings. Please refresh the page."}
         </div>
       ) : isInitialLoad ? (
         <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">

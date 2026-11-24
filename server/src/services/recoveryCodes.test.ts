@@ -67,4 +67,11 @@ describe("hashRecoveryCode", () => {
     const hash = await hashRecoveryCode(code);
     expect(await bcrypt.compare(generateRecoveryCode(), hash)).toBe(false);
   });
+
+  it("uses bcrypt cost factor 12", async () => {
+    const code = generateRecoveryCode();
+    const hash = await hashRecoveryCode(code);
+    // bcrypt hashes start with $2a$, $2b$, or $2y$ followed by the cost factor
+    expect(hash).toMatch(/^\$2[aby]\$12\$/);
+  });
 });

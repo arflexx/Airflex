@@ -78,4 +78,56 @@ test.describe("KYC submission", () => {
     await expect(page.getByRole("alert")).toHaveText(rejectionGuidance);
     await expect(page.getByRole("button", { name: "Submit for review" })).toBeEnabled();
   });
+
+  test("rejects unsupported document types", async ({ page }) => {
+    const documentTypeError = "Only JPEG or PNG images are accepted.";
+
+    await page.route(`${API_URL}/api/kyc/submit`, (route) =>
+      route.fulfill({
+        status: 422,
+        contentType: "application/json",
+        body: JSON.stringify({ error: documentTypeError }),
+      }),
+    );
+
+    await completeKycForm(page, "valid-identity.png");
+    await page.getByRole("button", { name: "Submit for review" }).click();
+
+    await expect(page.getByRole("alert")).toHaveText(documentTypeError);
+  });
+
+  test("rejects documents that exceed the maximum file size", async ({ page }) => {
+    const fileSizeError = "File size must not exceed 5 MB.";
+
+    await page.route(`${API_URL}/api/kyc/submit`, (route) =>
+      route.fulfill({
+        status: 422,
+        contentType: "application/json",
+        body: JSON.stringify({ error: fileSizeError }),
+      }),
+    );
+
+    await completeKycForm(page, "valid-identity.png");
+    await page.getByRole("button", { name: "Submit for review" }).click();
+
+    await expect(page.getByRole("alert")).toHaveText(fileSizeError);
+  });
+
+  test("blocks duplicate submissions within the rate-limit window", async ({ page }) => {
+    const rateLimitError = "Too many submissions. Please try again later.";
+
+    await page.route(`${API_URL}/api/kyc/submit`, (route) =>
+      route.fulfill({
+        status: 429,
+        contentType: "application/json",
+        body: JSON.stringify({ error: rateLimitError }),
+      }),
+    );
+
+    await completeKycForm(page, "valid-identity.png");
+    await page.getByRole("button", { name: "Submit for review" }).click();
+
+    await expect(page.getByRole("alert")).toHaveText(rateLimitError);
+    await expect(page.getByRole("button", { name: "Submit for review" })).toBeDisabled();
+  });
 });

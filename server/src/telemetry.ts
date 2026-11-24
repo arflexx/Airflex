@@ -23,6 +23,9 @@
  * It also exports the trade lifecycle tracing helpers (issue #482). Those use
  * only `@opentelemetry/api`, so when the SDK above is not started (tests,
  * OTEL_ENABLED=false) every span is a no-op and nothing is exported.
+ *
+ * It also exports withQueueJobSpan(), used by jobs/queue.ts to wrap each job
+ * in a span carrying queue depth and worker concurrency attributes (#684).
  */
 
 import {
@@ -309,4 +312,49 @@ export function withTradeSpan<T>(
  */
 export function setTradeAttributes(attrs: TradeSpanAttributes): void {
   trace.getActiveSpan()?.setAttributes(toAttributes(attrs));
+}
+
+// ---------------------------------------------------------------------------
+// Queue worker telemetry (issue #684)
+// ---------------------------------------------------------------------------
+
+/** Attribute keys emitted on every `queue.process <name>` span. */
+export const QUEUE_SPAN_ATTRIBUTES = {
+  queue: "queue.name",
+  depth: "queue.depth",
+  active: "queue.worker.active",
+  concurrency: "queue.worker.concurrency",
+  jobId: "queue.job.id",
+  attempt: "queue.job.attempt",
+} as const;
+
+export interface QueueJobTelemetry {
+  queue: string;
+  /** Jobs still waiting in the queue when this one started. */
+  depth: number;
+  /** Jobs running on this queue, including this one. */
+  active: number;
+  /** Worker concurrency limit; null for unbounded queues. */
+  concurrency: number | null;
+  jobId: string;
+  attempt: number;
+}
+
+export function queueJobAttributes(t: QueueJobTelemetry): Attributes {
+  const attrs: Attributes = {
+    [QUEUE_SPAN_ATTRIBUTES.queue]: t.queue,
+    [QUEUE_SPAN_ATTRIBUTES.depth]: t.depth,
+    [QUEUE_SPAN_ATTRIBUTES.active]: t.active,
+    [QUEUE_SPAN_ATTRIBUTES.jobId]: t.jobId,
+    [QUEUE_SPAN_ATTRIBUTES.attempt]: t.attempt,
+  };
+  if (t.concurrency !== null) {
+    attrs[QUEUE_SPAN_ATTRIBUTES.concurrency] = t.concurrency;
+  }
+  return attrs;
+}
+
+/** Runs `fn` inside a `queue.process <queue>` span with queue/worker attributes. */
+export function withQueueJobSpan<T>(t: QueueJobTelemetry, fn: () => Promise<T>): Promise<T> {
+  return withSpan(`queue.process ${t.queue}`, queueJobAttributes(t), () => fn());
 }

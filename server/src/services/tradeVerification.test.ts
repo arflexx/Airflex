@@ -339,6 +339,132 @@ describe("tradeVerification service", () => {
     });
   });
 
+  describe("oracle acceptance criteria", () => {
+    const mockTrade: TradeOffer = {
+      id: "trade-uuid-1",
+      seller_id: "seller-123",
+      buyer_id: "buyer-456",
+      amount: 500,
+      fee_amount: null,
+      seller_net_amount: null,
+      asset_type: "MTN_AIRTIME",
+      status: "Locked",
+      contract_listing_id: "1001",
+      escrow_tx_hash: "0xescrow123",
+      expires_at: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    beforeEach(() => {
+      process.env["RELEASE_RETRY_BASE_DELAY_MS"] = "1";
+      process.env["PLATFORM_TREASURY_USER_ID"] = "treasury-admin";
+    });
+
+    it("delivery verified: calls releasePayment and marks the trade Completed with SSE trade_completed", async () => {
+      (releasePayment as jest.Mock).mockResolvedValueOnce("0xverifiedhash");
+      (pool.connect as jest.Mock).mockResolvedValue({
+        query: jest.fn().mockImplementation((query: string) => {
+          if (query.includes("FOR UPDATE")) return Promise.resolve({ rows: [mockTrade] });
+          if (query.includes("UPDATE trade_offers")) {
+            return Promise.resolve({ rows: [{ ...mockTrade, status: "Completed" }] });
+          }
+          return Promise.resolve({ rows: [] });
+        }),
+        release: jest.fn(),
+      });
+
+      await runVerificationWithRetry(mockTrade, 1);
+
+      expect(releasePayment).toHaveBeenCalledTimes(1);
+      expect(releasePayment).toHaveBeenCalledWith("1001");
+      expect(SseEmitter.emit).toHaveBeenCalledWith(
+        ["seller-123", "buyer-456"],
+        expect.objectContaining({
+          type: "trade_completed",
+          status: "Completed",
+          txHash: "0xverifiedhash",
+        })
+      );
+      expect(SseEmitter.emitAll).not.toHaveBeenCalled();
+    });
+
+    it("delivery not verified: does not mark Completed and escalates to Disputed", async () => {
+      process.env["RELEASE_RETRY_MAX"] = "1";
+      (releasePayment as jest.Mock).mockRejectedValue(new Error("Delivery not verified"));
+      (pool.query as jest.Mock).mockResolvedValue({ rows: [] });
+
+      await runVerificationWithRetry(mockTrade, 1);
+
+      expect(releasePayment).toHaveBeenCalledTimes(1);
+      expect(SseEmitter.emit).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ type: "trade_completed" })
+      );
+      expect(pool.query).toHaveBeenCalledWith(
+        expect.stringContaining("UPDATE trade_offers"),
+        ["trade-uuid-1"]
+      );
+      expect(SseEmitter.emitAll).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "admin_alert",
+          tradeId: "trade-uuid-1",
+          reason: "Delivery not verified",
+        })
+      );
+    });
+
+    describe("retry backoff timing", () => {
+      beforeEach(() => {
+        jest.useFakeTimers();
+      });
+
+      afterEach(() => {
+        jest.useRealTimers();
+      });
+
+      it("waits the expected exponential delays with jitter between attempts", async () => {
+        process.env["RELEASE_RETRY_MAX"] = "3";
+        process.env["RELEASE_RETRY_BASE_DELAY_MS"] = "1000";
+        (releasePayment as jest.Mock).mockRejectedValue(new Error("Transient RPC glitch"));
+        (pool.query as jest.Mock).mockResolvedValue({ rows: [] });
+
+        const randomSpy = jest.spyOn(Math, "random").mockReturnValue(0.5);
+
+        const promise = runVerificationWithRetry(mockTrade, 1);
+
+        // First attempt happens immediately.
+        await Promise.resolve();
+        expect(releasePayment).toHaveBeenCalledTimes(1);
+
+        // Advance through the first backoff (1000ms base, zero jitter).
+        await jest.advanceTimersByTimeAsync(1000);
+        expect(releasePayment).toHaveBeenCalledTimes(2);
+
+        // Advance through the second backoff (2000ms base, zero jitter).
+        await jest.advanceTimersByTimeAsync(2000);
+        expect(releasePayment).toHaveBeenCalledTimes(3);
+
+        await promise;
+        expect(releasePayment).toHaveBeenCalledTimes(3);
+
+        randomSpy.mockRestore();
+      });
+
+      it("calculateBackoffDelay produces exponential delays with bounded jitter", () => {
+        const zeroJitter = () => 0.5;
+        expect(calculateBackoffDelay(1, 1000, zeroJitter)).toBe(1000);
+        expect(calculateBackoffDelay(2, 1000, zeroJitter)).toBe(2000);
+        expect(calculateBackoffDelay(3, 1000, zeroJitter)).toBe(4000);
+
+        const minJitter = () => 0.0;
+        const maxJitter = () => 1.0;
+        expect(calculateBackoffDelay(1, 1000, minJitter)).toBe(800);
+        expect(calculateBackoffDelay(1, 1000, maxJitter)).toBe(1200);
+      });
+    });
+  });
+
   describe("triggerVerification", () => {
     it.each([
       ["trade not found", []],

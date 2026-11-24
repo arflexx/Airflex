@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import { expect, userEvent, within } from "@storybook/test";
 import { Input } from "./Input";
 
 const meta: Meta<typeof Input> = {
@@ -41,6 +42,12 @@ export const Default: Story = {
     label: "Email Address",
     placeholder: "you@example.com",
     helperText: "We'll never share your email with anyone.",
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = canvas.getByLabelText("Email Address");
+    await userEvent.type(input, "user@example.com");
+    await expect(input).toHaveValue("user@example.com");
   },
 };
 

@@ -10,6 +10,16 @@ Cross-package test fixtures that don't belong to a single workspace.
 Server unit and integration tests live next to the code in `server/src/` and
 run with `pnpm --filter airflex-server test`.
 
+### Trade verification concurrency load test
+
+The `verify-trade-delivery` queue has no HTTP entry point, so its load scenario
+is not a k6 script. It lives in
+`server/src/__tests__/verifyTradeConcurrency.load.test.ts` and runs with the
+server's Jest suite. It pushes 50 concurrent trade verifications through the real
+`QueueService` against a simulated Soroban RPC that returns HTTP 429 whenever
+too many requests are in flight. It asserts zero rate-limit errors, and that
+no more than `VERIFY_TRADE_CONCURRENCY` (default 5) jobs ever run at once.
+
 ---
 
 ## Soroban sandbox fixtures (`tests/soroban/`)

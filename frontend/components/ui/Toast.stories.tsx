@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import { expect, fn, userEvent, within } from "@storybook/test";
 import React from "react";
 import { Toast } from "./Toast";
 
@@ -30,7 +31,13 @@ export const Info: Story = {
   args: {
     type: "info",
     message: "A new trade proposal has been submitted for review.",
-    onClose: () => {},
+    onClose: fn(),
+  },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    const dismissButton = canvas.getByRole("button", { name: /dismiss|close/i });
+    await userEvent.click(dismissButton);
+    await expect(args.onClose).toHaveBeenCalledTimes(1);
   },
 };
 
@@ -38,7 +45,7 @@ export const Success: Story = {
   args: {
     type: "success",
     message: "Escrow funds have been successfully locked and verified on Stellar.",
-    onClose: () => {},
+    onClose: fn(),
   },
 };
 
@@ -46,7 +53,7 @@ export const Warning: Story = {
   args: {
     type: "warning",
     message: "Your network connection is unstable. Pending actions will sync when back online.",
-    onClose: () => {},
+    onClose: fn(),
   },
 };
 
@@ -54,7 +61,7 @@ export const ErrorState: Story = {
   args: {
     type: "error",
     message: "Failed to broadcast transaction: Insufficient XLM balance for transaction fee.",
-    onClose: () => {},
+    onClose: fn(),
   },
 };
 
@@ -71,22 +78,22 @@ export const AllVariants: Story = {
       <Toast
         type="success"
         message="Listing published to marketplace successfully."
-        onClose={() => {}}
+        onClose={fn()}
       />
       <Toast
         type="info"
         message="Buyer is inspecting the escrow contract."
-        onClose={() => {}}
+        onClose={fn()}
       />
       <Toast
         type="warning"
         message="Trade expires in 15 minutes unless confirmed."
-        onClose={() => {}}
+        onClose={fn()}
       />
       <Toast
         type="error"
         message="Payment confirmation timed out."
-        onClose={() => {}}
+        onClose={fn()}
       />
     </div>
   ),

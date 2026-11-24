@@ -3,6 +3,7 @@ import { getTranslations } from "next-intl/server";
 import ThemeToggle from "../components/ThemeToggle";
 import ListingsGrid from "./components/ListingsGrid";
 import { SITE_NAME, siteUrl } from "./lib/seo";
+import type { TradeOffer } from "@airflex/shared";
 
 /**
  * Page-specific metadata for the landing page (issue #464).
@@ -53,8 +54,53 @@ export async function generateMetadata(): Promise<Metadata> {
   };
 }
 
+/** Default page size for the initial server-side fetch (issue #677). */
+const SSR_PAGE_SIZE = 20;
+
+interface TradesApiResponse {
+  data?: TradeOffer[];
+  trades?: TradeOffer[];
+  total?: number;
+  pagination?: { total: number };
+}
+
+/**
+ * Pre-fetches the first page of marketplace offers server-side (issue #677).
+ *
+ * Uses the Next.js fetch cache with a 30-second revalidation so each
+ * deployment edge node serves a fresh-enough snapshot without hammering the
+ * API on every request. On error it returns null and ListingsGrid falls back
+ * to its own client-side fetch with a graceful degradation message.
+ */
+async function prefetchOffers(): Promise<{ trades: TradeOffer[]; total: number } | null> {
+  const baseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
+  const params = new URLSearchParams({
+    page: "1",
+    limit: String(SSR_PAGE_SIZE),
+  });
+  const url = `${baseUrl}/api/v1/trades?${params.toString()}`;
+
+  try {
+    const res = await fetch(url, {
+      next: { revalidate: 30 },
+    });
+
+    if (!res.ok) return null;
+
+    const json: TradesApiResponse = await res.json();
+    const trades: TradeOffer[] = json.data ?? json.trades ?? [];
+    const total: number =
+      json.total ?? json.pagination?.total ?? trades.length;
+
+    return { trades, total };
+  } catch {
+    return null;
+  }
+}
+
 export default async function HomePage() {
   const t = await getTranslations("Home");
+  const prefetched = await prefetchOffers();
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
@@ -91,8 +137,11 @@ export default async function HomePage() {
           </div>
         </section>
 
-        {/* Listings grid with filter — client component */}
-        <ListingsGrid />
+        {/* Listings grid — receives pre-fetched data for instant first paint (issue #677). */}
+        <ListingsGrid
+          initialTrades={prefetched?.trades}
+          initialTotal={prefetched?.total}
+        />
       </main>
 
       <footer className="border-t border-gray-100 bg-white dark:border-gray-700 dark:bg-gray-800">

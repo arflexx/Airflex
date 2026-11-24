@@ -1,0 +1,20 @@
+# =============================================================================
+# .trivyignore — reviewed Trivy exceptions
+# =============================================================================
+# Findings listed here are suppressed in BOTH Trivy scans:
+#   * .github/workflows/server-ci.yml — server/Dockerfile image (blocks merges)
+#   * .github/workflows/trivy.yml     — repository filesystem
+#
+# An upgrade is always preferred. Add an entry only for a false positive, or for
+# a vulnerability that is not exploitable in AirFlex and cannot be upgraded yet.
+# Findings without an available fix do not need an entry: the scans skip them.
+#
+# Every entry needs a comment with the affected package, the reason, who
+# approved it and a tracking issue, plus an expiry date after which Trivy
+# reports the finding again:
+#
+#   # <package> — <why this is safe to ignore>
+#   # Approved by: <GitHub login>   Tracking: #<issue>
+#   CVE-YYYY-NNNNN exp:YYYY-MM-DD
+#
+# There are currently no approved exceptions.
