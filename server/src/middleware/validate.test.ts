@@ -203,4 +203,17 @@ describe("validate() — edge cases", () => {
     const res = await request(app).post("/test");
     expect(res.status).toBe(422);
   });
+
+  it("does not include 'details' field in validation error response", async () => {
+    const schema = z.object({ email: z.string().email() });
+    const app = makeApp(schema);
+
+    const res = await request(app)
+      .post("/test")
+      .send({ email: "bad" });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toHaveProperty("errors");
+    expect(res.body).not.toHaveProperty("details");
+  });
 });
