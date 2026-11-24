@@ -201,6 +201,90 @@ export async function listDedicatedAccountTransactions(
   throw new Error(`Paystack transaction history exceeded the ${maxPages}-page safety limit`);
 }
 
+/**
+ * Result of a provider-side balance lookup for a dedicated virtual account.
+ *
+ * `balanceKobo` is the sum of all successful NGN dedicated-NUBAN deposits
+ * observed for the account's Paystack customer. `null` is returned (rather
+ * than a zero balance) when the account is not active at the provider, so
+ * callers can distinguish "inactive" from "genuinely zero".
+ */
+export interface VirtualAccountProviderBalance {
+  /** Paystack customer code the balance was resolved for. */
+  customerCode: string;
+  /** Masked account number, safe for logging. */
+  maskedAccountNumber: string;
+  /** Total successful NGN deposits in kobo, or null when the DVA is inactive. */
+  balanceKobo: number | null;
+  /** Number of successful deposit transactions that contributed to the balance. */
+  transactionCount: number;
+}
+
+/**
+ * Fetches the current provider-side balance for an active dedicated virtual
+ * account, expressed in kobo.
+ *
+ * Paystack does not expose a single "DVA balance" endpoint, so the balance is
+ * derived by summing every successful NGN `dedicated_nuban` deposit for the
+ * account's customer (see `listDedicatedAccountTransactions`). All HTTP calls
+ * go through `paystackFetch`, so they are bounded by the same AbortController
+ * timeout as the rest of this module.
+ *
+ * Returns `balanceKobo: null` when the provider reports the DVA as inactive.
+ * Throws on API, timeout, or malformed-response failures so the reconciliation
+ * job can record the account as errored and retry on the next interval.
+ *
+ * Security note: the account number is masked before it is logged or returned.
+ */
+export async function fetchVirtualAccountProviderBalance(
+  customerCode: string,
+  accountNumber: string
+): Promise<VirtualAccountProviderBalance> {
+  const maskedAccountNumber = maskAccountNumber(accountNumber);
+
+  const transactions = await listDedicatedAccountTransactions(customerCode);
+  if (transactions === null) {
+    logger.info(
+      { customerCode, account_number: maskedAccountNumber },
+      "[virtualAccount] Provider reports dedicated account inactive — no balance available"
+    );
+    return {
+      customerCode,
+      maskedAccountNumber,
+      balanceKobo: null,
+      transactionCount: 0,
+    };
+  }
+
+  let balanceKobo = 0;
+  for (const transaction of transactions) {
+    balanceKobo += transaction.amount;
+  }
+
+  if (!Number.isSafeInteger(balanceKobo)) {
+    throw new Error(
+      `Provider balance for customer ${customerCode} exceeds safe integer range`
+    );
+  }
+
+  logger.debug(
+    {
+      customerCode,
+      account_number: maskedAccountNumber,
+      balanceKobo,
+      transactionCount: transactions.length,
+    },
+    "[virtualAccount] Fetched provider balance for dedicated account"
+  );
+
+  return {
+    customerCode,
+    maskedAccountNumber,
+    balanceKobo,
+    transactionCount: transactions.length,
+  };
+}
+
 interface PaystackDVAResponse {
   status: boolean;
   data: {

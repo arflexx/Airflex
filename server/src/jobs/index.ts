@@ -25,7 +25,7 @@ import logger from "../utils/logger";
 import { checkKycDocumentExpiry } from "./kycExpiry";
 import {
   getVirtualAccountReconciliationIntervalMs,
-  reconcileVirtualAccountDeposits,
+  reconcileVirtualAccountBalances,
 } from "./virtualAccountReconciliation";
 
 /** Initialise the queue service and register all processors. */
@@ -64,14 +64,19 @@ export function initJobQueue(): void {
     run: () => prewarmExchangeRates(),
   });
 
-  // The Paystack customer transaction API is only available when credentials
-  // are configured; reconciliation itself is read-only and safe to rerun.
+  // Virtual account balance reconciliation (issue #492). The Paystack API is
+  // only available when credentials are configured; reconciliation itself is
+  // read-only and safe to rerun for an already-reconciled interval.
   if (process.env["PAYSTACK_SECRET_KEY"]) {
     schedule({
       name: "virtual-account-reconciliation",
       intervalMs: getVirtualAccountReconciliationIntervalMs(),
-      run: reconcileVirtualAccountDeposits,
+      run: reconcileVirtualAccountBalances,
     });
+  } else {
+    logger.warn(
+      "[virtual-account-reconciliation] PAYSTACK_SECRET_KEY not set — reconciliation job not scheduled"
+    );
   }
 }
 

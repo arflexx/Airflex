@@ -1,6 +1,16 @@
 import { Router } from "express";
 
-import { enforceOtpRateLimit, rateLimitOtp } from "../middleware/rateLimitOtp";
+import {
+  enforceOtpRateLimit,
+  rateLimitOtp,
+  OTP_MAX_FAILED_ATTEMPTS,
+  OTP_LOCKOUT_SECONDS,
+  otpFailureKey,
+  otpLockKey,
+  recordFailedOtpAttempt,
+  resetOtpFailures,
+  getOtpLockExpiry,
+} from "../middleware/rateLimitOtp";
 import { authenticate, AuthenticatedRequest } from "../middleware/authenticate";
 import {
   isRecoveryLockedOut,
@@ -207,6 +217,27 @@ router.post(
   async (req, res) => {
     const { phone, otp } = req.body as VerifyOtpInput;
 
+    // Account lockout check (issue #632): a locked identifier is rejected
+    // before any OTP work is done, with the expiry time in the response.
+    let lockedUntil: number | null;
+    try {
+      lockedUntil = await getOtpLockExpiry(phone);
+    } catch (err) {
+      console.error("[auth] OTP lockout check failed:", (err as Error).message);
+      res.status(500).json({ error: "Internal server error" });
+      return;
+    }
+
+    if (lockedUntil !== null) {
+      res.status(423).json({
+        error: `Account locked due to too many failed OTP attempts. Try again after ${new Date(
+          lockedUntil
+        ).toISOString()}.`,
+        lockedUntil: new Date(lockedUntil).toISOString(),
+      });
+      return;
+    }
+
     // Look up the user and their pending OTP pin
     const { rows } = await pool.query<{
       id: string;
@@ -253,8 +284,36 @@ router.post(
     }
 
     if (!verified) {
+      // Count the failure and lock the identifier once the threshold is hit.
+      let failures: number;
+      try {
+        failures = await recordFailedOtpAttempt(phone);
+      } catch (err) {
+        console.error("[auth] Failed to record OTP failure:", (err as Error).message);
+        res.status(401).json({ error: "Invalid or expired OTP" });
+        return;
+      }
+
+      if (failures >= OTP_MAX_FAILED_ATTEMPTS) {
+        const expiry = Date.now() + OTP_LOCKOUT_SECONDS * 1000;
+        res.status(423).json({
+          error: `Account locked due to too many failed OTP attempts. Try again after ${new Date(
+            expiry
+          ).toISOString()}.`,
+          lockedUntil: new Date(expiry).toISOString(),
+        });
+        return;
+      }
+
       res.status(401).json({ error: "Invalid or expired OTP" });
       return;
+    }
+
+    // Successful verification clears the consecutive-failure counter.
+    try {
+      await resetOtpFailures(phone);
+    } catch (err) {
+      console.error("[auth] Failed to reset OTP failures:", (err as Error).message);
     }
 
     // Clear the used OTP fields
