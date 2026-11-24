@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # =============================================================================
-# smoke-test.sh — assert the sandbox deployment is live and initialised.
+# smoke-test.sh — assert the sandbox deployment is live and initialised,
+#                 then run the structured Rust test harness.
 #
 # Usage:  tests/soroban/smoke-test.sh
 #
 # Reads contract IDs from tests/soroban/.sandbox/contracts.env and checks each
 # contract's read-only getters against the expected post-initialise state.
+# After the getter checks pass, `cargo test` is invoked against the contracts
+# workspace so every assertion-based Rust test (return values, emitted events,
+# error variants) is exercised against the same code that was just deployed.
 # =============================================================================
 
 set -euo pipefail
@@ -46,3 +50,15 @@ expect "marketplace starts with zero listings"  "0"                        "${MA
 
 (( failures == 0 )) || die "${failures} smoke check(s) failed"
 log "All smoke checks passed."
+
+# ---------------------------------------------------------------------------
+# Structured test harness — run the full Rust test suite so assertions on
+# return values and emitted events are verified, not just exit codes.
+# ---------------------------------------------------------------------------
+log "Running structured Rust tests (cargo test --workspace)…"
+(
+  cd "${REPO_ROOT}/contracts"
+  cargo test --workspace --all-features \
+    --target "$(rustc -vV | sed -n 's|host: ||p')" 2>&1
+)
+log "Structured tests passed."

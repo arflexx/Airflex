@@ -198,6 +198,11 @@ jobs:
             git push
           fi
 
+      # ── Structured test suite ─────────────────────────────────────────────
+      - name: Run structured Rust tests
+        working-directory: contracts
+        run: make test
+
       # ── Summary ───────────────────────────────────────────────────────────
       - name: Print deployment summary
         run: |
@@ -335,6 +340,10 @@ jobs:
             git commit -m "chore(contracts): update mainnet deployment addresses [skip ci]"
             git push
           fi
+
+      - name: Run structured Rust tests
+        working-directory: contracts
+        run: make test
 
       - name: Print mainnet deployment summary
         run: |
