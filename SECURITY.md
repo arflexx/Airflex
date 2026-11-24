@@ -2,7 +2,7 @@
 
 AirFlex handles real user funds through Stellar-backed escrow contracts and
 Paystack payment integrations. We take security seriously and are committed to
-working with the security community to resolve vulnerabilities responsibly.
+working with the security community to resolve vulnerabilities maintaince responsibly.
 
 ---
 
