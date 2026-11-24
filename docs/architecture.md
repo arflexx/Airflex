@@ -174,7 +174,10 @@ PostgreSQL `trade_offers` table schema.
 
 ### `contracts/escrow/src/lib.rs`
 Soroban smart contract. Manages on-chain trade state, token custody,
-authorization, and event emission.
+authorization, and event emission. See the
+[Escrow Dispute Flow](../apps/docs-site/pages/escrow-dispute-flow.mdx) for a
+complete description of the dispute lifecycle, state machine, and admin
+resolution flow.
 
 ---
 
