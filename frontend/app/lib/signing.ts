@@ -4,8 +4,11 @@
  * The server builds and simulates the escrow deposit; this module signs it in
  * the browser and hands back only the signed envelope. The secret key is read
  * from the in-memory session store and is never passed out of this module.
+ *
+ * @stellar/stellar-sdk is lazy-loaded on first call (Issue #685) so its ~300 KB
+ * gzipped payload does not inflate the homepage bundle. The dynamic import
+ * resolves once per session and is cached at module scope.
  */
-import { Keypair, Transaction, TransactionBuilder } from "@stellar/stellar-sdk";
 
 import { ApiError, apiFetch } from "../../lib/apiFetch";
 import { getSessionKey, hasSessionKey, setSessionKey } from "./stellarSession";
@@ -26,6 +29,16 @@ export class AccountMismatchError extends Error {
   }
 }
 
+/** Lazy singleton for the stellar-sdk module (Issue #685). */
+let _stellarSdk: typeof import("@stellar/stellar-sdk") | null = null;
+
+async function getStellarSdk(): Promise<typeof import("@stellar/stellar-sdk")> {
+  if (!_stellarSdk) {
+    _stellarSdk = await import("@stellar/stellar-sdk");
+  }
+  return _stellarSdk;
+}
+
 /**
  * Signs an unsigned transaction envelope with the session key.
  *
@@ -37,12 +50,14 @@ export class AccountMismatchError extends Error {
  * @throws {SessionKeyMissingError} when the session holds no key
  * @throws {AccountMismatchError} when the envelope's source is not the user
  */
-export function signTransactionXdr(params: {
+export async function signTransactionXdr(params: {
   xdr: string;
   networkPassphrase: string;
-}): string {
+}): Promise<string> {
   const session = getSessionKey();
   if (!session) throw new SessionKeyMissingError();
+
+  const { Keypair, Transaction, TransactionBuilder } = await getStellarSdk();
 
   const transaction = TransactionBuilder.fromXDR(params.xdr, params.networkPassphrase);
 

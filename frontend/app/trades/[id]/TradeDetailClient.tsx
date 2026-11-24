@@ -348,7 +348,7 @@ export default function TradeDetailClient({ trade }: Props) {
       let signedXdr: string;
       try {
         await ensureSessionKey(apiUrl);
-        signedXdr = signTransactionXdr({
+        signedXdr = await signTransactionXdr({
           xdr: prepared.data.xdr,
           networkPassphrase: prepared.data.networkPassphrase,
         });
