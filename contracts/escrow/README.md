@@ -56,7 +56,7 @@ Admin-only circuit breakers to halt all state-mutating operations.
 
 ---
 
-## Events (Issue #639)
+## Events (Issues #638, #639)
 
 The contract publishes a canonical event for every escrow state transition,
 each carrying `(escrow_id, actor, amount, timestamp)` so indexers, audit
@@ -66,13 +66,38 @@ tooling, and the backend oracle can subscribe on-chain instead of polling
 | Topic | Emitted by | `actor` | `amount` |
 |---|---|---|---|
 | `EscrowCreated` | `create_listing` | seller | listing's total amount |
-| `EscrowReleased` | `release_payment`, `release_by_timelock` | seller (recipient) | the released sub-escrow's fill amount |
-| `EscrowRefunded` | `cancel_and_refund` | buyer (recipient), once per refunded fill | the refunded sub-escrow's fill amount |
+| `EscrowReleased` | `release_payment`, `release_by_timelock`, `resolve_dispute(Release)` | seller (recipient), once per released fill | the released sub-escrow's fill amount |
+| `EscrowRefunded` | `cancel_and_refund`, `resolve_dispute(Refund)` | buyer (recipient), once per refunded fill | the refunded sub-escrow's fill amount |
 | `EscrowDisputed` | `flag_dispute` | caller who flagged | the trade's currently-filled amount |
 
 These are emitted in addition to (not instead of) the contract's existing
 short-form topics (`created`, `locked`, `released`, `completed`, `cancelled`,
 `disputed`, …), which remain unchanged for backward compatibility.
+
+### Wire format
+
+Each event has exactly one topic, the name above as a `Symbol`. The data is a
+four-element vector, in this order:
+
+| Index | Field | Type |
+|---|---|---|
+| 0 | `escrow_id` (trade ID) | `u64` |
+| 1 | `actor` | `Address` |
+| 2 | `amount`, in the token's smallest unit | `i128` |
+| 3 | `timestamp` (ledger time, unix seconds) | `u64` |
+
+### Consuming the events
+
+`server/src/services/stellar.ts` provides:
+
+- `subscribeToEscrowEvents({ onEvent })` — polls Soroban RPC `getEvents` and
+  delivers each event in order, at least once. Handlers must be idempotent.
+- `fetchEscrowEvents(startLedger)` — a one-shot, paginated read for backfills.
+
+Set `ESCROW_EVENTS_ENABLED=true` to have the server subscribe at startup and
+write every event to its structured log. The subscription does not change trade
+status in the database, and it starts from the latest ledger after a restart;
+use `fetchEscrowEvents` to cover a gap.
 
 ---
 

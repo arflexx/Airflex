@@ -1,0 +1,2 @@
+# Corpus inputs are raw bytes; never apply line-ending conversion.
+corpus/** -text

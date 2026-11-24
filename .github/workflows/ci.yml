@@ -184,7 +184,44 @@ jobs:
           retention-days: 7
 
   # -------------------------------------------------------------------------
-  # 4. Security audit — only on pushes to main (not every PR draft)
+  # 4. Soroban contract arithmetic — 60s of fuzzing per target (issue #644)
+  # -------------------------------------------------------------------------
+  contracts-fuzz:
+    name: Contracts (cargo-fuzz)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    defaults:
+      run:
+        working-directory: contracts
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # libFuzzer's sanitizer instrumentation requires nightly.
+      - name: Set up Rust nightly
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable channel
+        with:
+          toolchain: nightly
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Fuzz escrow and marketplace arithmetic
+        run: make fuzz
+
+      - name: Upload crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-artifacts
+          path: contracts/fuzz/artifacts/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # -------------------------------------------------------------------------
+  # 5. Security audit — only on pushes to main (not every PR draft)
   # -------------------------------------------------------------------------
   audit:
     name: Dependency Audit

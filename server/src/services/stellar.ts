@@ -18,6 +18,7 @@ import {
   MARKETPLACE_CONTRACT_ID,
 } from "../config/contracts";
 import { parseContractError } from "./contractErrors";
+import logger from "../utils/logger";
 
 // ---------------------------------------------------------------------------
 // OpenTelemetry tracing helpers
@@ -775,7 +776,7 @@ export async function resolveDispute(params: {
 }
 
 // ---------------------------------------------------------------------------
-// Escrow event processing (issue #639)
+// Escrow event processing (issues #638, #639)
 // ---------------------------------------------------------------------------
 // The escrow contract publishes a canonical `EscrowCreated` / `EscrowReleased`
 // / `EscrowRefunded` / `EscrowDisputed` event for every state transition (see
@@ -827,7 +828,7 @@ export interface EscrowStateTransitionEvent {
  * belongs to an unrelated invocation. `getEvents` returns every event a
  * contract emits, so callers always need this filter, not just a fetch.
  */
-function parseEscrowEvent(
+export function parseEscrowEvent(
   event: SorobanRpc.Api.EventResponse
 ): EscrowStateTransitionEvent | null {
   const topicScVal = event.topic[0];
@@ -871,21 +872,31 @@ function parseEscrowEvent(
   }
 }
 
+/** Events requested per `getEvents` page (also the RPC's default limit). */
+const ESCROW_EVENT_PAGE_SIZE = 100;
+
 /**
- * Fetches and parses the canonical escrow state-transition events (issue
- * #639) emitted by the escrow contract from `startLedger` onward (inclusive),
- * up to the latest ledger Soroban RPC has retained.
- *
- * Intended for the backend oracle / indexers: callers should persist the
- * highest `ledger` they've processed and pass `lastLedger + 1` as
- * `startLedger` on the next call to process events incrementally rather than
- * re-scanning the whole retention window every time.
- *
- * @param startLedger first ledger sequence (inclusive) to scan for events.
+ * Upper bound on the ledgers a single `getEvents` call scans. A response can
+ * therefore stop short of `latestLedger`, so the subscription below never
+ * advances its position by more than this per poll.
  */
-export async function fetchEscrowEvents(
-  startLedger: number
-): Promise<EscrowStateTransitionEvent[]> {
+const ESCROW_EVENT_MAX_SCAN_LEDGERS = 10_000;
+
+/** RPC-side topic filter: the canonical events have exactly one topic each. */
+function escrowTopicFilter(): string[][] {
+  return [...ESCROW_EVENT_TOPICS].map((topic) => [
+    nativeToScVal(topic, { type: "symbol" }).toXDR("base64"),
+  ]);
+}
+
+interface EscrowEventScan {
+  events: EscrowStateTransitionEvent[];
+  /** Latest ledger known to the RPC when the scan began. */
+  latestLedger: number;
+}
+
+/** Reads every page of canonical escrow events from `startLedger` onward. */
+async function scanEscrowEvents(startLedger: number): Promise<EscrowEventScan> {
   const contractAddress = ESCROW_CONTRACT_ID;
   if (!contractAddress) {
     throw new Error(
@@ -899,28 +910,43 @@ export async function fetchEscrowEvents(
     span.setAttribute("soroban.start_ledger", startLedger);
 
     try {
-      const response = await callSorobanRpc("getEvents", () =>
-        sorobanServer.getEvents({
-          startLedger,
-          filters: [
-            {
-              type: "contract",
-              contractIds: [contractAddress],
-            },
-          ],
-        })
-      );
+      const filters: SorobanRpc.Api.EventFilter[] = [
+        {
+          type: "contract",
+          contractIds: [contractAddress],
+          topics: escrowTopicFilter(),
+        },
+      ];
 
       const events: EscrowStateTransitionEvent[] = [];
-      for (const rawEvent of response.events) {
-        const parsed = parseEscrowEvent(rawEvent);
-        if (parsed) {
-          events.push(parsed);
+      let latestLedger: number | undefined;
+      let cursor: string | undefined;
+
+      for (;;) {
+        // The RPC accepts either a start ledger or a cursor, never both.
+        const page = await sorobanServer.getEvents({
+          ...(cursor ? { cursor } : { startLedger }),
+          filters,
+          limit: ESCROW_EVENT_PAGE_SIZE,
+        });
+        latestLedger ??= page.latestLedger;
+
+        for (const rawEvent of page.events) {
+          const parsed = parseEscrowEvent(rawEvent);
+          if (parsed) {
+            events.push(parsed);
+          }
         }
+
+        const last = page.events[page.events.length - 1];
+        if (!last || page.events.length < ESCROW_EVENT_PAGE_SIZE) {
+          break;
+        }
+        cursor = last.id;
       }
 
       span.setAttribute("soroban.events_found", events.length);
-      return events;
+      return { events, latestLedger };
     } catch (err) {
       span.recordException(err as Error);
       // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -930,6 +956,147 @@ export async function fetchEscrowEvents(
     } finally {
       span.end();
     }
+  });
+}
+
+/**
+ * Fetches and parses the canonical escrow state-transition events (issues
+ * #638, #639) emitted by the escrow contract from `startLedger` onward
+ * (inclusive), following pagination.
+ *
+ * One-shot helper for backfills and audits. To follow events continuously use
+ * `subscribeToEscrowEvents`, which tracks its own position.
+ *
+ * @param startLedger first ledger sequence (inclusive) to scan for events.
+ */
+export async function fetchEscrowEvents(
+  startLedger: number
+): Promise<EscrowStateTransitionEvent[]> {
+  const { events } = await scanEscrowEvents(startLedger);
+  return events;
+}
+
+export interface EscrowEventSubscriptionOptions {
+  /**
+   * Called once per event, in ledger order. If it rejects, the event is not
+   * considered delivered and is retried on the next poll, so handlers must be
+   * idempotent (at-least-once delivery).
+   */
+  onEvent: (event: EscrowStateTransitionEvent) => Promise<void> | void;
+  /** First ledger to read (inclusive). Defaults to the current latest ledger. */
+  startLedger?: number;
+  /** Delay between polls. Defaults to 5s, roughly one ledger. */
+  intervalMs?: number;
+  /** Called when a poll or handler fails; the subscription keeps running. */
+  onError?: (err: Error) => void;
+}
+
+export interface EscrowEventSubscription {
+  /** Stops polling. An in-flight handler finishes; no further events follow. */
+  stop(): void;
+}
+
+/**
+ * Subscribes to the escrow contract's state-transition events (issue #638).
+ *
+ * Soroban RPC has no push transport, so this polls `getEvents`. The position
+ * is kept as a ledger plus the last delivered event id: the boundary ledger is
+ * re-read on the next poll and already delivered ids are skipped, so no event
+ * is missed or repeated across polls.
+ */
+export function subscribeToEscrowEvents(
+  options: EscrowEventSubscriptionOptions
+): EscrowEventSubscription {
+  const intervalMs = options.intervalMs ?? 5_000;
+  let nextLedger = options.startLedger;
+  let lastEventId: string | undefined;
+  let stopped = false;
+  let timer: NodeJS.Timeout | undefined;
+
+  async function poll(): Promise<void> {
+    if (nextLedger === undefined) {
+      nextLedger = (await sorobanServer.getLatestLedger()).sequence;
+    }
+
+    const scanStart = nextLedger;
+    const { events, latestLedger } = await scanEscrowEvents(scanStart);
+
+    for (const event of events) {
+      if (stopped) return;
+      // Event ids are fixed-width and zero-padded, so they sort as strings.
+      if (lastEventId !== undefined && event.id <= lastEventId) continue;
+      await options.onEvent(event);
+      lastEventId = event.id;
+      nextLedger = event.ledger;
+    }
+
+    nextLedger = Math.max(
+      nextLedger,
+      Math.min(latestLedger, scanStart + ESCROW_EVENT_MAX_SCAN_LEDGERS)
+    );
+  }
+
+  async function run(): Promise<void> {
+    try {
+      await poll();
+    } catch (err) {
+      options.onError?.(err as Error);
+    }
+    if (!stopped) {
+      timer = setTimeout(() => void run(), intervalMs);
+      timer.unref();
+    }
+  }
+
+  void run();
+
+  return {
+    stop(): void {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    },
+  };
+}
+
+/**
+ * Default processing for an escrow event: one structured log line.
+ *
+ * Trade status in Postgres is owned by the API and delivery-oracle flows, so
+ * events are recorded for audit and reconciliation rather than used to
+ * overwrite it. Disputes are logged at warn level because they need a human.
+ */
+export function processEscrowEvent(event: EscrowStateTransitionEvent): void {
+  const context = {
+    topic: event.topic,
+    escrowId: event.escrowId,
+    actor: event.actor,
+    amountStroops: event.amount,
+    timestamp: event.timestamp,
+    ledger: event.ledger,
+    txHash: event.txHash,
+    eventId: event.id,
+  };
+  if (event.topic === "EscrowDisputed") {
+    logger.warn(context, "[escrow-events] Escrow disputed on-chain");
+  } else {
+    logger.info(context, `[escrow-events] ${event.topic}`);
+  }
+}
+
+/**
+ * Starts the escrow event subscription when ESCROW_EVENTS_ENABLED=true.
+ * Returns null when it is disabled or no escrow contract is configured.
+ */
+export function startEscrowEventSubscription(): EscrowEventSubscription | null {
+  if (process.env["ESCROW_EVENTS_ENABLED"] !== "true") return null;
+  if (!ESCROW_CONTRACT_ID) {
+    logger.warn("[escrow-events] ESCROW_CONTRACT_ID is not set; subscription not started");
+    return null;
+  }
+  logger.info({ contractId: ESCROW_CONTRACT_ID }, "[escrow-events] Subscription started");
+  return subscribeToEscrowEvents({
+    onEvent: processEscrowEvent,
+    onError: (err) => logger.error({ err: err.message }, "[escrow-events] Poll failed"),
   });
 }
 

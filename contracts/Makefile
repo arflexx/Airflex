@@ -1,4 +1,4 @@
-.PHONY: build test test-escrow test-marketplace clean wasm \
+.PHONY: build test test-escrow test-marketplace fuzz clean wasm \
 	sandbox-up sandbox-deploy sandbox-smoke sandbox-down integration-test
 
 # Local Soroban sandbox fixtures (see tests/README.md)
@@ -20,6 +20,18 @@ test-escrow:
 # Marketplace contract tests only — surfaces replay-protection coverage (Issue #512).
 test-marketplace:
 	cargo test --package airflex-marketplace --all-features --target $(shell rustc -vV | sed -n 's|host: ||p')
+
+# Coverage-guided fuzzing of the escrow and marketplace arithmetic (issue #644).
+# Runs each target from its seed corpus for FUZZ_SECONDS; CI uses the default.
+# Requires a nightly toolchain and `cargo install cargo-fuzz`.
+FUZZ_TARGETS := escrow_arithmetic marketplace_validation
+FUZZ_SECONDS ?= 60
+
+fuzz:
+	@set -e; for target in $(FUZZ_TARGETS); do \
+		echo ">> Fuzzing $$target for $(FUZZ_SECONDS)s"; \
+		cargo +nightly fuzz run $$target fuzz/corpus/$$target -- -max_total_time=$(FUZZ_SECONDS); \
+	done
 
 clean:
 	cargo clean --workspace

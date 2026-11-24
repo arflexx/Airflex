@@ -8,6 +8,10 @@ use soroban_sdk::{
     Vec,
 };
 
+mod arithmetic;
+
+pub use arithmetic::{MAX_DEPOSIT_AMOUNT, MAX_EXPIRY_SECS, MIN_DEPOSIT_AMOUNT};
+
 // ---------------------------------------------------------------------------
 // Storage keys
 // ---------------------------------------------------------------------------
@@ -49,7 +53,6 @@ pub enum DataKey {
 }
 
 pub const EMERGENCY_TIMELOCK_SECS: u64 = 72 * 60 * 60; // 72 hours = 259,200 seconds
-pub const MAX_EXPIRY_SECS: u64 = 30 * 24 * 60 * 60; // 30 days = 2,592,000 seconds
 pub const DISPUTE_WINDOW_SECS: u64 = 24 * 60 * 60; // 24 hours = 86,400 seconds
 /// Default per-listing cap written at `initialize` (issue #636). It is
 /// effectively uncapped so existing integrations keep working; deployments set
@@ -62,33 +65,6 @@ pub const DEFAULT_MAX_AMOUNT: i128 = i128::MAX;
 /// instance storage at `initialize` and read back on every `flag_dispute`
 /// call.
 pub const DEFAULT_DISPUTE_COOLDOWN_SECS: u64 = 3600; // 1 hour
-
-// ---------------------------------------------------------------------------
-// Deposit amount bounds (issue #506)
-// ---------------------------------------------------------------------------
-
-/// Minimum deposit amount in stroops (1 XLM = 10,000,000 stroops).
-///
-/// Enforced in `deposit_to_escrow` to prevent dust attacks: a buyer sending a
-/// 1-stroop fill consumes a sub-escrow storage slot and a fill-counter entry
-/// for a negligible economic contribution, which could be used to spam listings
-/// or grief sellers.
-///
-/// Set to 1_000_000 stroops (0.1 XLM) — small enough to be inclusive for
-/// micro-trade use-cases while rejecting non-economical dust fills.
-pub const MIN_DEPOSIT_AMOUNT: i128 = 1_000_000; // 0.1 XLM in stroops
-
-/// Maximum deposit amount in stroops.
-///
-/// Enforced in `deposit_to_escrow` to prevent integer overflow edge cases
-/// and to cap the single-fill exposure that a compromised signing key could
-/// lock. `i128::MAX` is 170,141,183,460,469,231,731,687,303,715,884,105,727,
-/// which is far beyond any realistic trade size; using a capped maximum makes
-/// the invariant explicit and auditable.
-///
-/// Set to 1_000_000_000_000_000 stroops (100,000,000 XLM) — safely within
-/// `i128` and above any foreseeable single-trade maximum on this platform.
-pub const MAX_DEPOSIT_AMOUNT: i128 = 1_000_000_000_000_000; // 100,000,000 XLM in stroops
 
 // ---------------------------------------------------------------------------
 // Types
@@ -258,7 +234,7 @@ fn topic_transfer() -> Symbol {
     symbol_short!("transfer")
 } // 8 chars
 
-// Canonical state-transition events (issue #639). Each carries
+// Canonical state-transition events (issues #638, #639). Each carries
 // `(escrow_id, actor, amount, timestamp)` so indexers, audit tooling, and the
 // backend oracle can subscribe to on-chain state changes instead of polling
 // `get_trade`. Documented in `contracts/escrow/README.md`. These names are
@@ -493,7 +469,7 @@ impl EscrowContract {
         }
 
         let now = env.ledger().timestamp();
-        if expires_at <= now || expires_at > now + MAX_EXPIRY_SECS {
+        if !arithmetic::is_valid_expiry(now, expires_at) {
             return Err(ContractError::InvalidExpiry);
         }
 
@@ -526,10 +502,8 @@ impl EscrowContract {
 
         // Canonical state-transition event (issue #639): escrow_id, actor,
         // amount, timestamp.
-        env.events().publish(
-            (topic_escrow_created(&env),),
-            (id, seller, amount, now),
-        );
+        env.events()
+            .publish((topic_escrow_created(&env),), (id, seller, amount, now));
 
         Ok(id)
     }
@@ -685,23 +659,16 @@ impl EscrowContract {
             return Err(ContractError::Unauthorized);
         }
 
-        if fill_amount <= 0 {
-            return Err(ContractError::InvalidAmount);
-        }
-
         // Reject dust fills below the minimum to prevent spam / storage exhaustion
         // (issue #506). Reject over-sized fills to guard against overflow edge
         // cases and cap single-fill exposure.
-        if fill_amount < MIN_DEPOSIT_AMOUNT {
-            return Err(ContractError::InvalidAmount);
-        }
-        if fill_amount > MAX_DEPOSIT_AMOUNT {
+        if !arithmetic::is_fill_in_bounds(fill_amount) {
             return Err(ContractError::InvalidAmount);
         }
 
-        if fill_amount > trade.total_amount - trade.filled_amount {
-            return Err(ContractError::InsufficientFunds);
-        }
+        let new_filled_amount =
+            arithmetic::apply_fill(trade.total_amount, trade.filled_amount, fill_amount)
+                .ok_or(ContractError::InsufficientFunds)?;
 
         // One active sub-escrow per (trade, buyer) — issue #294. Checked before
         // any funds move, so a rejected duplicate fill is a pure no-op on the
@@ -711,7 +678,7 @@ impl EscrowContract {
         let token_client = token::Client::new(&env, &trade.token);
         token_client.transfer(&buyer, &env.current_contract_address(), &fill_amount);
 
-        trade.filled_amount += fill_amount;
+        trade.filled_amount = new_filled_amount;
         if trade.filled_amount == trade.total_amount {
             trade.status = TradeStatus::Locked;
         } else {
@@ -744,7 +711,7 @@ impl EscrowContract {
             .set(&DataKey::SubEscrow(trade_id, fill_id), &sub_escrow);
 
         // Record dispute window close deadline (Issue #504)
-        let window_close = now.saturating_add(DISPUTE_WINDOW_SECS);
+        let window_close = arithmetic::deadline(now, DISPUTE_WINDOW_SECS);
         env.storage()
             .persistent()
             .set(&DataKey::DisputeWindowCloseAt(trade_id), &window_close);
@@ -1012,7 +979,7 @@ impl EscrowContract {
             .instance()
             .get(&DataKey::TradeFillCounter(trade_id))
             .unwrap_or(0);
-        let mut refunded_amount = 0;
+        let mut refunded_amount: i128 = 0;
         let mut caller_has_fills = false;
 
         let token_client = token::Client::new(&env, &trade.token);
@@ -1039,7 +1006,8 @@ impl EscrowContract {
                         env.storage()
                             .persistent()
                             .set(&DataKey::SubEscrow(trade_id, i), &sub);
-                        refunded_amount += sub.amount;
+                        refunded_amount = arithmetic::accumulate(refunded_amount, sub.amount)
+                            .ok_or(ContractError::InsufficientFunds)?;
 
                         // Canonical state-transition event (issue #639):
                         // escrow_id, actor, amount, timestamp. Emitted per
@@ -1063,11 +1031,9 @@ impl EscrowContract {
         // plain `-=` would either silently wrap (host panics are disabled) or
         // abort the whole contract call on a host trap (this workspace builds
         // with `overflow-checks = true`) if that invariant were ever violated
-        // by a future change. `checked_sub` turns that into an ordinary
+        // by a future change. `apply_refund` turns that into an ordinary
         // `Result::Err` the caller can handle instead of a low-level trap.
-        trade.filled_amount = trade
-            .filled_amount
-            .checked_sub(refunded_amount)
+        trade.filled_amount = arithmetic::apply_refund(trade.filled_amount, refunded_amount)
             .ok_or(ContractError::InsufficientFunds)?;
 
         if is_admin {
@@ -1266,6 +1232,7 @@ impl EscrowContract {
             return Err(ContractError::TradeNotFound);
         }
 
+        let now = env.ledger().timestamp();
         let token_client = token::Client::new(&env, &trade.token);
 
         // Settle every still-escrowed sub-escrow in the direction the
@@ -1300,7 +1267,18 @@ impl EscrowContract {
                     .set(&DataKey::SubEscrow(trade_id, i), &sub);
 
                 env.events()
-                    .publish((topic_resolved(),), (trade_id, i, recipient));
+                    .publish((topic_resolved(),), (trade_id, i, recipient.clone()));
+
+                // Canonical state-transition event (issue #638): escrow_id,
+                // actor, amount, timestamp. A dispute ruling settles funds just
+                // like `release_payment` / `cancel_and_refund` do, so indexers
+                // must see the same event for it.
+                let topic = match &resolution {
+                    DisputeResolution::Refund => topic_escrow_refunded(&env),
+                    DisputeResolution::Release => topic_escrow_released(&env),
+                };
+                env.events()
+                    .publish((topic,), (trade_id, recipient, sub.amount, now));
             }
         }
 
@@ -1368,7 +1346,7 @@ impl EscrowContract {
             .unwrap_or(0);
 
         let now = env.ledger().timestamp();
-        if now < paused_at + EMERGENCY_TIMELOCK_SECS {
+        if now < arithmetic::deadline(paused_at, EMERGENCY_TIMELOCK_SECS) {
             return Err(ContractError::TimelockNotExpired);
         }
 
@@ -1453,8 +1431,41 @@ mod test {
     use soroban_sdk::{
         testutils::{Address as _, Events as _, Ledger, MockAuth, MockAuthInvoke},
         token::{Client as TokenClient, StellarAssetClient},
-        vec, Address, Env, IntoVal,
+        vec, Address, Env, FromVal, IntoVal, TryFromVal,
     };
+
+    /// `(escrow_id, actor, amount, timestamp)` as carried by every canonical
+    /// state-transition event (issue #638).
+    type EscrowEventData = (u64, Address, i128, u64);
+
+    /// Decodes the payload of every `topic` event emitted by `contract`.
+    ///
+    /// Names are compared as decoded `Symbol`s: topics longer than 9 characters
+    /// are host objects, so comparing raw `Val` handles (`shallow_eq`) would
+    /// never match. Call this straight after the invocation under test.
+    fn escrow_events(
+        env: &Env,
+        contract: &Address,
+        topic: &str,
+    ) -> alloc::vec::Vec<EscrowEventData> {
+        let wanted = Symbol::new(env, topic);
+        let mut found = alloc::vec::Vec::new();
+        for (emitter, topics, data) in env.events().all().iter() {
+            if emitter != *contract {
+                continue;
+            }
+            let Some(first) = topics.get(0) else {
+                continue;
+            };
+            let Ok(name) = Symbol::try_from_val(env, &first) else {
+                continue;
+            };
+            if name == wanted {
+                found.push(EscrowEventData::from_val(env, &data));
+            }
+        }
+        found
+    }
 
     fn setup() -> (
         Env,
@@ -1507,7 +1518,15 @@ mod test {
         env.ledger().with_mut(|l| l.timestamp = 1_000_000);
         client.update_max_amount(&1_000_0000000i128);
 
-        assert!(client.try_create_listing(&seller, &token, &1_000_0000000i128, &symbol_short!("AIRTIME"), &(1_000_000 + 86_400)).is_ok());
+        assert!(client
+            .try_create_listing(
+                &seller,
+                &token,
+                &1_000_0000000i128,
+                &symbol_short!("AIRTIME"),
+                &(1_000_000 + 86_400),
+            )
+            .is_ok());
     }
 
     #[test]
@@ -1517,7 +1536,13 @@ mod test {
         client.update_max_amount(&1_000_0000000i128);
 
         assert_eq!(
-            client.try_create_listing(&seller, &token, &1_000_0000001i128, &symbol_short!("AIRTIME"), &(1_000_000 + 86_400)),
+            client.try_create_listing(
+                &seller,
+                &token,
+                &1_000_0000001i128,
+                &symbol_short!("AIRTIME"),
+                &(1_000_000 + 86_400),
+            ),
             Err(Ok(ContractError::AmountExceedsMax))
         );
         assert_eq!(client.trade_count(), 0);
@@ -1529,18 +1554,41 @@ mod test {
         env.ledger().with_mut(|l| l.timestamp = 1_000_000);
 
         client.update_max_amount(&100i128);
-        assert_eq!(client.try_create_listing(&seller, &token, &101i128, &symbol_short!("AIRTIME"), &(1_000_000 + 86_400)), Err(Ok(ContractError::AmountExceedsMax)));
+        assert_eq!(
+            client.try_create_listing(
+                &seller,
+                &token,
+                &101i128,
+                &symbol_short!("AIRTIME"),
+                &(1_000_000 + 86_400),
+            ),
+            Err(Ok(ContractError::AmountExceedsMax))
+        );
 
         client.update_max_amount(&1_000i128);
         assert_eq!(client.max_amount(), 1_000);
-        assert!(client.try_create_listing(&seller, &token, &101i128, &symbol_short!("AIRTIME"), &(1_000_000 + 86_400)).is_ok());
+        assert!(client
+            .try_create_listing(
+                &seller,
+                &token,
+                &101i128,
+                &symbol_short!("AIRTIME"),
+                &(1_000_000 + 86_400),
+            )
+            .is_ok());
     }
 
     #[test]
     fn test_update_max_amount_rejects_non_positive() {
         let (_env, client, _admin, _seller, _buyer, _token) = setup();
-        assert_eq!(client.try_update_max_amount(&0i128), Err(Ok(ContractError::InvalidAmount)));
-        assert_eq!(client.try_update_max_amount(&-5i128), Err(Ok(ContractError::InvalidAmount)));
+        assert_eq!(
+            client.try_update_max_amount(&0i128),
+            Err(Ok(ContractError::InvalidAmount))
+        );
+        assert_eq!(
+            client.try_update_max_amount(&-5i128),
+            Err(Ok(ContractError::InvalidAmount))
+        );
     }
 
     #[test]
@@ -2289,7 +2337,7 @@ mod test {
     }
 
     // -----------------------------------------------------------------------
-    // Issue #639 — Soroban events for every escrow state transition
+    // Issues #638, #639 — Soroban events for every escrow state transition
     // -----------------------------------------------------------------------
 
     #[test]
@@ -2297,7 +2345,7 @@ mod test {
         let (env, client, _admin, seller, _buyer, token) = setup();
         env.ledger().with_mut(|l| l.timestamp = 1_000_000);
 
-        client.create_listing(
+        let trade_id = client.create_listing(
             &seller,
             &token,
             &500_0000000i128,
@@ -2305,12 +2353,27 @@ mod test {
             &(1_000_000 + 86_400),
         );
 
-        let created_symbol = Symbol::new(&env, "EscrowCreated");
-        let all_events = env.events().all();
-        let has_created = all_events
-            .iter()
-            .any(|e| e.1.iter().any(|t| t.shallow_eq(&created_symbol.to_val())));
-        assert!(has_created, "EscrowCreated event should be published");
+        assert_eq!(
+            escrow_events(&env, &client.address, "EscrowCreated"),
+            alloc::vec![(trade_id, seller, 500_0000000i128, 1_000_000u64)]
+        );
+    }
+
+    #[test]
+    fn test_rejected_listing_emits_no_event() {
+        let (env, client, _admin, seller, _buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let result = client.try_create_listing(
+            &seller,
+            &token,
+            &0i128,
+            &symbol_short!("AIRTIME"),
+            &(1_000_000 + 86_400),
+        );
+
+        assert!(escrow_events(&env, &client.address, "EscrowCreated").is_empty());
+        assert_eq!(result, Err(Ok(ContractError::InvalidAmount)));
     }
 
     #[test]
@@ -2326,14 +2389,38 @@ mod test {
             &(1_000_000 + 86_400),
         );
         client.deposit_to_escrow(&buyer, &trade_id, &500_0000000i128);
+
+        env.ledger().with_mut(|l| l.timestamp = 1_000_500);
         client.release_payment(&trade_id, &1);
 
-        let released_symbol = Symbol::new(&env, "EscrowReleased");
-        let all_events = env.events().all();
-        let has_released = all_events
-            .iter()
-            .any(|e| e.1.iter().any(|t| t.shallow_eq(&released_symbol.to_val())));
-        assert!(has_released, "EscrowReleased event should be published");
+        assert_eq!(
+            escrow_events(&env, &client.address, "EscrowReleased"),
+            alloc::vec![(trade_id, seller, 500_0000000i128, 1_000_500u64)]
+        );
+    }
+
+    #[test]
+    fn test_escrow_released_event_emitted_by_timelock_release() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let trade_id = client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &symbol_short!("AIRTIME"),
+            &(1_000_000 + 86_400),
+        );
+        client.deposit_to_escrow(&buyer, &trade_id, &500_0000000i128);
+
+        let released_at = 1_000_000 + DISPUTE_WINDOW_SECS;
+        env.ledger().with_mut(|l| l.timestamp = released_at);
+        client.release_by_timelock(&seller, &trade_id, &1);
+
+        assert_eq!(
+            escrow_events(&env, &client.address, "EscrowReleased"),
+            alloc::vec![(trade_id, seller, 500_0000000i128, released_at)]
+        );
     }
 
     #[test]
@@ -2354,12 +2441,39 @@ mod test {
         env.ledger().with_mut(|l| l.timestamp = 1_000_000 + 86_401);
         client.cancel_and_refund(&buyer, &trade_id);
 
-        let refunded_symbol = Symbol::new(&env, "EscrowRefunded");
-        let all_events = env.events().all();
-        let has_refunded = all_events
-            .iter()
-            .any(|e| e.1.iter().any(|t| t.shallow_eq(&refunded_symbol.to_val())));
-        assert!(has_refunded, "EscrowRefunded event should be published");
+        assert_eq!(
+            escrow_events(&env, &client.address, "EscrowRefunded"),
+            alloc::vec![(trade_id, buyer, 500_0000000i128, 1_086_401u64)]
+        );
+    }
+
+    /// One admin refund that settles several fills emits one event per buyer.
+    #[test]
+    fn test_escrow_refunded_event_emitted_per_fill() {
+        let (env, client, admin, seller, buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let trade_id = client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &symbol_short!("AIRTIME"),
+            &(1_000_000 + 86_400),
+        );
+        let buyer2 = Address::generate(&env);
+        StellarAssetClient::new(&env, &token).mint(&buyer2, &300_0000000i128);
+        client.deposit_to_escrow(&buyer, &trade_id, &200_0000000i128);
+        client.deposit_to_escrow(&buyer2, &trade_id, &300_0000000i128);
+
+        client.cancel_and_refund(&admin, &trade_id);
+
+        assert_eq!(
+            escrow_events(&env, &client.address, "EscrowRefunded"),
+            alloc::vec![
+                (trade_id, buyer, 200_0000000i128, 1_000_000u64),
+                (trade_id, buyer2, 300_0000000i128, 1_000_000u64),
+            ]
+        );
     }
 
     #[test]
@@ -2375,14 +2489,87 @@ mod test {
             &(1_000_000 + 86_400),
         );
         client.deposit_to_escrow(&buyer, &trade_id, &500_0000000i128);
-        client.flag_dispute(&seller, &trade_id);
+        client.flag_dispute(&buyer, &trade_id);
 
-        let disputed_symbol = Symbol::new(&env, "EscrowDisputed");
-        let all_events = env.events().all();
-        let has_disputed = all_events
-            .iter()
-            .any(|e| e.1.iter().any(|t| t.shallow_eq(&disputed_symbol.to_val())));
-        assert!(has_disputed, "EscrowDisputed event should be published");
+        assert_eq!(
+            escrow_events(&env, &client.address, "EscrowDisputed"),
+            alloc::vec![(trade_id, buyer, 500_0000000i128, 1_000_000u64)]
+        );
+    }
+
+    #[test]
+    fn test_resolve_dispute_release_emits_canonical_event() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let trade_id = client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &symbol_short!("AIRTIME"),
+            &(1_000_000 + 86_400),
+        );
+        client.deposit_to_escrow(&buyer, &trade_id, &500_0000000i128);
+        client.flag_dispute(&buyer, &trade_id);
+
+        env.ledger().with_mut(|l| l.timestamp = 1_000_900);
+        client.resolve_dispute(&trade_id, &DisputeResolution::Release);
+
+        assert_eq!(
+            escrow_events(&env, &client.address, "EscrowReleased"),
+            alloc::vec![(trade_id, seller, 500_0000000i128, 1_000_900u64)]
+        );
+    }
+
+    #[test]
+    fn test_resolve_dispute_refund_emits_canonical_event() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = 1_000_000);
+
+        let trade_id = client.create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &symbol_short!("AIRTIME"),
+            &(1_000_000 + 86_400),
+        );
+        client.deposit_to_escrow(&buyer, &trade_id, &500_0000000i128);
+        client.flag_dispute(&buyer, &trade_id);
+
+        env.ledger().with_mut(|l| l.timestamp = 1_000_900);
+        client.resolve_dispute(&trade_id, &DisputeResolution::Refund);
+
+        assert_eq!(
+            escrow_events(&env, &client.address, "EscrowRefunded"),
+            alloc::vec![(trade_id, buyer, 500_0000000i128, 1_000_900u64)]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #644 — arithmetic edge cases covered by the fuzz targets
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_arithmetic_rejects_overflow_and_underflow() {
+        assert_eq!(arithmetic::apply_fill(i128::MAX, i128::MIN, 1), None);
+        assert_eq!(arithmetic::apply_fill(i128::MAX, i128::MAX, 1), None);
+        assert_eq!(arithmetic::apply_fill(10, 0, 0), None);
+        assert_eq!(arithmetic::apply_fill(10, 4, 6), Some(10));
+        assert_eq!(arithmetic::apply_fill(10, 4, 7), None);
+        assert_eq!(arithmetic::accumulate(i128::MAX, 1), None);
+        assert_eq!(arithmetic::apply_refund(5, 6), None);
+        assert_eq!(arithmetic::apply_refund(5, -1), None);
+        assert_eq!(arithmetic::apply_refund(5, 5), Some(0));
+        assert_eq!(arithmetic::deadline(u64::MAX, 1), u64::MAX);
+    }
+
+    /// `now + MAX_EXPIRY_SECS` used to overflow at the top of the u64 range
+    /// instead of saturating.
+    #[test]
+    fn test_expiry_validation_saturates_near_u64_max() {
+        let now = u64::MAX - 10;
+        assert!(!arithmetic::is_valid_expiry(now, now));
+        assert!(arithmetic::is_valid_expiry(now, u64::MAX));
     }
 
     #[test]
@@ -2565,7 +2752,6 @@ mod test {
         assert_eq!(trade.filled_amount, 500_0000000i128);
         assert_eq!(trade.status, TradeStatus::Locked);
     }
-}
 
     #[test]
     fn test_event_topic_lengths_and_long_topic_handling() {
@@ -2967,16 +3153,14 @@ mod test {
 // Fuzz-style tests — numeric arithmetic on stroop amounts and fill counters
 // ---------------------------------------------------------------------------
 //
-// This workspace has no fuzzing harness set up (no cargo-fuzz target, no
-// proptest/quickcheck dependency), and adding an external crate here isn't
-// something this change can verify resolves without network access to
-// crates.io and a Cargo.lock update. Instead, this uses a small deterministic
-// PRNG (xorshift64, no new dependency) to exercise deposit_to_escrow and
+// The coverage-guided targets for the pure arithmetic live in `contracts/fuzz`
+// (issue #644, `make fuzz`). These tests complement them by driving the same
+// arithmetic through the real contract entry points: a small deterministic
+// PRNG (xorshift64, no extra dependency) exercises deposit_to_escrow and
 // cancel_and_refund across many randomised stroop amounts, fill splits, and
-// fill counts, asserting the arithmetic invariants around `filled_amount`
-// and the fill counter hold for every generated case rather than just the
-// handful of fixed values the existing unit tests use. Each test seeds its
-// PRNG with a fixed constant so a failure is reproducible.
+// fill counts, asserting the invariants around `filled_amount` and the fill
+// counter hold for every generated case. Each test seeds its PRNG with a fixed
+// constant so a failure is reproducible.
 #[cfg(test)]
 mod fuzz {
     use super::*;
@@ -3038,6 +3222,21 @@ mod fuzz {
         (env, client, admin, seller, token_address)
     }
 
+    /// `setup()` plus a buyer holding 100e9 stroops of the listing token.
+    fn setup_with_buyer() -> (
+        Env,
+        EscrowContractClient<'static>,
+        Address,
+        Address,
+        Address,
+        Address,
+    ) {
+        let (env, client, admin, seller, token) = setup();
+        let buyer = Address::generate(&env);
+        StellarAssetClient::new(&env, &token).mint(&buyer, &100_000_000_000i128);
+        (env, client, admin, seller, buyer, token)
+    }
+
     /// Fuzzes deposit_to_escrow with random total amounts and random
     /// multi-buyer partial fills (stroop amounts), asserting that
     /// `filled_amount` never exceeds `total_amount`, that it always equals
@@ -3052,8 +3251,9 @@ mod fuzz {
             let (env, client, _admin, seller, token) = setup();
             env.ledger().with_mut(|l| l.timestamp = 1_000_000);
 
-            // Random total amount: 1 stroop up to ~10,000 XLM in stroops.
-            let total_amount = rng.range_i128(1, 1_000_000_000_000i128);
+            // Random total amount: the smallest fillable listing up to
+            // ~100,000 XLM in stroops.
+            let total_amount = rng.range_i128(MIN_DEPOSIT_AMOUNT, 1_000_000_000_000i128);
 
             let trade_id = client.create_listing(
                 &seller,
@@ -3072,10 +3272,10 @@ mod fuzz {
             let fill_count = 1 + (rng.next_u64() % 5) as u32;
             for _ in 0..fill_count {
                 let remaining = total_amount - running_filled;
-                if remaining <= 0 {
+                if remaining < MIN_DEPOSIT_AMOUNT {
                     break;
                 }
-                let fill_amount = rng.range_i128(1, remaining);
+                let fill_amount = rng.range_i128(MIN_DEPOSIT_AMOUNT, remaining);
 
                 let buyer = Address::generate(&env);
                 sac.mint(&buyer, &fill_amount);
@@ -3094,10 +3294,12 @@ mod fuzz {
             }
 
             // Whatever is left over must reject an over-fill with a typed
-            // error rather than panicking or wrapping.
+            // error rather than panicking or wrapping. (A fully filled trade
+            // is `Locked` and rejects the deposit by status instead.)
             let remaining = total_amount - running_filled;
-            if remaining < total_amount {
-                let overfill = remaining + rng.range_i128(1, 10_000_000_000_000i128);
+            if remaining > 0 {
+                let overfill =
+                    remaining + rng.range_i128(MIN_DEPOSIT_AMOUNT, 10_000_000_000_000i128);
                 let buyer = Address::generate(&env);
                 sac.mint(&buyer, &overfill);
                 let result = client.try_deposit_to_escrow(&buyer, &trade_id, &overfill);
@@ -3110,7 +3312,7 @@ mod fuzz {
     }
 
     /// Fuzzes cancel_and_refund's fill-counter walk (the underflow this file
-    /// now guards with `checked_sub` — see cancel_and_refund) across random
+    /// now guards with `apply_refund` — see cancel_and_refund) across random
     /// total amounts and random two-way fill splits, asserting
     /// `filled_amount` always settles back to exactly zero after a full
     /// admin refund, with no panic and no negative/overflowed intermediate
@@ -3123,7 +3325,7 @@ mod fuzz {
             let (env, client, admin, seller, token) = setup();
             env.ledger().with_mut(|l| l.timestamp = 1_000_000);
 
-            let total_amount = rng.range_i128(3, 900_000_000_000i128);
+            let total_amount = rng.range_i128(2 * MIN_DEPOSIT_AMOUNT, 900_000_000_000i128);
             let trade_id = client.create_listing(
                 &seller,
                 &token,
@@ -3133,7 +3335,7 @@ mod fuzz {
             );
 
             let sac = StellarAssetClient::new(&env, &token);
-            let split = rng.range_i128(1, total_amount - 1);
+            let split = rng.range_i128(MIN_DEPOSIT_AMOUNT, total_amount - MIN_DEPOSIT_AMOUNT);
 
             for amount in [split, total_amount - split] {
                 let buyer = Address::generate(&env);
@@ -3143,7 +3345,7 @@ mod fuzz {
 
             // Admin can cancel_and_refund immediately regardless of expiry —
             // this walks the full fill counter and exercises the
-            // checked_sub fix in one call, across many random splits.
+            // apply_refund guard in one call, across many random splits.
             client.cancel_and_refund(&admin, &trade_id);
 
             let trade = client.get_trade(&trade_id);
@@ -3236,7 +3438,7 @@ mod fuzz {
             &symbol_short!("AIRTIME"),
             &(1_000_000 + 86_400),
         );
-        client.deposit_to_escrow(buyer, &trade_id, &1i128);
+        client.deposit_to_escrow(buyer, &trade_id, &MIN_DEPOSIT_AMOUNT);
         assert_eq!(
             client.get_trade(&trade_id).status,
             TradeStatus::PartiallyFilled
@@ -3298,7 +3500,7 @@ mod fuzz {
         sac.mint(&buyer2, &100_000_000_000i128);
         let trade_id = partially_filled_trade(&env, &client, &seller, &buyer, &token);
 
-        client.deposit_to_escrow(&buyer2, &trade_id, &(500_0000000i128 - 1));
+        client.deposit_to_escrow(&buyer2, &trade_id, &(500_0000000i128 - MIN_DEPOSIT_AMOUNT));
         assert_eq!(client.get_trade(&trade_id).status, TradeStatus::Locked);
 
         client.flag_dispute(&buyer, &trade_id);
@@ -3337,7 +3539,7 @@ mod fuzz {
     /// `Disputed`.
     #[test]
     fn test_flag_dispute_transitions_to_disputed() {
-        let (env, client, _admin, seller, buyer, token) = setup();
+        let (env, client, _admin, seller, buyer, token) = setup_with_buyer();
         env.ledger().with_mut(|l| l.timestamp = 1_000_000);
 
         let trade_id = client.create_listing(
@@ -3359,7 +3561,7 @@ mod fuzz {
     /// escrowed funds are released to the seller and the trade completes.
     #[test]
     fn test_resolve_dispute_in_favour_of_seller_releases_funds() {
-        let (env, client, _admin, seller, buyer, token) = setup();
+        let (env, client, _admin, seller, buyer, token) = setup_with_buyer();
         let trade_id = disputed_trade(&env, &client, &seller, &buyer, &token);
 
         let token_client = TokenClient::new(&env, &token);
@@ -3381,7 +3583,7 @@ mod fuzz {
     /// escrowed funds are returned to the buyer and the trade is cancelled.
     #[test]
     fn test_resolve_dispute_in_favour_of_buyer_refunds_funds() {
-        let (env, client, _admin, seller, buyer, token) = setup();
+        let (env, client, _admin, seller, buyer, token) = setup_with_buyer();
         let trade_id = disputed_trade(&env, &client, &seller, &buyer, &token);
 
         let token_client = TokenClient::new(&env, &token);
@@ -3406,7 +3608,7 @@ mod fuzz {
     #[test]
     #[should_panic(expected = "HostError: Error(Auth, InvalidAction)")]
     fn test_non_arbitrator_cannot_resolve_dispute() {
-        let (env, client, _admin, seller, buyer, token) = setup();
+        let (env, client, _admin, seller, buyer, token) = setup_with_buyer();
         let trade_id = disputed_trade(&env, &client, &seller, &buyer, &token);
 
         // Disable blanket auth mocking so `admin.require_auth()` is enforced

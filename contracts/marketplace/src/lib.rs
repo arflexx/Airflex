@@ -5,6 +5,12 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, Symbol,
 };
 
+mod arithmetic;
+
+pub use arithmetic::MAX_OFFER_EXPIRY_SECS;
+
+use arithmetic::ExpiryCheck;
+
 // ---------------------------------------------------------------------------
 // Storage keys
 // ---------------------------------------------------------------------------
@@ -30,12 +36,23 @@ pub enum DataKey {
     /// `purchase_with_auth` to make signed purchase authorizations single-use
     /// and replay-proof (Issue #512).
     BuyerNonce(Address),
+    /// Reentrancy guard flag (`bool`), held in temporary storage while a
+    /// settlement function runs (issue #507).
+    Reentrancy,
 }
 
 pub const EMERGENCY_TIMELOCK_SECS: u64 = 72 * 60 * 60; // 72 hours = 259,200 seconds
 
 /// Maximum number of active listings allowed per seller to prevent storage exhaustion (Issue #505).
 pub const MAX_ACTIVE_LISTINGS_PER_SELLER: u32 = 10;
+
+/// Ledgers in one day at a 5-second close time.
+const LEDGERS_PER_DAY: u32 = 17_280;
+
+/// TTL given to an offer's storage entries at creation. One day longer than
+/// `MAX_OFFER_EXPIRY_SECS`, so an offer using the whole window is not archived
+/// before its last acceptable second (issue #637).
+const OFFER_TTL_LEDGERS: u32 = LEDGERS_PER_DAY * 31;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -146,6 +163,16 @@ pub enum ContractError {
     /// A replayed or out-of-order authorization nonce was supplied to
     /// `purchase_with_auth` (Issue #512).
     InvalidNonce = 16,
+    /// A settlement function was re-entered while already executing
+    /// (issue #507).
+    ReentrancyDetected = 18,
+    // 19 is deliberately unused: it is `AmountExceedsMax` in the escrow
+    // contract, and off-chain decoders share one code table.
+    /// `accept_offer` was called after the offer's `expires_at` (issue #637).
+    OfferExpired = 20,
+    /// `expires_at` is more than 30 days after the offer's creation
+    /// (issue #637).
+    ExpiryTooFar = 21,
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +201,9 @@ fn topic_paused() -> Symbol {
 fn topic_unpaused() -> Symbol {
     symbol_short!("unpaused")
 } // 8 chars
+fn topic_expired() -> Symbol {
+    symbol_short!("expired")
+} // 7 chars
 fn topic_updated() -> Symbol {
     symbol_short!("updated")
 } // 7 chars
@@ -219,10 +249,10 @@ fn update_reputation(env: &Env, seller: &Address, volume: i128, disputed: bool) 
         });
 
     if disputed {
-        rep.disputed_trades += 1;
+        rep.disputed_trades = arithmetic::bump_counter(rep.disputed_trades);
     } else {
-        rep.completed_trades += 1;
-        rep.total_volume += volume;
+        rep.completed_trades = arithmetic::bump_counter(rep.completed_trades);
+        rep.total_volume = arithmetic::add_volume(rep.total_volume, volume);
     }
 
     env.storage()
@@ -274,14 +304,92 @@ fn decrement_active_listing_count(env: &Env, seller: &Address) {
     }
 }
 
-/// Core escrow-locking logic shared by `deposit_to_escrow` and
-/// `purchase_with_auth`. Callers handle `require_not_paused` and
-/// `buyer.require_auth()` (and, for the authorized path, nonce validation)
-/// before delegating here — this performs only the listing lookup, the
-/// status/expiry checks, the token transfer, and the `Active → Sold`
-/// transition (Issue #512).
-fn deposit_inner(env: &Env, buyer: &Address, listing_id: u64) -> Result<(), ContractError> {
-    let mut listing: Listing = env
+/// Maps the pure expiry check onto the contract's typed errors (issue #637).
+fn require_valid_expiry(created_at: u64, now: u64, expires_at: u64) -> Result<(), ContractError> {
+    match arithmetic::check_expiry(created_at, now, expires_at) {
+        ExpiryCheck::Valid => Ok(()),
+        ExpiryCheck::NotInFuture => Err(ContractError::InvalidExpiry),
+        ExpiryCheck::TooFar => Err(ContractError::ExpiryTooFar),
+    }
+}
+
+/// Core offer-creation logic shared by `create_offer` and `create_listing`.
+/// Callers handle `require_not_paused` and `seller.require_auth()`.
+fn create_inner(
+    env: &Env,
+    seller: Address,
+    token: Address,
+    price: i128,
+    asset_category: AssetCategory,
+    asset_type: Symbol,
+    quantity: i128,
+    expires_at: u64,
+) -> Result<u64, ContractError> {
+    if !arithmetic::is_positive_amount(price) || !arithmetic::is_positive_amount(quantity) {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    let now = env.ledger().timestamp();
+    require_valid_expiry(now, now, expires_at)?;
+
+    let active_count = get_seller_active_listing_count(env, &seller);
+    if active_count >= MAX_ACTIVE_LISTINGS_PER_SELLER {
+        return Err(ContractError::StorageLimitExceeded);
+    }
+
+    let id: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::ListingCounter)
+        .unwrap_or(0u64)
+        + 1;
+    env.storage().instance().set(&DataKey::ListingCounter, &id);
+
+    let listing = Listing {
+        id,
+        seller: seller.clone(),
+        token,
+        price,
+        quantity,
+        status: ListingStatus::Active,
+        expires_at,
+        buyer: None,
+    };
+    let metadata = ListingMetadata {
+        asset_category,
+        asset_type: asset_type.clone(),
+        created_at: now,
+    };
+
+    // Hot storage (issue #641): price/quantity/seller/status/buyer/expiry,
+    // read on every lookup.
+    env.storage()
+        .persistent()
+        .set(&DataKey::Listing(id), &listing);
+    env.storage()
+        .persistent()
+        .extend_ttl(&DataKey::Listing(id), LEDGERS_PER_DAY, OFFER_TTL_LEDGERS);
+
+    // Cold storage (issue #641): asset category/type + creation timestamp,
+    // read only via get_listing_details and update_listing.
+    env.storage()
+        .persistent()
+        .set(&DataKey::ListingMeta(id), &metadata);
+    env.storage()
+        .persistent()
+        .extend_ttl(&DataKey::ListingMeta(id), LEDGERS_PER_DAY, OFFER_TTL_LEDGERS);
+
+    increment_active_listing_count(env, &seller);
+
+    env.events()
+        .publish((topic_listed(), asset_type), (id, seller, price, quantity));
+
+    Ok(id)
+}
+
+/// Loads a listing, requiring it to still be `Active`.
+fn load_active_listing(env: &Env, listing_id: u64) -> Result<Listing, ContractError> {
+    let listing: Listing = env
         .storage()
         .persistent()
         .get(&DataKey::Listing(listing_id))
@@ -290,12 +398,12 @@ fn deposit_inner(env: &Env, buyer: &Address, listing_id: u64) -> Result<(), Cont
     if listing.status != ListingStatus::Active {
         return Err(ContractError::WrongStatus);
     }
+    Ok(listing)
+}
 
-    let now = env.ledger().timestamp();
-    if now >= listing.expires_at {
-        return Err(ContractError::TradeExpired);
-    }
-
+/// Locks the buyer's funds and performs the `Active → Sold` transition on an
+/// already loaded, already expiry-checked listing.
+fn lock_funds(env: &Env, buyer: &Address, mut listing: Listing) -> Result<(), ContractError> {
     if *buyer == listing.seller {
         return Err(ContractError::Unauthorized);
     }
@@ -308,13 +416,27 @@ fn deposit_inner(env: &Env, buyer: &Address, listing_id: u64) -> Result<(), Cont
 
     env.storage()
         .persistent()
-        .set(&DataKey::Listing(listing_id), &listing);
+        .set(&DataKey::Listing(listing.id), &listing);
 
     decrement_active_listing_count(env, &listing.seller);
 
     env.events()
-        .publish((topic_sold(),), (listing_id, buyer.clone(), listing.price));
+        .publish((topic_sold(),), (listing.id, buyer.clone(), listing.price));
     Ok(())
+}
+
+/// Core escrow-locking logic shared by `deposit_to_escrow` and
+/// `purchase_with_auth`. Callers handle `require_not_paused` and
+/// `buyer.require_auth()` (and, for the authorized path, nonce validation)
+/// before delegating here (Issue #512).
+fn deposit_inner(env: &Env, buyer: &Address, listing_id: u64) -> Result<(), ContractError> {
+    let listing = load_active_listing(env, listing_id)?;
+
+    if env.ledger().timestamp() >= listing.expires_at {
+        return Err(ContractError::TradeExpired);
+    }
+
+    lock_funds(env, buyer, listing)
 }
 
 // ---------------------------------------------------------------------------
@@ -338,9 +460,7 @@ fn enter_reentrancy_guard(env: &Env) -> Result<(), ContractError> {
     if locked {
         return Err(ContractError::ReentrancyDetected);
     }
-    env.storage()
-        .temporary()
-        .set(&DataKey::Reentrancy, &true);
+    env.storage().temporary().set(&DataKey::Reentrancy, &true);
     Ok(())
 }
 
@@ -440,7 +560,8 @@ impl MarketplaceContract {
 
     /// Posts a new airtime/data offer on the marketplace.
     ///
-    /// Returns the new listing ID.
+    /// Returns the new listing ID. `expires_at` is subject to the same 30-day
+    /// cap as `create_offer`; both entry points create the same record.
     pub fn create_listing(
         env: Env,
         seller: Address,
@@ -454,71 +575,105 @@ impl MarketplaceContract {
         require_not_paused(&env)?;
         seller.require_auth();
 
-        if price <= 0 {
-            return Err(ContractError::InvalidAmount);
+        create_inner(
+            &env,
+            seller,
+            token,
+            price,
+            asset_category,
+            asset_type,
+            quantity,
+            expires_at,
+        )
+    }
+
+    // -----------------------------------------------------------------------
+    // create_offer / accept_offer / expire_offer (Issue #637)
+    // -----------------------------------------------------------------------
+
+    /// Posts a new offer that must carry an expiry.
+    ///
+    /// `expires_at` is a ledger timestamp (seconds). Returns
+    /// `Err(InvalidExpiry)` when it is not in the future and
+    /// `Err(ExpiryTooFar)` when it is more than `MAX_OFFER_EXPIRY_SECS`
+    /// (30 days) after creation. Returns the new offer ID.
+    pub fn create_offer(
+        env: Env,
+        seller: Address,
+        token: Address,
+        price: i128,
+        asset_category: AssetCategory,
+        asset_type: Symbol,
+        quantity: i128,
+        expires_at: u64,
+    ) -> Result<u64, ContractError> {
+        require_not_paused(&env)?;
+        seller.require_auth();
+
+        create_inner(
+            &env,
+            seller,
+            token,
+            price,
+            asset_category,
+            asset_type,
+            quantity,
+            expires_at,
+        )
+    }
+
+    /// Accepts an offer, locking `listing.price` tokens from `buyer` in the
+    /// contract and marking the offer `Sold`.
+    ///
+    /// Returns `Err(OfferExpired)` once the ledger time exceeds `expires_at`;
+    /// `expires_at` itself is the last second the offer can be accepted.
+    pub fn accept_offer(env: Env, buyer: Address, offer_id: u64) -> Result<(), ContractError> {
+        require_not_paused(&env)?;
+        buyer.require_auth();
+
+        let listing = load_active_listing(&env, offer_id)?;
+        if arithmetic::is_offer_expired(env.ledger().timestamp(), listing.expires_at) {
+            return Err(ContractError::OfferExpired);
         }
-        if quantity <= 0 {
-            return Err(ContractError::InvalidAmount);
+
+        lock_funds(&env, &buyer, listing)
+    }
+
+    /// Cancels the seller's own expired offer and reclaims its storage.
+    ///
+    /// Deletes both ledger entries (`Listing` and `ListingMeta`), so no further
+    /// rent accrues for the offer, and frees the seller's active-listing slot.
+    /// The offer ID resolves to `TradeNotFound` afterwards.
+    ///
+    /// Returns `Err(Unauthorized)` if `seller` does not own the offer and
+    /// `Err(TimelockNotExpired)` if it has not expired yet — use
+    /// `cancel_listing` to withdraw a live offer.
+    pub fn expire_offer(env: Env, seller: Address, offer_id: u64) -> Result<(), ContractError> {
+        require_not_paused(&env)?;
+        seller.require_auth();
+
+        let listing = load_active_listing(&env, offer_id)?;
+        if listing.seller != seller {
+            return Err(ContractError::Unauthorized);
         }
 
         let now = env.ledger().timestamp();
-        if expires_at <= now {
-            return Err(ContractError::InvalidExpiry);
+        if !arithmetic::is_offer_expired(now, listing.expires_at) {
+            return Err(ContractError::TimelockNotExpired);
         }
 
-        let active_count = get_seller_active_listing_count(&env, &seller);
-        if active_count >= MAX_ACTIVE_LISTINGS_PER_SELLER {
-            return Err(ContractError::StorageLimitExceeded);
-        }
-
-        let id: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::ListingCounter)
-            .unwrap_or(0u64)
-            + 1;
-        env.storage().instance().set(&DataKey::ListingCounter, &id);
-
-        let listing = Listing {
-            id,
-            seller: seller.clone(),
-            token,
-            price,
-            quantity,
-            status: ListingStatus::Active,
-            expires_at,
-            buyer: None,
-        };
-        let metadata = ListingMetadata {
-            asset_category,
-            asset_type: asset_type.clone(),
-            created_at: now,
-        };
-
-        // Hot storage (issue #641): price/quantity/seller/status/buyer/expiry,
-        // read on every lookup.
         env.storage()
             .persistent()
-            .set(&DataKey::Listing(id), &listing);
+            .remove(&DataKey::Listing(offer_id));
         env.storage()
             .persistent()
-            .extend_ttl(&DataKey::Listing(id), 17_280, 17_280 * 30);
+            .remove(&DataKey::ListingMeta(offer_id));
 
-        // Cold storage (issue #641): asset category/type + creation
-        // timestamp, read only via get_listing_details.
-        env.storage()
-            .persistent()
-            .set(&DataKey::ListingMeta(id), &metadata);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::ListingMeta(id), 17_280, 17_280 * 30);
-
-        increment_active_listing_count(&env, &seller);
+        decrement_active_listing_count(&env, &seller);
 
         env.events()
-            .publish((topic_listed(), asset_type), (id, seller, price, quantity));
-
-        Ok(id)
+            .publish((topic_expired(),), (offer_id, seller, now));
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -753,6 +908,8 @@ impl MarketplaceContract {
     /// Updates the price and expiration timestamp of an active listing.
     ///
     /// Only the original seller can call this, and only while the listing is `Active`.
+    /// The 30-day expiry cap is measured from the listing's *creation*, so
+    /// repeated updates cannot keep a stale offer alive (issue #637).
     /// Emits an `updated` event.
     pub fn update_listing(
         env: Env,
@@ -764,7 +921,7 @@ impl MarketplaceContract {
         require_not_paused(&env)?;
         seller.require_auth();
 
-        if new_price <= 0 {
+        if !arithmetic::is_positive_amount(new_price) {
             return Err(ContractError::InvalidAmount);
         }
 
@@ -786,6 +943,13 @@ impl MarketplaceContract {
         if listing.status != ListingStatus::Active {
             return Err(ContractError::WrongStatus);
         }
+
+        let metadata: ListingMetadata = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ListingMeta(listing_id))
+            .ok_or(ContractError::TradeNotFound)?;
+        require_valid_expiry(metadata.created_at, now, new_expires_at)?;
 
         listing.price = new_price;
         listing.expires_at = new_expires_at;
@@ -843,7 +1007,7 @@ impl MarketplaceContract {
             .unwrap_or(0);
 
         let now = env.ledger().timestamp();
-        if now < paused_at + EMERGENCY_TIMELOCK_SECS {
+        if now < arithmetic::deadline(paused_at, EMERGENCY_TIMELOCK_SECS) {
             return Err(ContractError::TimelockNotExpired);
         }
 
@@ -1997,6 +2161,301 @@ mod test {
         assert_eq!(
             token_client.balance(&buyer),
             100_000_000_000i128 - 500_0000000i128 - 300_0000000i128
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #637 — offer expiry and reclaim
+    // -----------------------------------------------------------------------
+
+    const T0: u64 = 1_000_000;
+
+    fn offer(
+        env: &Env,
+        client: &MarketplaceContractClient<'static>,
+        seller: &Address,
+        token: &Address,
+        expires_at: u64,
+    ) -> u64 {
+        env.ledger().with_mut(|l| l.timestamp = T0);
+        client.create_offer(
+            seller,
+            token,
+            &500_0000000i128,
+            &AssetCategory::Airtime,
+            &symbol_short!("MTN"),
+            &1000i128,
+            &expires_at,
+        )
+    }
+
+    #[test]
+    fn test_create_offer_at_max_expiry_window_succeeds() {
+        let (env, client, _admin, seller, _buyer, token) = setup();
+        let id = offer(&env, &client, &seller, &token, T0 + MAX_OFFER_EXPIRY_SECS);
+
+        let listing = client.get_listing(&id);
+        assert_eq!(listing.status, ListingStatus::Active);
+        assert_eq!(listing.expires_at, T0 + MAX_OFFER_EXPIRY_SECS);
+        assert_eq!(client.get_listing_details(&id).metadata.created_at, T0);
+    }
+
+    #[test]
+    fn test_err_create_offer_expiry_too_far() {
+        let (env, client, _admin, seller, _buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = T0);
+
+        for expires_at in [T0 + MAX_OFFER_EXPIRY_SECS + 1, u64::MAX] {
+            let result = client.try_create_offer(
+                &seller,
+                &token,
+                &500_0000000i128,
+                &AssetCategory::Airtime,
+                &symbol_short!("MTN"),
+                &1000i128,
+                &expires_at,
+            );
+            assert_eq!(result, Err(Ok(ContractError::ExpiryTooFar)));
+        }
+        assert_eq!(client.listing_count(), 0);
+        assert_eq!(client.get_active_listing_count(&seller), 0);
+    }
+
+    #[test]
+    fn test_err_create_offer_expiry_not_in_future() {
+        let (env, client, _admin, seller, _buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = T0);
+
+        let result = client.try_create_offer(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &AssetCategory::Airtime,
+            &symbol_short!("MTN"),
+            &1000i128,
+            &T0,
+        );
+        assert_eq!(result, Err(Ok(ContractError::InvalidExpiry)));
+    }
+
+    /// The cap cannot be sidestepped through the older entry point.
+    #[test]
+    fn test_err_create_listing_expiry_too_far() {
+        let (env, client, _admin, seller, _buyer, token) = setup();
+        env.ledger().with_mut(|l| l.timestamp = T0);
+
+        let result = client.try_create_listing(
+            &seller,
+            &token,
+            &500_0000000i128,
+            &AssetCategory::Airtime,
+            &symbol_short!("MTN"),
+            &1000i128,
+            &(T0 + MAX_OFFER_EXPIRY_SECS + 1),
+        );
+        assert_eq!(result, Err(Ok(ContractError::ExpiryTooFar)));
+    }
+
+    /// Nor by extending an existing offer: the window is measured from creation.
+    #[test]
+    fn test_err_update_listing_cannot_extend_past_creation_window() {
+        let (env, client, _admin, seller, _buyer, token) = setup();
+        let id = offer(&env, &client, &seller, &token, T0 + 86_400);
+
+        env.ledger().with_mut(|l| l.timestamp = T0 + 80_000);
+        let result = client.try_update_listing(
+            &seller,
+            &id,
+            &500_0000000i128,
+            &(T0 + MAX_OFFER_EXPIRY_SECS + 1),
+        );
+        assert_eq!(result, Err(Ok(ContractError::ExpiryTooFar)));
+
+        client.update_listing(
+            &seller,
+            &id,
+            &500_0000000i128,
+            &(T0 + MAX_OFFER_EXPIRY_SECS),
+        );
+        assert_eq!(
+            client.get_listing(&id).expires_at,
+            T0 + MAX_OFFER_EXPIRY_SECS
+        );
+    }
+
+    #[test]
+    fn test_accept_offer_on_time() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        let id = offer(&env, &client, &seller, &token, T0 + 86_400);
+
+        env.ledger().with_mut(|l| l.timestamp = T0 + 3_600);
+        client.accept_offer(&buyer, &id);
+
+        let listing = client.get_listing(&id);
+        assert_eq!(listing.status, ListingStatus::Sold);
+        assert_eq!(listing.buyer, Some(buyer.clone()));
+        assert_eq!(client.get_active_listing_count(&seller), 0);
+        let token_client = TokenClient::new(&env, &token);
+        assert_eq!(token_client.balance(&client.address), 500_0000000i128);
+    }
+
+    #[test]
+    fn test_accept_offer_at_exact_expiry_succeeds() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        let id = offer(&env, &client, &seller, &token, T0 + 86_400);
+
+        env.ledger().with_mut(|l| l.timestamp = T0 + 86_400);
+        client.accept_offer(&buyer, &id);
+        assert_eq!(client.get_listing(&id).status, ListingStatus::Sold);
+    }
+
+    #[test]
+    fn test_err_accept_offer_expired() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        let id = offer(&env, &client, &seller, &token, T0 + 86_400);
+
+        env.ledger().with_mut(|l| l.timestamp = T0 + 86_401);
+        let result = client.try_accept_offer(&buyer, &id);
+        assert_eq!(result, Err(Ok(ContractError::OfferExpired)));
+
+        // No funds moved and the offer is untouched.
+        let token_client = TokenClient::new(&env, &token);
+        assert_eq!(token_client.balance(&buyer), 100_000_000_000i128);
+        assert_eq!(client.get_listing(&id).status, ListingStatus::Active);
+    }
+
+    #[test]
+    fn test_err_accept_offer_by_seller() {
+        let (env, client, _admin, seller, _buyer, token) = setup();
+        let id = offer(&env, &client, &seller, &token, T0 + 86_400);
+        let result = client.try_accept_offer(&seller, &id);
+        assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
+    }
+
+    #[test]
+    fn test_expire_offer_reclaims_storage() {
+        let (env, client, _admin, seller, _buyer, token) = setup();
+        let id = offer(&env, &client, &seller, &token, T0 + 86_400);
+        assert_eq!(client.get_active_listing_count(&seller), 1);
+
+        env.ledger().with_mut(|l| l.timestamp = T0 + 86_401);
+        client.expire_offer(&seller, &id);
+
+        assert_eq!(client.get_active_listing_count(&seller), 0);
+        assert_eq!(
+            client.try_get_listing(&id),
+            Err(Ok(ContractError::TradeNotFound))
+        );
+        env.as_contract(&client.address, || {
+            let storage = env.storage().persistent();
+            assert!(!storage.has(&DataKey::Listing(id)));
+            assert!(!storage.has(&DataKey::ListingMeta(id)));
+        });
+
+        // Already reclaimed: a second call has nothing to act on.
+        assert_eq!(
+            client.try_expire_offer(&seller, &id),
+            Err(Ok(ContractError::TradeNotFound))
+        );
+    }
+
+    #[test]
+    fn test_err_expire_offer_before_expiry() {
+        let (env, client, _admin, seller, _buyer, token) = setup();
+        let id = offer(&env, &client, &seller, &token, T0 + 86_400);
+
+        // Still acceptable at `expires_at`, so it cannot be expired yet.
+        env.ledger().with_mut(|l| l.timestamp = T0 + 86_400);
+        let result = client.try_expire_offer(&seller, &id);
+        assert_eq!(result, Err(Ok(ContractError::TimelockNotExpired)));
+
+        // A live offer is withdrawn with `cancel_listing` instead.
+        client.cancel_listing(&seller, &id);
+        assert_eq!(client.get_listing(&id).status, ListingStatus::Cancelled);
+    }
+
+    #[test]
+    fn test_err_expire_offer_not_owner() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        let id = offer(&env, &client, &seller, &token, T0 + 86_400);
+
+        env.ledger().with_mut(|l| l.timestamp = T0 + 86_401);
+        let result = client.try_expire_offer(&buyer, &id);
+        assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
+        assert_eq!(client.get_listing(&id).status, ListingStatus::Active);
+    }
+
+    /// Escrowed funds must never be orphaned by deleting a sold offer.
+    #[test]
+    fn test_err_expire_offer_after_acceptance() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        let id = offer(&env, &client, &seller, &token, T0 + 86_400);
+        client.accept_offer(&buyer, &id);
+
+        env.ledger().with_mut(|l| l.timestamp = T0 + 86_401);
+        let result = client.try_expire_offer(&seller, &id);
+        assert_eq!(result, Err(Ok(ContractError::WrongStatus)));
+    }
+
+    #[test]
+    fn test_offer_functions_blocked_when_paused() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        let id = offer(&env, &client, &seller, &token, T0 + 86_400);
+        client.pause();
+
+        assert_eq!(
+            client.try_accept_offer(&buyer, &id),
+            Err(Ok(ContractError::ContractPaused))
+        );
+        env.ledger().with_mut(|l| l.timestamp = T0 + 86_401);
+        assert_eq!(
+            client.try_expire_offer(&seller, &id),
+            Err(Ok(ContractError::ContractPaused))
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #644 — arithmetic edge cases covered by the fuzz targets
+    // -----------------------------------------------------------------------
+
+    /// A lifetime volume at `i128::MAX` used to make the next settlement trap,
+    /// leaving that buyer's funds stuck in escrow.
+    #[test]
+    fn test_reputation_volume_saturates_instead_of_trapping() {
+        let (env, client, _admin, seller, buyer, token) = setup();
+        let id = offer(&env, &client, &seller, &token, T0 + 86_400);
+        client.accept_offer(&buyer, &id);
+
+        env.as_contract(&client.address, || {
+            env.storage().persistent().set(
+                &DataKey::Reputation(seller.clone()),
+                &Reputation {
+                    completed_trades: u32::MAX,
+                    disputed_trades: 0,
+                    total_volume: i128::MAX,
+                },
+            );
+        });
+
+        client.release_payment(&id);
+
+        let reputation = client.get_reputation(&seller);
+        assert_eq!(reputation.total_volume, i128::MAX);
+        assert_eq!(reputation.completed_trades, u32::MAX);
+        let token_client = TokenClient::new(&env, &token);
+        assert_eq!(token_client.balance(&seller), 500_0000000i128);
+    }
+
+    #[test]
+    fn test_expiry_check_saturates_near_u64_max() {
+        let now = u64::MAX - 10;
+        assert_eq!(
+            arithmetic::check_expiry(now, now, u64::MAX),
+            ExpiryCheck::Valid
+        );
+        assert_eq!(
+            arithmetic::check_expiry(now, now, now),
+            ExpiryCheck::NotInFuture
         );
     }
 }

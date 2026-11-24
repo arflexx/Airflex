@@ -332,7 +332,9 @@ The following codes are only emitted by `contracts/escrow/src/lib.rs`.
 
 ## Marketplace-Only Error Codes
 
-The following code is only emitted by `contracts/marketplace/src/lib.rs`.
+The following codes are only emitted by `contracts/marketplace/src/lib.rs`.
+Discriminant `19` is deliberately unused here: it is `AmountExceedsMax` in the
+escrow contract, and off-chain decoders share one code table.
 
 ---
 
@@ -365,6 +367,40 @@ The following code is only emitted by `contracts/marketplace/src/lib.rs`.
 **Trigger conditions:** A custom SAC token's transfer hook or any other cross-contract callback re-enters `deposit_to_escrow`, `release_payment`, `cancel_and_refund`, or `resolve_dispute` while the reentrancy guard flag is set in temporary storage (see issue #507).
 
 **Client-side handling:** This error should never occur during normal operation with vetted tokens. If encountered, it indicates a malicious or non-compliant token contract. Report it as a security incident. Do not retry.
+
+---
+
+### `20` — `OfferExpired` (`OFFER_EXPIRED`)
+
+| Field | Value |
+|---|---|
+| **Numeric value** | `20` |
+| **Contract** | Marketplace only |
+| **Relevant function** | `accept_offer` |
+
+**Description:** The offer can no longer be accepted because the ledger time has passed its `expires_at` (issue #637).
+
+**Trigger conditions:** `accept_offer` is called when `ledger.timestamp > expires_at`. The offer is still acceptable at exactly `expires_at`. The older `deposit_to_escrow` and `purchase_with_auth` entry points keep returning `TradeExpired` (`5`), from `expires_at` onward.
+
+**Client-side handling:** Do not retry. Remove the offer from the buyer's view. The seller can reclaim its storage with `expire_offer` and post a new offer.
+
+---
+
+### `21` — `ExpiryTooFar` (`EXPIRY_TOO_FAR`)
+
+| Field | Value |
+|---|---|
+| **Numeric value** | `21` |
+| **Contract** | Marketplace only |
+| **Relevant functions** | `create_offer`, `create_listing`, `update_listing` |
+
+**Description:** The supplied `expires_at` is more than 30 days (`MAX_OFFER_EXPIRY_SECS = 2,592,000` seconds) after the offer's creation (issue #637).
+
+**Trigger conditions:**
+- `create_offer` or `create_listing` is called with `expires_at > ledger.timestamp + 2,592,000`.
+- `update_listing` is called with `new_expires_at > created_at + 2,592,000`. The window is measured from creation, so repeated updates cannot extend an offer indefinitely.
+
+**Client-side handling:** Clamp the expiry picker to 30 days from the current ledger timestamp. To keep an offer live for longer, let it expire and create a new one.
 
 ---
 
@@ -406,16 +442,18 @@ New codes are always appended; existing values are never changed.
 | `4` | `WrongStatus` | Action is invalid for the listing's current status. | `deposit_to_escrow`, `release_payment`, `cancel_and_refund`, `resolve_dispute`, `update_listing`, `cancel_listing`, `close_expired_listing`, `emergency_withdraw` |
 | `5` | `TradeExpired` | Listing has passed its expiry (or has not yet expired for `close_expired_listing`). | `deposit_to_escrow`, `close_expired_listing` |
 | `6` | `InsufficientFunds` | Contract balance is less than the requested withdrawal amount. | `emergency_withdraw` |
-| `7` | `InvalidExpiry` | Expiry is in the past or the present slot. | `create_listing`, `update_listing` |
+| `7` | `InvalidExpiry` | Expiry is in the past or the present slot. | `create_offer`, `create_listing`, `update_listing` |
 | `8` | `AlreadyDisputed` | (Reserved — not currently used by Marketplace.) | — |
 | `9` | `ContractPaused` | Contract is paused; state-mutating calls are blocked. | All state-mutating functions |
-| `10` | `TimelockNotExpired` | 72-hour emergency withdrawal timelock has not elapsed. | `emergency_withdraw` |
+| `10` | `TimelockNotExpired` | 72-hour emergency withdrawal timelock has not elapsed, or the offer has not expired yet (`expire_offer`). | `emergency_withdraw`, `expire_offer` |
 | `11` | `UnsupportedToken` | (Reserved — not currently used by Marketplace.) | — |
 | `12` | `InvalidAmount` | Amount is zero or negative. | `create_listing`, `update_listing`, `emergency_withdraw` |
 | `13` | `FillAlreadyProcessed` | (Reserved — not currently used by Marketplace.) | — |
 | `14` | `NotAParty` | Recipient is not the seller or the recorded buyer of this listing. | `resolve_dispute` |
 | `15` | `StorageLimitExceeded` | Seller has reached the active listing cap (`MAX_ACTIVE_LISTINGS_PER_SELLER = 10`). | `create_listing` |
 | `18` | `ReentrancyDetected` | Reentrant call detected during a purchase or settlement operation (issue #507). | `deposit_to_escrow`, `release_payment`, `cancel_and_refund`, `resolve_dispute` |
+| `20` | `OfferExpired` | Ledger time exceeds the offer's `expires_at` (issue #637). | `accept_offer` |
+| `21` | `ExpiryTooFar` | Expiry is more than 30 days after the offer's creation (issue #637). | `create_offer`, `create_listing`, `update_listing` |
 
 ## Handling Errors
 
