@@ -125,14 +125,15 @@ router.get("/me/export/:exportId", authenticate, async (req, res) => {
  *
  * Streams the decrypted export as a JSON attachment. Authorised by the HMAC
  * signature (bound to export id, owner and expiry) rather than a Bearer
- * token, so the URL works as a direct browser download. Every failure mode
- * returns the same 404 so the endpoint does not reveal which exports exist.
+ * token, so the URL works as a direct browser download. Returns 404 for
+ * missing/invalid export IDs, and 403 for expired or tampered signatures.
  */
 router.get("/me/export/:exportId/download", async (req, res) => {
   const { exportId } = req.params;
   const expires = Number(req.query["expires"]);
   const signature = typeof req.query["signature"] === "string" ? req.query["signature"] : "";
-  const notFound = () => res.status(404).json({ error: "Download link is invalid or has expired" });
+  const notFound = () => res.status(404).json({ error: "Data export not found" });
+  const forbidden = () => res.status(403).json({ error: "Download link is invalid or has expired" });
 
   if (!exportId || !UUID_PATTERN.test(exportId) || !signature) {
     notFound();
@@ -152,13 +153,13 @@ router.get("/me/export/:exportId/download", async (req, res) => {
   );
   const row = rows[0];
 
-  if (
-    !row ||
-    row.status !== "ready" ||
-    !row.payload_encrypted ||
-    !verifyDownloadSignature(exportId, row.user_id, expires, signature)
-  ) {
+  if (!row || row.status !== "ready" || !row.payload_encrypted) {
     notFound();
+    return;
+  }
+
+  if (!verifyDownloadSignature(exportId, row.user_id, expires, signature)) {
+    forbidden();
     return;
   }
 

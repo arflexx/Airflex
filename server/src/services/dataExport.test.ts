@@ -12,7 +12,7 @@ describe("data export (issue #539)", () => {
   const now = 1_800_000_000;
 
   beforeAll(() => {
-    process.env["JWT_SECRET"] = "test-secret-key-12345678901234567890123456789012";
+    process.env["ENCRYPTION_KEY"] = "0000000000000000000000000000000000000000000000000000000000000000";
   });
 
   describe("signed download URLs", () => {
@@ -35,6 +35,12 @@ describe("data export (issue #539)", () => {
       expect(
         verifyDownloadSignature(exportId, "44444444-4444-4444-4444-444444444444", expires, signature, now)
       ).toBe(false);
+    });
+
+    it("rejects a signature scoped to a different user (wrong-user link)", () => {
+      const { expires, signature } = signDownload(exportId, userId, now + 900);
+      const differentUserId = "44444444-4444-4444-4444-444444444444";
+      expect(verifyDownloadSignature(exportId, differentUserId, expires, signature, now)).toBe(false);
     });
 
     it("rejects garbage signatures without throwing", () => {
