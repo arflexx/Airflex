@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import createIntlMiddleware from "next-intl/middleware";
 import { routing } from "./i18n/routing";
-import { buildContentSecurityPolicy, STATIC_SECURITY_HEADERS } from "./lib/csp";
+import { buildContentSecurityPolicy, reportingEndpoints, STATIC_SECURITY_HEADERS } from "./lib/csp";
 
 
 
@@ -72,8 +72,10 @@ export function middleware(request: NextRequest) {
   crypto.getRandomValues(nonceBytes);
   const nonce = btoa(String.fromCharCode(...nonceBytes));
   const csp = buildContentSecurityPolicy(nonce);
+  const reportingEndpointsValue = reportingEndpoints();
   const secureHeaders = (response: NextResponse) => {
     response.headers.set("Content-Security-Policy", csp);
+    response.headers.set("Reporting-Endpoints", reportingEndpointsValue);
     for (const header of STATIC_SECURITY_HEADERS) {
       response.headers.set(header.key, header.value);
     }
