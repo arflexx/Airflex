@@ -1,11 +1,20 @@
 name: Trivy Security Scan
 
 # ---------------------------------------------------------------------------
+# Scope
+# ---------------------------------------------------------------------------
+# Repository filesystem only: declared dependencies, secrets and IaC
+# misconfigurations. Findings are reported to the Security tab, not enforced.
+#
+# The server container image (server/Dockerfile) is built, scanned and enforced
+# by the image-scan job in server-ci.yml (issue #515). Do not scan it here too:
+# both would upload to the `trivy-server` SARIF category.
+
+# ---------------------------------------------------------------------------
 # Triggers
 # ---------------------------------------------------------------------------
-# Runs on every pull request targeting main and on pushes to main so that
-# newly introduced Docker images are always scanned before merging.
-# A weekly schedule catches newly disclosed CVEs in unchanged images.
+# Runs on every pull request targeting main and on pushes to main. A weekly
+# schedule catches newly disclosed CVEs in unchanged dependencies.
 on:
   push:
     branches: [main]
@@ -34,49 +43,7 @@ permissions:
 jobs:
 
   # -------------------------------------------------------------------------
-  # 1. Build and scan the API server image
-  # -------------------------------------------------------------------------
-  scan-server:
-    name: Trivy — Server Image
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      # Build the server Docker image locally so Trivy can scan it.
-      # The image is never pushed to a registry in this job.
-      - name: Build server Docker image
-        run: |
-          docker build \
-            --file server/Dockerfile \
-            --tag airflex-server:${{ github.sha }} \
-            .
-
-      # Scan the built image for OS and library CVEs.
-      # The findings are exported to SARIF and uploaded to the Security tab.
-      - name: Scan server image with Trivy
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: airflex-server:${{ github.sha }}
-          format: sarif
-          output: trivy-server.sarif
-          severity: CRITICAL
-          exit-code: "0"
-          ignore-unfixed: true
-          vuln-type: os,library
-
-      # Upload the SARIF report to GitHub Security tab regardless of whether
-      # the scan step succeeded, so findings are always visible.
-      - name: Upload Trivy SARIF (server)
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-server.sarif
-          category: trivy-server
-
-  # -------------------------------------------------------------------------
-  # 2. Scan the repository filesystem for misconfigurations and secrets
+  # Scan the repository filesystem for misconfigurations and secrets
   # -------------------------------------------------------------------------
   scan-filesystem:
     name: Trivy — Filesystem & IaC Scan
@@ -84,14 +51,14 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # Scan the repository for:
       #   - Hardcoded secrets / credentials
       #   - Infrastructure-as-code misconfigurations
       #   - Vulnerable library versions declared in manifests
       - name: Scan filesystem with Trivy
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -100,12 +67,14 @@ jobs:
           severity: CRITICAL
           exit-code: "0"
           ignore-unfixed: true
+          # Reviewed exceptions, shared with the server image scan
+          trivyignores: .trivyignore
           # Include secret detection and config checks in addition to vuln scanning
           scanners: vuln,secret,misconfig
 
       - name: Upload Trivy SARIF (filesystem)
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@d2aacf54c2fbc910db8d7ec338fdb54ea48c692d # v3.39.4
         with:
           sarif_file: trivy-fs.sarif
           category: trivy-filesystem
