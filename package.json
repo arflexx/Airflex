@@ -9,10 +9,12 @@
     "test": "turbo run test",
     "load:test": "bash tests/load/run-all.sh",
     "load:compare": "node tests/load/compare-baseline.mjs",
-    "clean": "turbo run clean"
+    "clean": "turbo run clean",
+    "type-coverage": "type-coverage --detail --strict --minimum-coverage 95"
   },
   "devDependencies": {
-    "turbo": "^2.0.0"
+    "turbo": "^2.0.0",
+    "type-coverage": "^2.29.0"
   },
   "pnpm": {
     "overrides": {
