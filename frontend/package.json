@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "build:analyze": "ANALYZE=true next build",
     "start": "next start",
     "lint": "tsc --noEmit",
     "test": "jest",
@@ -51,7 +52,8 @@
     "postcss": "8.4.39",
     "tailwindcss": "3.4.4",
     "typescript": "5.5.3",
-    "webpack": "5.101.2"
+    "webpack": "5.101.2",
+    "@next/bundle-analyzer": "^14.2.5"
   }
 }
 
